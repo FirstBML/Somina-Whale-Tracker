@@ -1,0 +1,21 @@
+# Environment variables
+.env.local
+.env*.local
+
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# Build
+dist/
+
+# Hardhat
+artifacts/
+cache/
+
+# OS
+.DS_Store
+Thumbs.db
