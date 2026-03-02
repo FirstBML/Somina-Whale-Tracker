@@ -1,40 +1,78 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 
+export type AlertType = "whale" | "reaction" | "alert";
+
 export type WhaleAlert = {
-  id: string;
-  from: string;
-  to: string;
-  amount: string;
-  timestamp: number;
+  id:            string;
+  type:          AlertType;
+  from:          string;
+  to:            string;
+  amount:        string;    // human-readable
+  amountRaw:     bigint;
+  timestamp:     number;    // ms
+  token:         string;
+  txHash:        string;
+  blockNumber:   string;
+  blockHash:     string;
+  // Phase 2 handler fields
+  reactionCount?: string;
+  handlerEmitter?: string;
 };
 
-function parseRaw(raw: any): WhaleAlert | null {
+function parseEntry(raw: any): WhaleAlert | null {
   try {
-    const result = raw?.result ?? raw;
-    const topics = result?.topics;
-    const rawData = result?.data;
-    if (!topics || topics.length < 3 || !rawData) return null;
+    const r    = raw?.raw ?? raw;
+    const type = (raw?.type ?? "whale") as AlertType;
 
-    const from = `0x${topics[1]?.slice(26)}`;
-    const to   = `0x${topics[2]?.slice(26)}`;
-    const amount    = BigInt(`0x${rawData.slice(2, 66)}`);
-    const timestamp = BigInt(`0x${rawData.slice(66, 130)}`);
+    // reaction / alert entries don't have the usual from/to/amount
+    if (type === "alert") {
+      return {
+        id:            `${Date.now()}-${Math.random()}`,
+        type,
+        from:          "",
+        to:            "",
+        amount:        "0",
+        amountRaw:     0n,
+        timestamp:     Number(BigInt(r.timestamp ?? "0x0")) * 1000 || Date.now(),
+        token:         "",
+        txHash:        r.txHash  ?? "",
+        blockNumber:   r.blockNumber ?? "",
+        blockHash:     r.blockHash ?? "",
+        reactionCount: r.reactionCount,
+      };
+    }
+
+    const amountHex = r?.amount ?? "0x0";
+    const tsHex     = r?.timestamp ?? "0x0";
+    const amount    = BigInt(amountHex);
+    const timestamp = BigInt(tsHex);
 
     return {
-      id: `${Date.now()}-${Math.random()}`,
-      from,
-      to,
-      amount: (Number(amount) / 1e18).toLocaleString(undefined, { maximumFractionDigits: 2 }),
-      timestamp: Number(timestamp) * 1000,
+      id:             `${Date.now()}-${Math.random()}`,
+      type,
+      from:           r.from  ?? "",
+      to:             r.to    ?? "",
+      amountRaw:      amount,
+      amount:         (Number(amount) / 1e18).toLocaleString(undefined, { maximumFractionDigits: 2 }),
+      timestamp:      Number(timestamp) * 1000 || Date.now(),
+      token:          r.token ?? "",
+      txHash:         r.txHash      ?? "",
+      blockNumber:    r.blockNumber ?? "",
+      blockHash:      r.blockHash   ?? "",
+      reactionCount:  r.reactionCount,
+      handlerEmitter: r.handlerEmitter,
     };
-  } catch { return null; }
+  } catch (e) {
+    console.error("parseEntry error:", e, raw);
+    return null;
+  }
 }
 
-export function useWhaleAlerts(maxAlerts = 50) {
-  const [alerts, setAlerts] = useState<WhaleAlert[]>([]);
+export function useWhaleAlerts(maxAlerts = 200) {
+  const [alerts, setAlerts]       = useState<WhaleAlert[]>([]);
   const [connected, setConnected] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError]         = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
@@ -45,19 +83,16 @@ export function useWhaleAlerts(maxAlerts = 50) {
       const msg = JSON.parse(e.data);
 
       if (msg.type === "init") {
-        // Load cached alerts from server
-        const parsed = msg.alerts
-          .map((a: any) => parseRaw(a.raw))
-          .filter(Boolean)
-          .reverse() as WhaleAlert[];
+        const parsed = (msg.alerts as any[])
+          .map(parseEntry).filter(Boolean).reverse() as WhaleAlert[];
         setAlerts(parsed.slice(0, maxAlerts));
       }
-
       if (msg.type === "connected") setConnected(true);
-      if (msg.type === "error") setError(msg.message);
+      if (msg.type === "error")     setError(msg.message);
 
-      if (msg.type === "whale") {
-        const alert = parseRaw(msg.raw);
+      // Live events — whale, reaction, alert all come through here
+      if (["whale", "reaction", "alert"].includes(msg.type)) {
+        const alert = parseEntry(msg);
         if (alert) setAlerts(prev => [alert, ...prev].slice(0, maxAlerts));
       }
     };

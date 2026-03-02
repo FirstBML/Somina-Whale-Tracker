@@ -4,7 +4,15 @@ import * as dotenv from "dotenv";
 dotenv.config({ path: ".env.local" });
 
 const config: HardhatUserConfig = {
-  solidity: "0.8.20",
+  solidity: {
+  version: "0.8.30",
+  settings: {
+    optimizer: {
+      enabled: true,
+      runs: 200,
+    },
+  },
+},
   networks: {
     somniaTestnet: {
       url: process.env.RPC_URL || "https://dream-rpc.somnia.network",
