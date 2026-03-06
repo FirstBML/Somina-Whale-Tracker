@@ -46,8 +46,16 @@ const HANDLER_ABI = [{
   ],
 }] as const;
 
+const MOMENTUM_ABI = [{
+  name: "WhaleMomentumDetected", type: "event",
+  inputs: [
+    { name: "burstCount",  type: "uint256", indexed: false },
+    { name: "blockNumber", type: "uint256", indexed: false },
+  ],
+}] as const;
+
 export type CacheEntry = {
-  type: "whale" | "reaction" | "alert";
+  type: "whale" | "reaction" | "alert" | "momentum";
   receivedAt: number;
   raw: {
     from: string; to: string; amount: string; timestamp: string; token: string;
@@ -94,6 +102,7 @@ const MAX_CACHE = 200;
 const alertCache: CacheEntry[] = [];
 let trackerSub: { unsubscribe: () => Promise<any> } | null = null;
 let handlerSub: { unsubscribe: () => Promise<any> } | null = null;
+let momentumSub: { unsubscribe: () => Promise<any> } | null = null;
 const encoder     = new TextEncoder();
 const controllers = new Set<ReadableStreamDefaultController>();
 
@@ -160,7 +169,7 @@ async function loadPastEvents() {
 
 // ── SDK subscriptions ─────────────────────────────────────────────────────────
 async function ensureSubscriptions() {
-  if (trackerSub && handlerSub) return;
+  if (trackerSub && handlerSub && momentumSub) return;
   await loadPastEvents();
 
   const CONTRACT = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS  as `0x${string}`;
@@ -170,9 +179,10 @@ async function ensureSubscriptions() {
   const walClient = createWalletClient({ account, chain: somniaTestnet, transport: http("https://dream-rpc.somnia.network") });
   const sdk       = new SDK({ public: pubClient, wallet: walClient });
 
-  const WHALE_TOPIC   = keccak256(toBytes("WhaleTransfer(address,address,uint256,uint256,string)"));
-  const REACTED_TOPIC = keccak256(toBytes("ReactedToWhaleTransfer(address,bytes32,address,address,uint256)"));
-  const ALERT_TOPIC   = keccak256(toBytes("AlertThresholdCrossed(uint256,uint256)"));
+  const WHALE_TOPIC    = keccak256(toBytes("WhaleTransfer(address,address,uint256,uint256,string)"));
+  const REACTED_TOPIC  = keccak256(toBytes("ReactedToWhaleTransfer(address,bytes32,address,address,uint256)"));
+  const ALERT_TOPIC    = keccak256(toBytes("AlertThresholdCrossed(uint256,uint256)"));
+  const MOMENTUM_TOPIC = keccak256(toBytes("WhaleMomentumDetected(uint256,uint256)"));
 
   if (!trackerSub) {
     const r1 = await sdk.subscribe({
@@ -283,6 +293,36 @@ async function ensureSubscriptions() {
       console.log("✅ WhaleHandler reaction subscription:", r2.subscriptionId);
     }
     if (!(r3 instanceof Error)) console.log("✅ WhaleHandler alert subscription:", r3.subscriptionId);
+
+    // ── Momentum subscription ────────────────────────────────────────────────
+    const r4 = await sdk.subscribe({
+      ethCalls: [], eventContractSources: [HANDLER], topicOverrides: [MOMENTUM_TOPIC],
+      onData: (data: any) => {
+        try {
+          const r = data?.result ?? data;
+          const decoded = decodeEventLog({
+            abi: MOMENTUM_ABI, data: r?.data as `0x${string}`,
+            topics: r?.topics as [`0x${string}`, ...`0x${string}`[]],
+          });
+          const a = decoded.args as any;
+          push({
+            type: "momentum", receivedAt: Date.now(),
+            raw: {
+              from: "", to: "", amount: "0x0",
+              timestamp: `0x${Math.floor(Date.now() / 1000).toString(16)}`,
+              token: "", txHash: r?.transactionHash ?? "",
+              blockNumber: r?.blockNumber ? BigInt(r.blockNumber).toString() : "",
+              blockHash: "", reactionCount: a.burstCount?.toString() ?? "",
+            },
+          });
+        } catch (e) { console.error("Momentum parse error:", e); }
+      },
+      onError: (e: Error) => console.error("Momentum SDK error:", e),
+    });
+    if (!(r4 instanceof Error)) {
+      momentumSub = r4;
+      console.log("✅ WhaleMomentumDetected subscription:", r4.subscriptionId);
+    }
   } else if (!HANDLER) {
     console.log("ℹ HANDLER_CONTRACT_ADDRESS not set — skipping Phase 2 subscriptions");
   }

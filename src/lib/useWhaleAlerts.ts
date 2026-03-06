@@ -1,21 +1,20 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 
-export type AlertType = "whale" | "reaction" | "alert";
+export type AlertType = "whale" | "reaction" | "alert" | "momentum";
 
 export type WhaleAlert = {
   id:            string;
   type:          AlertType;
   from:          string;
   to:            string;
-  amount:        string;    // human-readable
+  amount:        string;
   amountRaw:     bigint;
-  timestamp:     number;    // ms
+  timestamp:     number;
   token:         string;
   txHash:        string;
   blockNumber:   string;
   blockHash:     string;
-  // Phase 2 handler fields
   reactionCount?: string;
   handlerEmitter?: string;
 };
@@ -25,8 +24,7 @@ function parseEntry(raw: any): WhaleAlert | null {
     const r    = raw?.raw ?? raw;
     const type = (raw?.type ?? "whale") as AlertType;
 
-    // reaction / alert entries don't have the usual from/to/amount
-    if (type === "alert") {
+    if (type === "alert" || type === "momentum") {
       return {
         id:            `${Date.now()}-${Math.random()}`,
         type,
@@ -36,14 +34,14 @@ function parseEntry(raw: any): WhaleAlert | null {
         amountRaw:     0n,
         timestamp:     Number(BigInt(r.timestamp ?? "0x0")) * 1000 || Date.now(),
         token:         "",
-        txHash:        r.txHash  ?? "",
+        txHash:        r.txHash      ?? "",
         blockNumber:   r.blockNumber ?? "",
-        blockHash:     r.blockHash ?? "",
+        blockHash:     r.blockHash   ?? "",
         reactionCount: r.reactionCount,
       };
     }
 
-    const amountHex = r?.amount ?? "0x0";
+    const amountHex = r?.amount    ?? "0x0";
     const tsHex     = r?.timestamp ?? "0x0";
     const amount    = BigInt(amountHex);
     const timestamp = BigInt(tsHex);
@@ -90,8 +88,7 @@ export function useWhaleAlerts(maxAlerts = 200) {
       if (msg.type === "connected") setConnected(true);
       if (msg.type === "error")     setError(msg.message);
 
-      // Live events — whale, reaction, alert all come through here
-      if (["whale", "reaction", "alert"].includes(msg.type)) {
+      if (["whale", "reaction", "alert", "momentum"].includes(msg.type)) {
         const alert = parseEntry(msg);
         if (alert) setAlerts(prev => [alert, ...prev].slice(0, maxAlerts));
       }
