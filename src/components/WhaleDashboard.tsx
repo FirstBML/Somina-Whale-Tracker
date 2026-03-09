@@ -2,7 +2,8 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 import { useAccount } from "wagmi";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { useWhaleAlerts, WhaleAlert } from "../lib/useWhaleAlerts";
+import { useWhaleAlerts, WhaleAlert, BlockTx } from "../lib/useWhaleAlerts";
+import { useOraclePrices, formatUsd, OraclePrice } from "../lib/useOraclePrices";
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell } from "recharts";
 
 type Theme = "dark" | "light";
@@ -12,7 +13,8 @@ const T = {
 };
 
 const TOKEN_COLORS: Record<string,string> = {STT:"#06b6d4",USDC:"#2775CA",WETH:"#627EEA",WBTC:"#F7931A",USDT:"#26A17B",LINK:"#2A5ADA",UNI:"#FF007A",AAVE:"#B6509E"};
-const ALL_TOKENS = ["All","STT","USDC","WETH","WBTC","USDT","LINK","UNI","AAVE"];
+// ALL_TOKENS used as fallback — filter will be populated dynamically from actual events
+const ALL_TOKENS_FALLBACK = ["All","STT","USDC","WETH","WBTC","USDT","LINK","UNI","AAVE"];
 const TIME_PRESETS = [{label:"30m",ms:30*60_000},{label:"1h",ms:60*60_000},{label:"6h",ms:6*60*60_000},{label:"24h",ms:24*60*60_000},{label:"All",ms:0}];
 
 const short     = (a:string) => a ? `${a.slice(0,6)}…${a.slice(-4)}` : "—";
@@ -20,6 +22,22 @@ const shortHash = (h:string) => h ? `${h.slice(0,10)}…${h.slice(-6)}` : "—";
 const addrUrl   = (a:string) => `https://shannon-explorer.somnia.network/address/${a}`;
 const txUrl     = (h:string) => `https://shannon-explorer.somnia.network/tx/${h}`;
 const num       = (s:string) => parseFloat((s ?? "0").replace(/,/g,"")) || 0;
+
+// Maps token symbol to oracle price key for USD estimation
+const TOKEN_PRICE_MAP: Record<string,string> = {
+  WBTC:"BTC", BTC:"BTC",
+  WETH:"ETH", ETH:"ETH",
+  USDC:"USDC", USDT:"USDT",
+  SOL:"SOL",
+};
+function usdVal(amount:number, token:string, prices:Record<string,any>): string|null {
+  const key = TOKEN_PRICE_MAP[token];
+  if(!key || !prices[key]) return null;
+  const usd = amount * prices[key].price;
+  if(usd>=1_000_000) return `$${(usd/1_000_000).toFixed(2)}M`;
+  if(usd>=1_000)     return `$${Math.round(usd).toLocaleString()}`;
+  return `$${usd.toFixed(2)}`;
+}
 
 function timeAgo(ts:number){const d=Math.floor((Date.now()-ts)/1000);if(d<60)return`${d}s ago`;if(d<3600)return`${Math.floor(d/60)}m ago`;return`${Math.floor(d/3600)}h ago`;}
 function fmtTime(ts:number){return new Date(ts).toLocaleString(undefined,{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit"});}
@@ -35,8 +53,36 @@ function Td({children,t,bold,accent,color}:{children:React.ReactNode;t:typeof T.
 function ExLink({href,label,t}:{href:string;label:string;t:typeof T.dark}){if(!href)return<span style={{color:t.muted,fontFamily:"monospace",fontSize:11}}>—</span>;return(<a href={href} target="_blank" rel="noreferrer" style={{color:t.subtext,textDecoration:"none",fontFamily:"monospace",fontSize:11,display:"inline-flex",alignItems:"center",gap:3}} onMouseEnter={e=>(e.currentTarget.style.color=t.accent)} onMouseLeave={e=>(e.currentTarget.style.color=t.subtext)}>{label}<span style={{fontSize:9,opacity:0.6}}>↗</span></a>);}
 function KpiCard({label,value,sub,color,t}:{label:string;value:string|number;sub?:string;color?:string;t:typeof T.dark}){return(<div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:10,padding:"12px 16px"}}><p style={{color:t.muted,fontSize:9,textTransform:"uppercase",letterSpacing:"0.15em",fontFamily:"monospace",margin:"0 0 4px"}}>{label}</p><p style={{color:color??t.statVal,fontSize:18,fontWeight:700,fontFamily:"monospace",margin:0}}>{value}</p>{sub&&<p style={{color:t.muted,fontSize:9,margin:"2px 0 0",fontFamily:"monospace"}}>{sub}</p>}</div>);}
 
+// ── Price Ticker ──────────────────────────────────────────────────────────────
+const TICKER_SYMBOLS = ["ETH","BTC","USDC","USDT","SOL"] as const;
+const SYMBOL_COLORS: Record<string,string> = {ETH:"#627EEA",BTC:"#F7931A",USDC:"#2775CA",WETH:"#627EEA",USDT:"#26A17B",SOL:"#9945FF",SOMI:"#06b6d4"};
+
+function PriceTicker({prices,loading,t,lastFetchedAt}:{prices:Record<string,OraclePrice>;loading:boolean;t:typeof T.dark;lastFetchedAt:number}){
+  const available=TICKER_SYMBOLS.filter(s=>prices[s]&&prices[s].price>0);
+  if(loading&&!available.length) return null;
+  return(
+    <div style={{display:"flex",gap:20,alignItems:"center",overflowX:"auto",flexWrap:"nowrap",borderTop:`1px solid ${t.border}`,marginTop:8,paddingTop:8}}>
+      <span style={{color:t.muted,fontSize:8,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.15em",flexShrink:0}}>Oracle Prices</span>
+      {available.map(s=>{
+        const p=prices[s];
+        const color=SYMBOL_COLORS[s]??t.accent;
+        return(
+          <div key={s} style={{display:"flex",alignItems:"center",gap:5,flexShrink:0}}>
+            <span style={{fontSize:9,fontFamily:"monospace",fontWeight:700,color,padding:"1px 5px",borderRadius:3,background:`${color}18`,border:`1px solid ${color}33`}}>{s}</span>
+            <span style={{fontSize:11,fontFamily:"monospace",fontWeight:700,color:t.text}}>{formatUsd(p.price)}</span>
+          </div>
+        );
+      })}
+      <span style={{fontSize:8,color:t.muted,fontFamily:"monospace",marginLeft:"auto",flexShrink:0}}>
+        Protofire · DIA · Somnia Testnet
+        {lastFetchedAt>0&&<span style={{marginLeft:6,color:t.muted}}>· fetched {timeAgo(lastFetchedAt)}</span>}
+      </span>
+    </div>
+  );
+}
+
 // ── Burst Banner ──────────────────────────────────────────────────────────────
-type Burst = { count:number; volume:number; windowSec:number; dominantToken:string } | null;
+type Burst = { count:number; volume:number; windowSec:number; dominantToken:string; tokenBreakdown:Record<string,number> } | null;
 
 function BurstBanner({burst,t}:{burst:Burst;t:typeof T.dark}){
   const[visible,setVisible]=useState(false);
@@ -47,23 +93,26 @@ function BurstBanner({burst,t}:{burst:Burst;t:typeof T.dark}){
     prevBurstRef.current=burst;
   },[burst]);
   if(!burst||!visible) return null;
+  const tokenList=burst.tokenBreakdown
+    ? Object.entries(burst.tokenBreakdown).sort((a,b)=>b[1]-a[1]).map(([tk,n])=>`${n}× ${tk}`).join(", ")
+    : burst.dominantToken;
   return(
     <div style={{marginBottom:14,padding:"14px 18px",borderRadius:12,background:"rgba(249,115,22,0.1)",border:"1px solid rgba(249,115,22,0.45)",display:"flex",alignItems:"center",gap:14,flexWrap:"wrap",animation:"burstPulse 2s ease-in-out infinite"}}>
-      <span style={{fontSize:22}}>🚨</span>
-      <div style={{flex:1}}>
-        <p style={{margin:0,fontFamily:"monospace",fontWeight:700,color:"#f97316",fontSize:13,letterSpacing:"0.06em"}}>WHALE MOMENTUM DETECTED</p>
-        <p style={{margin:"3px 0 0",fontFamily:"monospace",fontSize:11,color:"rgba(249,115,22,0.8)"}}>
+      <span style={{fontSize:20}}>🚨</span>
+      <div>
+        <div style={{color:"#f97316",fontWeight:700,fontSize:12,fontFamily:"monospace",letterSpacing:"0.1em",textTransform:"uppercase"}}>Whale Momentum Detected</div>
+        <div style={{color:"#fed7aa",fontSize:11,fontFamily:"monospace",marginTop:2}}>
           {burst.count} transfers · {Math.round(burst.volume).toLocaleString()} tokens · within {burst.windowSec}s
-          {burst.dominantToken&&<span style={{marginLeft:10}}><Badge text={burst.dominantToken} color={TOKEN_COLORS[burst.dominantToken]??""} t={t}/></span>}
-        </p>
+          <span style={{color:"#f97316",marginLeft:10}}>{tokenList}</span>
+        </div>
       </div>
-      <button onClick={()=>setVisible(false)} style={{background:"transparent",border:"none",color:"rgba(249,115,22,0.6)",cursor:"pointer",fontSize:16,padding:"2px 6px",lineHeight:1}}>✕</button>
+      <button onClick={()=>setVisible(false)} style={{marginLeft:"auto",background:"none",border:"none",color:"#f97316",cursor:"pointer",fontSize:16}}>✕</button>
     </div>
   );
 }
 
 // ── Filter Bar ────────────────────────────────────────────────────────────────
-function FilterBar({t,search,setSearch,minAmt,setMinAmt,maxAmt,setMaxAmt,token,setToken,timePreset,setTimePreset,dateFrom,setDateFrom,dateTo,setDateTo,showTypes,setShowTypes}:{t:typeof T.dark;search:string;setSearch:(v:string)=>void;minAmt:string;setMinAmt:(v:string)=>void;maxAmt:string;setMaxAmt:(v:string)=>void;token:string;setToken:(v:string)=>void;timePreset:number;setTimePreset:(v:number)=>void;dateFrom:string;setDateFrom:(v:string)=>void;dateTo:string;setDateTo:(v:string)=>void;showTypes:string[];setShowTypes:(v:string[])=>void}){
+function FilterBar({t,search,setSearch,minAmt,setMinAmt,maxAmt,setMaxAmt,token,setToken,timePreset,setTimePreset,dateFrom,setDateFrom,dateTo,setDateTo,showTypes,setShowTypes,tokenList}:{t:typeof T.dark;search:string;setSearch:(v:string)=>void;minAmt:string;setMinAmt:(v:string)=>void;maxAmt:string;setMaxAmt:(v:string)=>void;token:string;setToken:(v:string)=>void;timePreset:number;setTimePreset:(v:number)=>void;dateFrom:string;setDateFrom:(v:string)=>void;dateTo:string;setDateTo:(v:string)=>void;showTypes:string[];setShowTypes:(v:string[])=>void;tokenList:string[];}){
   const inp:React.CSSProperties={background:t.input,border:`1px solid ${t.border}`,borderRadius:7,padding:"7px 10px",fontSize:11,fontFamily:"monospace",color:t.text,outline:"none",width:"100%",boxSizing:"border-box"};
   const lbl:React.CSSProperties={color:t.subtext,fontSize:9,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",display:"block",marginBottom:4};
   const toggleType=(type:string)=>setShowTypes(showTypes.includes(type)?showTypes.filter(x=>x!==type):[...showTypes,type]);
@@ -71,7 +120,7 @@ function FilterBar({t,search,setSearch,minAmt,setMinAmt,maxAmt,setMaxAmt,token,s
     <p style={{color:t.muted,fontSize:9,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.15em",margin:"0 0 12px"}}>Filters</p>
     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(150px, 1fr))",gap:10}}>
       <div><label style={lbl}>Wallet</label><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="0x..." style={inp}/></div>
-      <div><label style={lbl}>Token</label><select value={token} onChange={e=>setToken(e.target.value)} style={{...inp,cursor:"pointer"}}>{ALL_TOKENS.map(tk=><option key={tk}>{tk}</option>)}</select></div>
+      <div><label style={lbl}>Token</label><select value={token} onChange={e=>setToken(e.target.value)} style={{...inp,cursor:"pointer"}}>{tokenList.map(tk=><option key={tk}>{tk}</option>)}</select></div>
       <div><label style={lbl}>Min Amount</label><input type="number" value={minAmt} onChange={e=>setMinAmt(e.target.value)} placeholder="0" style={inp}/></div>
       <div><label style={lbl}>Max Amount</label><input type="number" value={maxAmt} onChange={e=>setMaxAmt(e.target.value)} placeholder="∞" style={inp}/></div>
       <div><label style={lbl}>Date From</label><input type="datetime-local" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} style={inp}/></div>
@@ -89,8 +138,16 @@ function FilterBar({t,search,setSearch,minAmt,setMinAmt,maxAmt,setMaxAmt,token,s
   </div>);}
 
 // ── Live Feed Tab ─────────────────────────────────────────────────────────────
-function LiveFeedTab({alerts,t,connectedAddr,burst}:{alerts:WhaleAlert[];t:typeof T.dark;connectedAddr?:string;burst:Burst}){
+function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs}:{alerts:WhaleAlert[];t:typeof T.dark;connectedAddr?:string;burst:Burst;oraclePrices:Record<string,any>;blockTxs:BlockTx[]}){
   const[expanded,setExpanded]=useState<string|null>(null);
+  const[page,setPage]=useState(0);
+  const PAGE=10;
+  const totalPages=Math.max(1,Math.ceil(alerts.length/PAGE));
+  const pageAlerts=alerts.slice(page*PAGE,(page+1)*PAGE);
+
+  // Reset to page 0 when new alerts arrive
+  const prevCount=useRef(alerts.length);
+  useEffect(()=>{if(alerts.length!==prevCount.current){setPage(0);prevCount.current=alerts.length;}},[alerts.length]);
   function rowBg(a:WhaleAlert,i:number){
     const isMyTx=connectedAddr&&(a.from.toLowerCase()===connectedAddr.toLowerCase()||a.to.toLowerCase()===connectedAddr.toLowerCase());
     if(isMyTx)return t.myTxRow;
@@ -103,15 +160,17 @@ function LiveFeedTab({alerts,t,connectedAddr,burst}:{alerts:WhaleAlert[];t:typeo
     <BurstBanner burst={burst} t={t}/>
     {!alerts.length
       ? <div style={{padding:48,textAlign:"center",color:t.muted,fontFamily:"monospace",fontSize:13}}>Waiting for activity...</div>
-      : <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
-          <thead><tr>{["Type","Token","Amount","From","To","TX Hash","Block","Time",""].map(h=><Th key={h} t={t}>{h}</Th>)}</tr></thead>
-          <tbody>{alerts.map((a,i)=>{
+      : <><div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
+          <thead><tr>{["Type","Token","Amount","USD Value","From","To","TX Hash","Block","Time",""].map(h=><Th key={h} t={t}>{h}</Th>)}</tr></thead>
+          <tbody>{pageAlerts.map((a,i)=>{
             const isMyTx=connectedAddr&&(a.from.toLowerCase()===connectedAddr.toLowerCase()||a.to.toLowerCase()===connectedAddr.toLowerCase());
+            const usd=a.type==="whale"?usdVal(num(a.amount),a.token,oraclePrices):null;
             return(<>
               <tr key={a.id} style={{background:rowBg(a,i),cursor:"pointer",transition:"background 0.15s"}} onMouseEnter={e=>(e.currentTarget.style.background=t.rowHover)} onMouseLeave={e=>(e.currentTarget.style.background=rowBg(a,i))}>
                 <Td t={t}><div style={{display:"flex",gap:4,alignItems:"center"}}><TypeBadge type={a.type} t={t}/>{isMyTx&&<span style={{fontSize:8,background:"rgba(74,222,128,0.2)",color:"#4ade80",border:"1px solid rgba(74,222,128,0.4)",borderRadius:3,padding:"1px 5px",fontFamily:"monospace"}}>YOU</span>}</div></Td>
                 <Td t={t}>{a.token?<Badge text={a.token} color={TOKEN_COLORS[a.token]} t={t}/>:<span style={{color:t.muted,fontSize:11}}>—</span>}</Td>
                 <Td t={t} accent bold>{a.type==="whale"?num(a.amount).toLocaleString():<span style={{color:t.muted}}>—</span>}</Td>
+                <Td t={t}>{usd?<span style={{color:"#4ade80",fontFamily:"monospace",fontSize:11,fontWeight:700}}>{usd}</span>:a.type==="whale"&&a.token?<span style={{color:t.muted,fontSize:10}}>{num(a.amount).toLocaleString()} {a.token}</span>:<span style={{color:t.muted,fontSize:10}}>—</span>}</Td>
                 <Td t={t}><ExLink href={a.from?addrUrl(a.from):""} label={a.from?short(a.from):"—"} t={t}/></Td>
                 <Td t={t}><ExLink href={a.to?addrUrl(a.to):""} label={a.to?short(a.to):"—"} t={t}/></Td>
                 <Td t={t}><ExLink href={a.txHash?txUrl(a.txHash):""} label={shortHash(a.txHash)} t={t}/></Td>
@@ -119,10 +178,10 @@ function LiveFeedTab({alerts,t,connectedAddr,burst}:{alerts:WhaleAlert[];t:typeo
                 <Td t={t}><span style={{color:t.muted,fontSize:10}}>{timeAgo(a.timestamp)}</span></Td>
                 <td style={{padding:"10px 12px",borderBottom:`1px solid ${t.border}`}}><button onClick={()=>setExpanded(expanded===a.id?null:a.id)} style={{fontSize:9,fontFamily:"monospace",padding:"2px 8px",borderRadius:4,cursor:"pointer",background:t.accentBg,color:t.accent,border:`1px solid ${t.border}`}}>{expanded===a.id?"▲":"▼"}</button></td>
               </tr>
-              {expanded===a.id&&(<tr key={`${a.id}-exp`} style={{background:t.accentBg}}><td colSpan={9} style={{padding:"12px 16px",borderBottom:`1px solid ${t.border}`}}>
+              {expanded===a.id&&(<tr key={`${a.id}-exp`} style={{background:t.accentBg}}><td colSpan={10} style={{padding:"12px 16px",borderBottom:`1px solid ${t.border}`}}>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(260px, 1fr))",gap:12,fontFamily:"monospace",fontSize:11}}>
                   <div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Full TX Hash</span><div style={{marginTop:4}}><ExLink href={txUrl(a.txHash)} label={a.txHash||"—"} t={t}/></div></div>
-                  {a.type==="whale"&&<><div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>From</span><div style={{marginTop:4}}><ExLink href={addrUrl(a.from)} label={a.from} t={t}/></div></div><div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>To</span><div style={{marginTop:4}}><ExLink href={addrUrl(a.to)} label={a.to} t={t}/></div></div><div><span style={{color:t.accent,fontWeight:700,marginTop:4,fontSize:9,textTransform:"uppercase"}}>Amount</span><div style={{color:t.accent,fontWeight:700,marginTop:4}}>{num(a.amount).toLocaleString()} <span style={{color:t.muted}}>{a.token}</span></div></div></>}
+                  {a.type==="whale"&&<><div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>From</span><div style={{marginTop:4}}><ExLink href={addrUrl(a.from)} label={a.from} t={t}/></div></div><div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>To</span><div style={{marginTop:4}}><ExLink href={addrUrl(a.to)} label={a.to} t={t}/></div></div><div><span style={{color:t.accent,fontWeight:700,marginTop:4,fontSize:9,textTransform:"uppercase"}}>Amount</span><div style={{color:t.accent,fontWeight:700,marginTop:4}}>{num(a.amount).toLocaleString()} <span style={{color:t.muted}}>{a.token}</span>{usd&&<span style={{color:"#4ade80",marginLeft:8}}>{usd}</span>}</div></div></>}
                   {a.type==="reaction"&&<><div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Reaction #</span><div style={{color:"#a855f7",fontWeight:700,marginTop:4}}>{a.reactionCount}</div></div><div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Handler Emitter</span><div style={{marginTop:4}}><ExLink href={addrUrl(a.handlerEmitter??"")} label={short(a.handlerEmitter??"")} t={t}/></div></div></>}
                   {a.type==="alert"&&<div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Alert At Reaction</span><div style={{color:"#f97316",fontWeight:700,marginTop:4}}>#{a.reactionCount}</div></div>}
                   <div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Block</span><div style={{color:t.text,marginTop:4}}>{a.blockNumber||"—"}</div></div>
@@ -132,7 +191,43 @@ function LiveFeedTab({alerts,t,connectedAddr,burst}:{alerts:WhaleAlert[];t:typeo
             </>);
           })}</tbody>
         </table></div>
+        {/* Pagination */}
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 4px",borderTop:`1px solid ${t.border}`}}>
+          <span style={{color:t.muted,fontSize:10,fontFamily:"monospace"}}>{alerts.length} events · page {page+1} of {totalPages}</span>
+          <div style={{display:"flex",gap:6}}>
+            <button onClick={()=>setPage(0)} disabled={page===0} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:page===0?"not-allowed":"pointer",background:t.accentBg,color:page===0?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:page===0?0.4:1}}>«</button>
+            <button onClick={()=>setPage(p=>Math.max(0,p-1))} disabled={page===0} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:page===0?"not-allowed":"pointer",background:t.accentBg,color:page===0?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:page===0?0.4:1}}>‹ Prev</button>
+            <button onClick={()=>setPage(p=>Math.min(totalPages-1,p+1))} disabled={page>=totalPages-1} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:page>=totalPages-1?"not-allowed":"pointer",background:t.accentBg,color:page>=totalPages-1?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:page>=totalPages-1?0.4:1}}>Next ›</button>
+            <button onClick={()=>setPage(totalPages-1)} disabled={page>=totalPages-1} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:page>=totalPages-1?"not-allowed":"pointer",background:t.accentBg,color:page>=totalPages-1?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:page>=totalPages-1?0.4:1}}>»</button>
+          </div>
+        </div>
+      </>
     }
+
+    {/* ── Network Activity Table ─────────────────────────────────────────── */}
+    <div style={{marginTop:20,borderTop:`1px solid ${t.border}`,paddingTop:14}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+        <span style={{color:"#4ade80",fontSize:10,fontFamily:"monospace",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.12em"}}>🌐 Network Activity</span>
+        <span style={{color:t.muted,fontSize:9,fontFamily:"monospace"}}>All Somnia block transactions (real-chain, any amount)</span>
+        <span style={{marginLeft:"auto",color:t.muted,fontSize:9,fontFamily:"monospace"}}>{blockTxs.length} txns</span>
+      </div>
+      {blockTxs.length===0
+        ? <div style={{padding:"24px",textAlign:"center",color:t.muted,fontSize:11,fontFamily:"monospace"}}>Waiting for block activity... (requires dev server running)</div>
+        : <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
+            <thead><tr>{["From","To","Amount (STT)","TX Hash","Block","Time"].map(h=><Th key={h} t={t}>{h}</Th>)}</tr></thead>
+            <tbody>{blockTxs.slice(0,50).map((tx,i)=>(
+              <tr key={tx.id} style={{background:i%2===0?t.tableRow:t.tableAlt}}>
+                <Td t={t}><ExLink href={addrUrl(tx.from)} label={short(tx.from)} t={t}/></Td>
+                <Td t={t}><ExLink href={addrUrl(tx.to)}   label={short(tx.to)}   t={t}/></Td>
+                <Td t={t} accent bold>{tx.amountRaw>0?tx.amount:<span style={{color:t.muted,fontSize:10}}>contract call</span>}</Td>
+                <Td t={t}><ExLink href={txUrl(tx.txHash)} label={shortHash(tx.txHash)} t={t}/></Td>
+                <Td t={t}><span style={{color:t.subtext,fontSize:11}}>{tx.blockNumber}</span></Td>
+                <Td t={t}><span style={{color:t.muted,fontSize:10}}>{timeAgo(tx.timestamp)}</span></Td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+      }
+    </div>
   </div>);}
 
 // ── My Wallet Tab ─────────────────────────────────────────────────────────────
@@ -178,7 +273,7 @@ function MyWalletTab({alerts,connectedAddr,t}:{alerts:WhaleAlert[];connectedAddr
   </div>);}
 
 // ── Analytics Tab ─────────────────────────────────────────────────────────────
-function AnalyticsTab({alerts,t}:{alerts:WhaleAlert[];t:typeof T.dark}){
+function AnalyticsTab({alerts,t,oraclePrices}:{alerts:WhaleAlert[];t:typeof T.dark;oraclePrices:Record<string,OraclePrice>}){
   const whales      = useMemo(()=>alerts.filter(a=>a.type==="whale"),[alerts]);
   const alertEvents = useMemo(()=>alerts.filter(a=>a.type==="alert"),[alerts]);
   const totalVol    = useMemo(()=>whales.reduce((s,a)=>s+num(a.amount),0),[whales]);
@@ -329,6 +424,30 @@ function AnalyticsTab({alerts,t}:{alerts:WhaleAlert[];t:typeof T.dark}){
           })}</tbody>
         </table>
     }
+
+    {/* Oracle Price Reference Panel */}
+    {Object.keys(oraclePrices).length>0&&(<>
+      <p style={{color:t.muted,fontSize:9,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.15em",margin:"28px 0 14px"}}>🔮 Live Oracle Prices (Somnia Testnet)</p>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(140px, 1fr))",gap:10,marginBottom:12}}>
+        {Object.values(oraclePrices).map(p=>{
+          const color=SYMBOL_COLORS[p.symbol]??t.accent;
+          return(
+            <div key={p.symbol} style={{background:t.pageBg,border:`1px solid ${p.stale?"rgba(249,115,22,0.3)":color+"33"}`,borderRadius:10,padding:"12px 14px"}}>
+              <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
+                <span style={{fontSize:9,fontFamily:"monospace",fontWeight:700,color,padding:"1px 6px",borderRadius:3,background:`${color}18`}}>{p.symbol}/USD</span>
+                {p.stale&&<span style={{fontSize:8,color:"#f97316",fontFamily:"monospace"}}>STALE</span>}
+              </div>
+              <p style={{color:p.stale?t.muted:t.text,fontSize:16,fontWeight:700,fontFamily:"monospace",margin:0}}>{formatUsd(p.price)}</p>
+              <p style={{color:t.muted,fontSize:8,fontFamily:"monospace",margin:"4px 0 0"}}>{p.source} · {new Date(p.updatedAt).toLocaleTimeString()}</p>
+            </div>
+          );
+        })}
+      </div>
+      <p style={{color:t.muted,fontSize:9,fontFamily:"monospace",margin:"4px 0 0"}}>
+        Powered by Protofire (ETH/BTC/USDC) and DIA (WETH/USDT/SOL/SOMI) oracles deployed on Somnia.
+        STT/USD feed not yet available — native STT transfers show token amounts only.
+      </p>
+    </>)}
   </div>);}
 
 // ── Charts Tab ────────────────────────────────────────────────────────────────
@@ -399,8 +518,9 @@ function LeaderboardTab({alerts,t,persistedEntries}:{alerts:WhaleAlert[];t:typeo
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function WhaleDashboard(){
-  const{alerts,connected,error}=useWhaleAlerts();
+  const{alerts,blockTxs,connected,error}=useWhaleAlerts();
   const{address:walletAddr,isConnected}=useAccount();
+  const{prices:oraclePrices,loading:pricesLoading,lastFetchedAt}=useOraclePrices(10_000);
   const[simulating,setSimulating]=useState(false);
   const[soundEnabled,setSoundEnabled]=useState(false);
   const[theme,setTheme]=useState<Theme>("dark");
@@ -428,6 +548,37 @@ export default function WhaleDashboard(){
   const alertCount = useMemo(()=>alerts.filter(a=>a.type==="alert").length,[alerts]);
   const momentumCount = useMemo(()=>alerts.filter(a=>a.type==="momentum").length,[alerts]);
   const totalVol  = useMemo(()=>whales.reduce((s,a)=>s+num(a.amount),0),[whales]);
+  const largestTransfer = useMemo(()=>whales.reduce((max,a)=>Math.max(max,num(a.amount)),0),[whales]);
+
+  // Network-wide stats (all block transactions regardless of amount)
+  const networkTotalSTT  = useMemo(()=>blockTxs.reduce((s,tx)=>s+tx.amountRaw,0),[blockTxs]);
+  const networkLargestSTT = useMemo(()=>blockTxs.reduce((max,tx)=>Math.max(max,tx.amountRaw),0),[blockTxs]);
+
+  // Dynamic token list from actual events — always current, no hardcoding
+  const tokenList = useMemo(()=>{
+    const seen = new Set<string>();
+    whales.forEach(a=>{ if(a.token) seen.add(a.token); });
+    return ["All", ...Array.from(seen).sort()];
+  },[whales]);
+
+  // USD totals — sum per-token using oracle prices where available
+  const totalVolUSD = useMemo(()=>{
+    let sum=0; let partial=false;
+    whales.forEach(a=>{
+      const key=TOKEN_PRICE_MAP[a.token];
+      if(key&&oraclePrices[key]?.price){sum+=num(a.amount)*oraclePrices[key].price;}
+      else partial=true;
+    });
+    return {sum,partial};
+  },[whales,oraclePrices]);
+
+  const largestUSD = useMemo(()=>{
+    if(!whales.length) return null;
+    const top=whales.reduce((max,a)=>num(a.amount)>num(max.amount)?a:max,whales[0]);
+    const key=TOKEN_PRICE_MAP[top.token];
+    if(!key||!oraclePrices[key]?.price) return null;
+    return num(top.amount)*oraclePrices[key].price;
+  },[whales,oraclePrices]);
 
   // ── Burst detection (≥3 whale events in 60s) ─────────────────────────────
   const burst: Burst = useMemo(()=>{
@@ -440,7 +591,7 @@ export default function WhaleDashboard(){
     const tkCounts:Record<string,number>={};
     recent.forEach(a=>{tkCounts[a.token]=(tkCounts[a.token]||0)+1;});
     const dominantToken=Object.entries(tkCounts).sort((a,b)=>b[1]-a[1])[0]?.[0]??"";
-    return {count:recent.length,volume:vol,windowSec:Math.round((now-oldest)/1000),dominantToken};
+    return {count:recent.length,volume:vol,windowSec:Math.round((now-oldest)/1000),dominantToken,tokenBreakdown:tkCounts};
   },[whales]);
 
   const filtered=useMemo(()=>{
@@ -506,21 +657,29 @@ export default function WhaleDashboard(){
           </div>
         </div>
 
-        {/* Global KPI row — 7 cards */}
-        <div style={{display:"grid",gridTemplateColumns:"repeat(7, 1fr)",gap:8,marginBottom:12}}>
+        {/* Global KPI row */}
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(140px, 1fr))",gap:8,marginBottom:12}}>
           <KpiCard t={t} label="Whale Events"     value={whales.length}/>
           <KpiCard t={t} label="Reactions"         value={reactions.length}   sub="Phase 2"/>
           <KpiCard t={t} label="Alerts"            value={alertCount}          sub="Phase 2"/>
           <KpiCard t={t} label="🔥 Momentum"       value={momentumCount}       color="#ef4444" sub="on-chain bursts"/>
-          <KpiCard t={t} label="Total Volume"      value={Math.round(totalVol).toLocaleString()} sub="tokens"/>
-          <KpiCard t={t} label="Largest Transfer"  value={whales[0]?Math.round(num(whales[0].amount)).toLocaleString():"—"} sub="tokens"/>
-          <KpiCard t={t} label="Filtered"          value={filtered.length}/>
+          <KpiCard t={t} label="🐋 Whale Volume"
+            value={totalVolUSD.sum>0 ? (totalVolUSD.sum>=1e9?`$${(totalVolUSD.sum/1e9).toFixed(2)}B`:totalVolUSD.sum>=1e6?`$${(totalVolUSD.sum/1e6).toFixed(2)}M`:`$${Math.round(totalVolUSD.sum).toLocaleString()}`) : Math.round(totalVol).toLocaleString()}
+            sub={totalVolUSD.sum>0 ? (totalVolUSD.partial?"~USD partial":"~USD est.") : "tokens"}/>
+          <KpiCard t={t} label="🐋 Whale Largest"
+            value={largestUSD!=null ? (largestUSD>=1e9?`$${(largestUSD/1e9).toFixed(2)}B`:largestUSD>=1e6?`$${(largestUSD/1e6).toFixed(2)}M`:`$${Math.round(largestUSD).toLocaleString()}`) : largestTransfer>0?Math.round(largestTransfer).toLocaleString():"—"}
+            sub={largestUSD!=null?"~USD est.":"tokens"}/>
+          <KpiCard t={t} label="🌐 Network Volume"  value={networkTotalSTT>0?`${Math.round(networkTotalSTT).toLocaleString()}`:"—"} sub="STT (all txns)"/>
+          <KpiCard t={t} label="🌐 Network Largest" value={networkLargestSTT>0?`${Math.round(networkLargestSTT).toLocaleString()}`:"—"} sub="STT (single txn)"/>
         </div>
 
         {/* Tabs */}
         <div style={{display:"flex",gap:4,overflowX:"auto",paddingBottom:2}}>
           {allTabs.map(tb=>(<button key={tb.key} onClick={()=>setTab(tb.key as any)} style={{...btn,padding:"5px 14px",background:tab===tb.key?t.accentBg:"transparent",color:tab===tb.key?t.accent:t.muted,border:`1px solid ${tab===tb.key?t.accent:"transparent"}`}}>{tb.label}</button>))}
         </div>
+
+        {/* Live Price Ticker */}
+        <PriceTicker prices={oraclePrices} loading={pricesLoading} t={t} lastFetchedAt={lastFetchedAt}/>
       </div>
     </div>
 
@@ -528,10 +687,10 @@ export default function WhaleDashboard(){
     <div style={{flex:1,overflowY:"auto"}}>
       {error&&<div style={{background:t.errBg,border:`1px solid ${t.errBorder}`,margin:"12px 20px 0",borderRadius:10,padding:12,color:t.errText,fontSize:12,fontFamily:"monospace"}}>⚠ {error}</div>}
       <div style={{maxWidth:1400,margin:"0 auto",padding:"16px 20px"}}>
-        {showFilters&&<FilterBar t={t} search={search} setSearch={setSearch} minAmt={minAmt} setMinAmt={setMinAmt} maxAmt={maxAmt} setMaxAmt={setMaxAmt} token={tokenFilter} setToken={setTokenFilter} timePreset={timePreset} setTimePreset={setTimePreset} dateFrom={dateFrom} setDateFrom={setDateFrom} dateTo={dateTo} setDateTo={setDateTo} showTypes={showTypes} setShowTypes={setShowTypes}/>}
+        {showFilters&&<FilterBar t={t} search={search} setSearch={setSearch} minAmt={minAmt} setMinAmt={setMinAmt} maxAmt={maxAmt} setMaxAmt={setMaxAmt} token={tokenFilter} setToken={setTokenFilter} timePreset={timePreset} setTimePreset={setTimePreset} dateFrom={dateFrom} setDateFrom={setDateFrom} dateTo={dateTo} setDateTo={setDateTo} showTypes={showTypes} setShowTypes={setShowTypes} tokenList={tokenList}/>}
         <div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:16,overflow:"hidden"}}>
-          {tab==="feed"        && <LiveFeedTab    alerts={filtered} t={t} connectedAddr={walletAddr} burst={burst}/>}
-          {tab==="analytics"   && <AnalyticsTab   alerts={filtered} t={t}/>}
+          {tab==="feed"        && <LiveFeedTab    alerts={filtered} t={t} connectedAddr={walletAddr} burst={burst} oraclePrices={oraclePrices} blockTxs={blockTxs}/>}
+          {tab==="analytics"   && <AnalyticsTab   alerts={filtered} t={t} oraclePrices={oraclePrices}/>}
           {tab==="charts"      && <ChartsTab      alerts={filtered} t={t}/>}
           {tab==="leaderboard" && <LeaderboardTab alerts={filtered} t={t} persistedEntries={persistedEntries}/>}
           {tab==="flow"        && <TokenFlowTab   alerts={filtered} t={t}/>}

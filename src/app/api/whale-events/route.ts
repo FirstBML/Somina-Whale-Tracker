@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { SDK } from "@somnia-chain/reactivity";
 import {
   createPublicClient, createWalletClient, webSocket, http,
-  keccak256, toBytes, defineChain, parseAbiItem, decodeEventLog
+  keccak256, toBytes, defineChain, parseAbiItem, decodeEventLog, parseEther,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
@@ -54,8 +54,42 @@ const MOMENTUM_ABI = [{
   ],
 }] as const;
 
+// ABI for calling reportTransfer on WhaleTracker
+const TRACKER_ABI = [{
+  name: "reportTransfer",
+  type: "function",
+  stateMutability: "nonpayable",
+  inputs: [
+    { name: "from",   type: "address" },
+    { name: "to",     type: "address" },
+    { name: "amount", type: "uint256" },
+  ],
+  outputs: [],
+}] as const;
+
+// Protofire ETH/USD feed on Somnia testnet
+const ETH_USD_FEED = "0xd9132c1d762D432672493F640a63B758891B449e" as const;
+const AGGREGATOR_ABI = [{
+  name: "latestRoundData", type: "function", stateMutability: "view",
+  inputs: [], outputs: [
+    { name: "roundId",         type: "uint80"  },
+    { name: "answer",          type: "int256"  },
+    { name: "startedAt",       type: "uint256" },
+    { name: "updatedAt",       type: "uint256" },
+    { name: "answeredInRound", type: "uint80"  },
+  ],
+}, {
+  name: "decimals", type: "function", stateMutability: "view",
+  inputs: [], outputs: [{ type: "uint8" }],
+}] as const;
+
+// USD whale threshold — triggers when transfer value ≥ this in USD
+const USD_WHALE_THRESHOLD = 100_000; // $100k
+// STT fallback threshold (no USD feed available for native STT)
+const WATCH_THRESHOLD = parseEther("1000");
+
 export type CacheEntry = {
-  type: "whale" | "reaction" | "alert" | "momentum";
+  type: "whale" | "reaction" | "alert" | "momentum" | "block_tx";
   receivedAt: number;
   raw: {
     from: string; to: string; amount: string; timestamp: string; token: string;
@@ -98,11 +132,14 @@ async function persistLeaderEntry(wallet: string, entry: LeaderEntry) {
 }
 
 // ── Server state ──────────────────────────────────────────────────────────────
-const MAX_CACHE = 200;
+const MAX_CACHE    = 200;  // whale/reaction/alert/momentum events
+const MAX_BLOCK_TX = 500;  // raw block transactions
 const alertCache: CacheEntry[] = [];
-let trackerSub: { unsubscribe: () => Promise<any> } | null = null;
-let handlerSub: { unsubscribe: () => Promise<any> } | null = null;
-let momentumSub: { unsubscribe: () => Promise<any> } | null = null;
+let trackerSub:   { unsubscribe: () => Promise<any> } | null = null;
+let handlerSub:   { unsubscribe: () => Promise<any> } | null = null;
+let momentumSub:  { unsubscribe: () => Promise<any> } | null = null;
+let blockWatcher: (() => void) | null = null;  // unwatch fn
+let reporting = false; // serialise reportTransfer calls to avoid nonce collisions
 const encoder     = new TextEncoder();
 const controllers = new Set<ReadableStreamDefaultController>();
 
@@ -112,7 +149,13 @@ function broadcast(entry: CacheEntry) {
 }
 function push(entry: CacheEntry) {
   alertCache.push(entry);
-  if (alertCache.length > MAX_CACHE) alertCache.shift();
+  const limit = entry.type === "block_tx" ? MAX_BLOCK_TX : MAX_CACHE;
+  // Trim only entries of same type to avoid evicting whale events with block_tx flood
+  const typeEntries = alertCache.filter(e => e.type === entry.type);
+  if (typeEntries.length > limit) {
+    const idx = alertCache.findIndex(e => e.type === entry.type);
+    if (idx !== -1) alertCache.splice(idx, 1);
+  }
   broadcast(entry);
 }
 
@@ -167,9 +210,105 @@ async function loadPastEvents() {
   console.log(`✅ Loaded ${logs.length} past WhaleTransfer events`);
 }
 
+// ── Real-chain block watcher ──────────────────────────────────────────────────
+async function getEthUsdPrice(pub: ReturnType<typeof createPublicClient>): Promise<number> {
+  try {
+    const [roundData, decimals] = await Promise.all([
+      pub.readContract({ address: ETH_USD_FEED, abi: AGGREGATOR_ABI, functionName: "latestRoundData" }),
+      pub.readContract({ address: ETH_USD_FEED, abi: AGGREGATOR_ABI, functionName: "decimals" }),
+    ]);
+    const [, answer] = roundData as [bigint, bigint, bigint, bigint, bigint];
+    return Number(answer) / 10 ** (decimals as number);
+  } catch { return 0; }
+}
+
+async function startBlockWatcher(
+  CONTRACT: `0x${string}`,
+  walClient: ReturnType<typeof createWalletClient>,
+  pubClient: ReturnType<typeof createPublicClient>,
+) {
+  const httpPub = createPublicClient({ chain: somniaTestnet, transport: http("https://dream-rpc.somnia.network") });
+
+  // Cache ETH price — refresh every 2 min
+  let ethUsd = await getEthUsdPrice(httpPub);
+  setInterval(async () => { ethUsd = await getEthUsdPrice(httpPub) || ethUsd; }, 120_000);
+  console.log(`💰 ETH/USD oracle price: $${ethUsd.toFixed(2)} (Protofire)`);
+
+  const unwatch = httpPub.watchBlocks({
+    includeTransactions: true,
+    onBlock: async (block) => {
+      for (const tx of block.transactions) {
+        if (typeof tx !== "object") continue;
+        const val  = tx.value ?? 0n;
+        const from = tx.from as `0x${string}`;
+        const to   = (tx.to ?? "0x0000000000000000000000000000000000000000") as `0x${string}`;
+        const sttAmount = Number(val) / 1e18;
+        const txHash = tx.hash ?? "";
+        const blockNum = block.number?.toString() ?? "";
+        const ts = `0x${Math.floor(Date.now() / 1000).toString(16)}`;
+
+        // Push ALL transactions as block_tx for network monitoring
+        if (tx.hash) {
+          push({
+            type: "block_tx", receivedAt: Date.now(),
+            raw: {
+              from, to,
+              amount: Math.round(sttAmount).toString(),
+              timestamp: ts, token: sttAmount > 0 ? "STT" : "contract",
+              txHash, blockNumber: blockNum, blockHash: block.hash ?? "",
+            },
+          });
+        }
+
+        // Only report whale-threshold transactions to the contract
+        if (val < WATCH_THRESHOLD) continue;
+        if (reporting) continue;
+        reporting = true;
+        try {
+          const hash = await walClient.writeContract({
+            address:      CONTRACT,
+            abi:          TRACKER_ABI,
+            functionName: "reportTransfer",
+            args:         [from, to, val],
+            chain:        somniaTestnet,
+            account:      walClient.account!,
+          });
+          const usdEstimate = ethUsd > 0 ? sttAmount * ethUsd : 0;
+          const label = usdEstimate > 0
+            ? `~$${Math.round(usdEstimate).toLocaleString()} USD`
+            : `${Math.round(sttAmount).toLocaleString()} STT`;
+          console.log(`🌊 Real whale detected: ${label}  ${from.slice(0,8)}→${to.slice(0,8)}  tx:${hash.slice(0,10)}`);
+        } catch (e: any) {
+          if (!e?.message?.includes("below threshold")) {
+            console.error("reportTransfer error:", e?.message?.split("\n")[0]);
+          }
+        } finally {
+          reporting = false;
+        }
+      }
+    },
+    onError: (e) => console.error("Block watcher error:", e.message),
+  });
+
+  blockWatcher = unwatch;
+  console.log(`✅ Real-chain block watcher started (STT threshold: ${Number(WATCH_THRESHOLD)/1e18} STT | ETH/USD: $${ethUsd.toFixed(2)})`);
+}
+
+// Auto-reconnect after WebSocket drop (debounced 3s)
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  console.warn("⚠ WebSocket closed — reconnecting in 3s...");
+  reconnectTimer = setTimeout(async () => {
+    reconnectTimer = null;
+    try { await ensureSubscriptions(); console.log("✅ Reconnected."); }
+    catch(e: any) { console.error("Reconnect failed:", e.message); scheduleReconnect(); }
+  }, 3000);
+}
+
 // ── SDK subscriptions ─────────────────────────────────────────────────────────
 async function ensureSubscriptions() {
-  if (trackerSub && handlerSub && momentumSub) return;
+  if (trackerSub && handlerSub && momentumSub && blockWatcher) return;
   await loadPastEvents();
 
   const CONTRACT = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS  as `0x${string}`;
@@ -226,7 +365,10 @@ async function ensureSubscriptions() {
           }
         } catch (e) { console.error("WhaleTransfer parse error:", e); }
       },
-      onError: (e: Error) => console.error("Tracker SDK error:", e),
+      onError: (e: Error) => {
+        console.error("Tracker SDK error:", (e as any).shortMessage ?? e.message);
+        if (e.message?.includes("socket") || e.message?.includes("closed")) { trackerSub = null; handlerSub = null; momentumSub = null; scheduleReconnect(); }
+      },
     });
     if (r1 instanceof Error) throw r1;
     trackerSub = r1;
@@ -258,7 +400,10 @@ async function ensureSubscriptions() {
           });
         } catch (e) { console.error("Reaction parse error:", e); }
       },
-      onError: (e: Error) => console.error("Handler SDK error:", e),
+      onError: (e: Error) => {
+        console.error("Handler SDK error:", (e as any).shortMessage ?? e.message);
+        if (e.message?.includes("socket") || e.message?.includes("closed")) { trackerSub = null; handlerSub = null; momentumSub = null; scheduleReconnect(); }
+      },
     });
 
     const r3 = await sdk.subscribe({
@@ -283,7 +428,10 @@ async function ensureSubscriptions() {
           });
         } catch (e) { console.error("Alert parse error:", e); }
       },
-      onError: (e: Error) => console.error("Alert SDK error:", e),
+      onError: (e: Error) => {
+        console.error("Alert SDK error:", (e as any).shortMessage ?? e.message);
+        if (e.message?.includes("socket") || e.message?.includes("closed")) { trackerSub = null; handlerSub = null; momentumSub = null; scheduleReconnect(); }
+      },
     });
 
     if (r2 instanceof Error) {
@@ -317,7 +465,10 @@ async function ensureSubscriptions() {
           });
         } catch (e) { console.error("Momentum parse error:", e); }
       },
-      onError: (e: Error) => console.error("Momentum SDK error:", e),
+      onError: (e: Error) => {
+        console.error("Momentum SDK error:", (e as any).shortMessage ?? e.message);
+        if (e.message?.includes("socket") || e.message?.includes("closed")) { trackerSub = null; handlerSub = null; momentumSub = null; scheduleReconnect(); }
+      },
     });
     if (!(r4 instanceof Error)) {
       momentumSub = r4;
@@ -325,6 +476,11 @@ async function ensureSubscriptions() {
     }
   } else if (!HANDLER) {
     console.log("ℹ HANDLER_CONTRACT_ADDRESS not set — skipping Phase 2 subscriptions");
+  }
+
+  // Start real-chain watcher regardless of handler status
+  if (!blockWatcher) {
+    await startBlockWatcher(CONTRACT, walClient, pubClient);
   }
 }
 

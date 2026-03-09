@@ -101,11 +101,19 @@ async function writeToStreams(job: WriteJob) {
   console.log(`✅ Streams: ${job.wallet.slice(0, 10)}… updated`);
 }
 
-// Safely unwrap SDK field — may be { value, type } object or raw primitive
+// Safely unwrap SDK field — may be nested { value, type } objects
 function unwrap(x: any): any {
   if (x === null || x === undefined) return x;
-  if (typeof x === "object" && "value" in x) return x.value;
+  if (typeof x === "object" && "value" in x) return unwrap(x.value);
   return x;
+}
+
+function safeBigInt(x: any): bigint {
+  try {
+    const v = unwrap(x);
+    if (v === null || v === undefined) return 0n;
+    return BigInt(String(v));
+  } catch { return 0n; }
 }
 
 // ── GET ───────────────────────────────────────────────────────────────────────
@@ -126,12 +134,12 @@ export async function GET(_req: NextRequest) {
     const entries: LeaderboardEntry[] = (data as any[][])
       .map((row: any[]) => {
         const [wallet, totalVolume, txCount, lastSeen] = row.map(unwrap);
-        const volRaw = BigInt(String(totalVolume ?? "0"));
+        const volRaw = safeBigInt(totalVolume);
         return {
-          wallet:      String(wallet ?? ""),
+          wallet:      String(unwrap(wallet) ?? ""),
           totalVolume: (volRaw / BigInt(1e18)).toString(),
-          txCount:     Number(txCount ?? 0),
-          lastSeen:    Number(lastSeen ?? 0) * 1000,
+          txCount:     Number(unwrap(txCount) ?? 0),
+          lastSeen:    Number(unwrap(lastSeen) ?? 0) * 1000,
         };
       })
       .filter(e => e.wallet.startsWith("0x"))

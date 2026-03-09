@@ -59,8 +59,11 @@ export async function POST(_req: NextRequest) {
     const amountEth = String(Math.floor(Math.random() * 490_000) + 10_000);
     const amount    = parseEther(amountEth);
 
-    // Fetch nonce explicitly to avoid stale nonce from viem's cache
-    const nonce = await pubClient.getTransactionCount({ address: account.address });
+    // Always use pending to get latest nonce including unconfirmed txns
+    const nonce = await pubClient.getTransactionCount({
+      address: account.address,
+      blockTag: "pending",
+    });
 
     let hash: `0x${string}`;
     try {
@@ -88,12 +91,10 @@ export async function POST(_req: NextRequest) {
       }
     }
 
-    const receipt = await pubClient.waitForTransactionReceipt({ hash });
-
+    // Fire and return immediately — don't wait for receipt (testnet can be slow)
     return NextResponse.json({
       success:     true,
       txHash:      hash,
-      blockNumber: receipt.blockNumber.toString(),
       token,
       amount:      amountEth,
     });

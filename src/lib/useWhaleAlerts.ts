@@ -4,19 +4,30 @@ import { useEffect, useRef, useState } from "react";
 export type AlertType = "whale" | "reaction" | "alert" | "momentum";
 
 export type WhaleAlert = {
-  id:            string;
-  type:          AlertType;
-  from:          string;
-  to:            string;
-  amount:        string;
-  amountRaw:     bigint;
-  timestamp:     number;
-  token:         string;
-  txHash:        string;
-  blockNumber:   string;
-  blockHash:     string;
+  id:             string;
+  type:           AlertType;
+  from:           string;
+  to:             string;
+  amount:         string;
+  amountRaw:      bigint;
+  timestamp:      number;
+  token:          string;
+  txHash:         string;
+  blockNumber:    string;
+  blockHash:      string;
   reactionCount?: string;
   handlerEmitter?: string;
+};
+
+export type BlockTx = {
+  id:          string;
+  from:        string;
+  to:          string;
+  amount:      string;
+  amountRaw:   number;
+  txHash:      string;
+  blockNumber: string;
+  timestamp:   number;
 };
 
 function parseEntry(raw: any): WhaleAlert | null {
@@ -67,10 +78,30 @@ function parseEntry(raw: any): WhaleAlert | null {
   }
 }
 
+function parseBlockTx(msg: any): BlockTx | null {
+  try {
+    const r = msg?.raw ?? msg;
+    const amountRaw = Number(r.amount ?? 0);
+    return {
+      id:          `btx-${Date.now()}-${Math.random()}`,
+      from:        r.from        ?? "",
+      to:          r.to          ?? "",
+      amount:      amountRaw.toLocaleString(),
+      amountRaw,
+      txHash:      r.txHash      ?? "",
+      blockNumber: r.blockNumber ?? "",
+      timestamp:   Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function useWhaleAlerts(maxAlerts = 200) {
-  const [alerts, setAlerts]       = useState<WhaleAlert[]>([]);
+  const [alerts,    setAlerts]    = useState<WhaleAlert[]>([]);
+  const [blockTxs,  setBlockTxs]  = useState<BlockTx[]>([]);
   const [connected, setConnected] = useState(false);
-  const [error, setError]         = useState<string | null>(null);
+  const [error,     setError]     = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
@@ -81,9 +112,15 @@ export function useWhaleAlerts(maxAlerts = 200) {
       const msg = JSON.parse(e.data);
 
       if (msg.type === "init") {
-        const parsed = (msg.alerts as any[])
+        const allEntries = msg.alerts as any[];
+        const whaleParsed = allEntries
+          .filter(a => a.type !== "block_tx")
           .map(parseEntry).filter(Boolean).reverse() as WhaleAlert[];
-        setAlerts(parsed.slice(0, maxAlerts));
+        const blockParsed = allEntries
+          .filter(a => a.type === "block_tx")
+          .map(parseBlockTx).filter(Boolean).reverse() as BlockTx[];
+        setAlerts(whaleParsed.slice(0, maxAlerts));
+        setBlockTxs(blockParsed.slice(0, 500));
       }
       if (msg.type === "connected") setConnected(true);
       if (msg.type === "error")     setError(msg.message);
@@ -92,11 +129,15 @@ export function useWhaleAlerts(maxAlerts = 200) {
         const alert = parseEntry(msg);
         if (alert) setAlerts(prev => [alert, ...prev].slice(0, maxAlerts));
       }
+      if (msg.type === "block_tx") {
+        const tx = parseBlockTx(msg);
+        if (tx) setBlockTxs(prev => [tx, ...prev].slice(0, 500));
+      }
     };
 
     es.onerror = () => setError("SSE connection lost. Retrying...");
     return () => es.close();
   }, [maxAlerts]);
 
-  return { alerts, connected, error };
+  return { alerts, blockTxs, connected, error };
 }

@@ -31,7 +31,6 @@ async function main() {
   const walletClient = createWalletClient({ account, chain: somniaTestnet, transport: http() });
   const sdk = new SDK({ public: publicClient, wallet: walletClient });
 
-  // Topic0 = keccak256 of the updated event signature (with string token)
   const TOPIC = keccak256(toBytes("WhaleTransfer(address,address,uint256,uint256,string)"));
   console.log("\nWhaleTransfer topic0:", TOPIC);
 
@@ -45,7 +44,7 @@ async function main() {
     eventTopics:          [TOPIC],      // filter to WhaleTransfer only
     priorityFeePerGas:    parseGwei("2"),
     maxFeePerGas:         parseGwei("10"),
-    gasLimit:             500_000n,
+    gasLimit:             3_000_000n,
     isGuaranteed:         true,         // retry if block is full
     isCoalesced:          false,        // one call per event (not batched)
   });
