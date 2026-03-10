@@ -86,7 +86,7 @@ const AGGREGATOR_ABI = [{
 // USD whale threshold — triggers when transfer value ≥ this in USD
 const USD_WHALE_THRESHOLD = 100_000; // $100k
 // STT fallback threshold (no USD feed available for native STT)
-const WATCH_THRESHOLD = parseEther("1000");
+const WATCH_THRESHOLD = parseEther("0.001"); // lowered for testnet testing
 
 export type CacheEntry = {
   type: "whale" | "reaction" | "alert" | "momentum" | "block_tx";
@@ -135,6 +135,9 @@ async function persistLeaderEntry(wallet: string, entry: LeaderEntry) {
 const MAX_CACHE    = 200;  // whale/reaction/alert/momentum events
 const MAX_BLOCK_TX = 500;  // raw block transactions
 const alertCache: CacheEntry[] = [];
+let totalBlockTxsSeen = 0;
+let networkLargestSTT = 0;  // running max STT, never resets
+const BLOCK_TX_WINDOW_MS = 5 * 60 * 1000;
 let trackerSub:   { unsubscribe: () => Promise<any> } | null = null;
 let handlerSub:   { unsubscribe: () => Promise<any> } | null = null;
 let momentumSub:  { unsubscribe: () => Promise<any> } | null = null;
@@ -144,18 +147,29 @@ const encoder     = new TextEncoder();
 const controllers = new Set<ReadableStreamDefaultController>();
 
 function broadcast(entry: CacheEntry) {
-  const msg = encoder.encode(`data: ${JSON.stringify(entry)}\n\n`);
+  const payload = entry.type === "block_tx"
+    ? { ...entry, totalBlockTxsSeen, networkLargestSTT }
+    : entry;
+  const msg = encoder.encode(`data: ${JSON.stringify(payload)}\n\n`);
   controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
 }
 function push(entry: CacheEntry) {
-  alertCache.push(entry);
-  const limit = entry.type === "block_tx" ? MAX_BLOCK_TX : MAX_CACHE;
-  // Trim only entries of same type to avoid evicting whale events with block_tx flood
-  const typeEntries = alertCache.filter(e => e.type === entry.type);
-  if (typeEntries.length > limit) {
-    const idx = alertCache.findIndex(e => e.type === entry.type);
-    if (idx !== -1) alertCache.splice(idx, 1);
+  if (entry.type === "block_tx") {
+    totalBlockTxsSeen++;
+    const amt = Number((entry.raw as any)?.amount ?? 0);
+    if (amt > networkLargestSTT) networkLargestSTT = amt;
+    // Evict entries older than window to keep memory bounded
+    const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
+    let i = 0;
+    while (i < alertCache.length && alertCache[i].type === "block_tx" && alertCache[i].receivedAt < cutoff) i++;
+    if (i > 0) alertCache.splice(0, i);
+  } else {
+    if (alertCache.filter(e => e.type !== "block_tx").length >= MAX_CACHE) {
+      const idx = alertCache.findIndex(e => e.type !== "block_tx");
+      if (idx !== -1) alertCache.splice(idx, 1);
+    }
   }
+  alertCache.push(entry);
   broadcast(entry);
 }
 
@@ -234,7 +248,13 @@ async function startBlockWatcher(
   setInterval(async () => { ethUsd = await getEthUsdPrice(httpPub) || ethUsd; }, 120_000);
   console.log(`💰 ETH/USD oracle price: $${ethUsd.toFixed(2)} (Protofire)`);
 
-  const unwatch = httpPub.watchBlocks({
+  // WebSocket for real-time block notifications (Somnia = 0.1s blocks, HTTP polling too slow)
+  const wsPub = createPublicClient({
+    chain: somniaTestnet,
+    transport: webSocket("wss://dream-rpc.somnia.network/ws"),
+  });
+
+  const unwatch = wsPub.watchBlocks({
     includeTransactions: true,
     onBlock: async (block) => {
       for (const tx of block.transactions) {
@@ -253,8 +273,8 @@ async function startBlockWatcher(
             type: "block_tx", receivedAt: Date.now(),
             raw: {
               from, to,
-              amount: Math.round(sttAmount).toString(),
-              timestamp: ts, token: sttAmount > 0 ? "STT" : "contract",
+              amount: sttAmount > 0 ? sttAmount.toFixed(6) : "0",
+              timestamp: ts, token: "STT",
               txHash, blockNumber: blockNum, blockHash: block.hash ?? "",
             },
           });
@@ -264,6 +284,18 @@ async function startBlockWatcher(
         if (val < WATCH_THRESHOLD) continue;
         if (reporting) continue;
         reporting = true;
+
+        // Push whale event IMMEDIATELY to dashboard — don't wait for RE round-trip
+        push({
+          type: "whale", receivedAt: Date.now(),
+          raw: {
+            from, to,
+            amount: `0x${val.toString(16)}`,
+            timestamp: `0x${Math.floor(Date.now()/1000).toString(16)}`,
+            token: "STT", txHash, blockNumber: blockNum, blockHash: block.hash ?? "",
+          },
+        });
+
         try {
           const hash = await walClient.writeContract({
             address:      CONTRACT,
@@ -496,7 +528,7 @@ export async function GET(req: NextRequest) {
   const stream = new ReadableStream({
     start(controller) {
       controllers.add(controller);
-      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "init", alerts: alertCache })}\n\n`));
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "init", alerts: alertCache, totalBlockTxsSeen, networkLargestSTT })}\n\n`));
       controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "connected" })}\n\n`));
 
       const ping = setInterval(() => {

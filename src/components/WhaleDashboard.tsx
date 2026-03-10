@@ -138,12 +138,15 @@ function FilterBar({t,search,setSearch,minAmt,setMinAmt,maxAmt,setMaxAmt,token,s
   </div>);}
 
 // ── Live Feed Tab ─────────────────────────────────────────────────────────────
-function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs}:{alerts:WhaleAlert[];t:typeof T.dark;connectedAddr?:string;burst:Burst;oraclePrices:Record<string,any>;blockTxs:BlockTx[]}){
+function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBlockTxsSeen,timePreset}:{alerts:WhaleAlert[];t:typeof T.dark;connectedAddr?:string;burst:Burst;oraclePrices:Record<string,any>;blockTxs:BlockTx[];totalBlockTxsSeen:number;timePreset:number}){
   const[expanded,setExpanded]=useState<string|null>(null);
   const[page,setPage]=useState(0);
-  const PAGE=10;
+  const[netPage,setNetPage]=useState(0);
+  const PAGE=10, NET_PAGE=10;
   const totalPages=Math.max(1,Math.ceil(alerts.length/PAGE));
   const pageAlerts=alerts.slice(page*PAGE,(page+1)*PAGE);
+  const[sttOnly,setSttOnly]=useState(false);
+  const filteredBlockTxs=useMemo(()=>sttOnly?blockTxs.filter(tx=>tx.amountRaw>0):blockTxs,[blockTxs,sttOnly]);
 
   // Reset to page 0 when new alerts arrive
   const prevCount=useRef(alerts.length);
@@ -206,27 +209,48 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs}:{alert
 
     {/* ── Network Activity Table ─────────────────────────────────────────── */}
     <div style={{marginTop:20,borderTop:`1px solid ${t.border}`,paddingTop:14}}>
-      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-        <span style={{color:"#4ade80",fontSize:10,fontFamily:"monospace",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.12em"}}>🌐 Network Activity</span>
-        <span style={{color:t.muted,fontSize:9,fontFamily:"monospace"}}>All Somnia block transactions (real-chain, any amount)</span>
-        <span style={{marginLeft:"auto",color:t.muted,fontSize:9,fontFamily:"monospace"}}>{blockTxs.length} txns</span>
-      </div>
-      {blockTxs.length===0
-        ? <div style={{padding:"24px",textAlign:"center",color:t.muted,fontSize:11,fontFamily:"monospace"}}>Waiting for block activity... (requires dev server running)</div>
-        : <div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
-            <thead><tr>{["From","To","Amount (STT)","TX Hash","Block","Time"].map(h=><Th key={h} t={t}>{h}</Th>)}</tr></thead>
-            <tbody>{blockTxs.slice(0,50).map((tx,i)=>(
-              <tr key={tx.id} style={{background:i%2===0?t.tableRow:t.tableAlt}}>
-                <Td t={t}><ExLink href={addrUrl(tx.from)} label={short(tx.from)} t={t}/></Td>
-                <Td t={t}><ExLink href={addrUrl(tx.to)}   label={short(tx.to)}   t={t}/></Td>
-                <Td t={t} accent bold>{tx.amountRaw>0?tx.amount:<span style={{color:t.muted,fontSize:10}}>contract call</span>}</Td>
-                <Td t={t}><ExLink href={txUrl(tx.txHash)} label={shortHash(tx.txHash)} t={t}/></Td>
-                <Td t={t}><span style={{color:t.subtext,fontSize:11}}>{tx.blockNumber}</span></Td>
-                <Td t={t}><span style={{color:t.muted,fontSize:10}}>{timeAgo(tx.timestamp)}</span></Td>
-              </tr>
-            ))}</tbody>
-          </table></div>
-      }
+      {(()=>{
+        const netPages=Math.max(1,Math.ceil(filteredBlockTxs.length/NET_PAGE));
+        const netSlice=filteredBlockTxs.slice(netPage*NET_PAGE,(netPage+1)*NET_PAGE);
+        const windowLabel=timePreset>0?`last ${TIME_PRESETS.find(p=>p.ms===timePreset)?.label??""}`:"all buffered";
+        return(<>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+            <span style={{color:"#4ade80",fontSize:10,fontFamily:"monospace",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.12em"}}>🌐 Network Activity</span>
+            <span style={{color:t.muted,fontSize:9,fontFamily:"monospace"}}>
+              {blockTxs.filter(tx=>tx.amountRaw>0).length} STT transfers · {blockTxs.filter(tx=>tx.amountRaw===0).length} contract calls
+            </span>
+            <button onClick={()=>{setSttOnly(v=>!v);setNetPage(0);}} style={{fontSize:9,fontFamily:"monospace",padding:"2px 8px",borderRadius:5,cursor:"pointer",background:sttOnly?t.accentBg:"transparent",color:sttOnly?t.accent:t.muted,border:`1px solid ${sttOnly?t.accent:t.border}`}}>
+              {sttOnly?"✓ STT only":"STT only"}
+            </button>
+            <span style={{marginLeft:"auto",color:t.muted,fontSize:9,fontFamily:"monospace"}}>{filteredBlockTxs.length} shown · {totalBlockTxsSeen.toLocaleString()} seen total</span>
+          </div>
+          {filteredBlockTxs.length===0
+            ? <div style={{padding:"24px",textAlign:"center",color:t.muted,fontSize:11,fontFamily:"monospace"}}>Waiting for block activity...</div>
+            : <><div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
+                <thead><tr>{["From","To","Amount (STT)","TX Hash","Block","Time"].map(h=><Th key={h} t={t}>{h}</Th>)}</tr></thead>
+                <tbody>{netSlice.map((tx,i)=>(
+                  <tr key={tx.id} style={{background:i%2===0?t.tableRow:t.tableAlt}}>
+                    <Td t={t}><ExLink href={addrUrl(tx.from)} label={short(tx.from)} t={t}/></Td>
+                    <Td t={t}><ExLink href={addrUrl(tx.to)}   label={short(tx.to)}   t={t}/></Td>
+                    <Td t={t} accent bold>{tx.amountRaw>0?`${tx.amount} STT`:<span style={{color:t.muted,fontSize:10}}>contract call</span>}</Td>
+                    <Td t={t}><ExLink href={txUrl(tx.txHash)} label={shortHash(tx.txHash)} t={t}/></Td>
+                    <Td t={t}><span style={{color:t.subtext,fontSize:11}}>{tx.blockNumber}</span></Td>
+                    <Td t={t}><span style={{color:t.muted,fontSize:10}}>{timeAgo(tx.timestamp)}</span></Td>
+                  </tr>
+                ))}</tbody>
+              </table></div>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 4px",borderTop:`1px solid ${t.border}`}}>
+                <span style={{color:t.muted,fontSize:10,fontFamily:"monospace"}}>{filteredBlockTxs.length} shown · page {netPage+1} of {netPages}</span>
+                <div style={{display:"flex",gap:6}}>
+                  {[["«",()=>setNetPage(0),netPage===0],["‹ Prev",()=>setNetPage(p=>Math.max(0,p-1)),netPage===0],["Next ›",()=>setNetPage(p=>Math.min(netPages-1,p+1)),netPage>=netPages-1],["»",()=>setNetPage(netPages-1),netPage>=netPages-1]].map(([label,fn,dis])=>(
+                    <button key={label as string} onClick={fn as any} disabled={dis as boolean} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:(dis as boolean)?"not-allowed":"pointer",background:t.accentBg,color:(dis as boolean)?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:(dis as boolean)?0.4:1}}>{label as string}</button>
+                  ))}
+                </div>
+              </div>
+            </>
+          }
+        </>);
+      })()}
     </div>
   </div>);}
 
@@ -518,7 +542,7 @@ function LeaderboardTab({alerts,t,persistedEntries}:{alerts:WhaleAlert[];t:typeo
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function WhaleDashboard(){
-  const{alerts,blockTxs,connected,error}=useWhaleAlerts();
+  const{alerts,blockTxs,totalBlockTxsSeen,networkLargestSTT,connected,error}=useWhaleAlerts();
   const{address:walletAddr,isConnected}=useAccount();
   const{prices:oraclePrices,loading:pricesLoading,lastFetchedAt}=useOraclePrices(10_000);
   const[simulating,setSimulating]=useState(false);
@@ -550,9 +574,20 @@ export default function WhaleDashboard(){
   const totalVol  = useMemo(()=>whales.reduce((s,a)=>s+num(a.amount),0),[whales]);
   const largestTransfer = useMemo(()=>whales.reduce((max,a)=>Math.max(max,num(a.amount)),0),[whales]);
 
+  // Time-windowed counts for KPI cards — respect selected filter window
+  const windowCutoff = useMemo(()=>timePreset>0?Date.now()-timePreset:0,[timePreset]);
+  const windowedWhales      = useMemo(()=>whales.filter(a=>!windowCutoff||a.timestamp>=windowCutoff),[whales,windowCutoff]);
+  const windowedReactions   = useMemo(()=>reactions.filter(a=>!windowCutoff||a.timestamp>=windowCutoff),[reactions,windowCutoff]);
+  const windowedAlertCount  = useMemo(()=>alerts.filter(a=>a.type==="alert"&&(!windowCutoff||a.timestamp>=windowCutoff)).length,[alerts,windowCutoff]);
+  const windowedMomentumCount=useMemo(()=>alerts.filter(a=>a.type==="momentum"&&(!windowCutoff||a.timestamp>=windowCutoff)).length,[alerts,windowCutoff]);
+  const windowedVol         = useMemo(()=>windowedWhales.reduce((s,a)=>s+num(a.amount),0),[windowedWhales]);
+  const windowedLargest     = useMemo(()=>windowedWhales.reduce((max,a)=>Math.max(max,num(a.amount)),0),[windowedWhales]);
+
+  // Time-windowed network txns for KPI — available at top level
+  const windowedBlockTxs = useMemo(()=>!windowCutoff?blockTxs:blockTxs.filter(tx=>tx.timestamp>=windowCutoff),[blockTxs,windowCutoff]);
+
   // Network-wide stats (all block transactions regardless of amount)
   const networkTotalSTT  = useMemo(()=>blockTxs.reduce((s,tx)=>s+tx.amountRaw,0),[blockTxs]);
-  const networkLargestSTT = useMemo(()=>blockTxs.reduce((max,tx)=>Math.max(max,tx.amountRaw),0),[blockTxs]);
 
   // Dynamic token list from actual events — always current, no hardcoding
   const tokenList = useMemo(()=>{
@@ -561,24 +596,24 @@ export default function WhaleDashboard(){
     return ["All", ...Array.from(seen).sort()];
   },[whales]);
 
-  // USD totals — sum per-token using oracle prices where available
+  // USD totals — use windowed whales so KPIs respond to time filter
   const totalVolUSD = useMemo(()=>{
     let sum=0; let partial=false;
-    whales.forEach(a=>{
+    windowedWhales.forEach(a=>{
       const key=TOKEN_PRICE_MAP[a.token];
       if(key&&oraclePrices[key]?.price){sum+=num(a.amount)*oraclePrices[key].price;}
       else partial=true;
     });
     return {sum,partial};
-  },[whales,oraclePrices]);
+  },[windowedWhales,oraclePrices]);
 
   const largestUSD = useMemo(()=>{
-    if(!whales.length) return null;
-    const top=whales.reduce((max,a)=>num(a.amount)>num(max.amount)?a:max,whales[0]);
+    if(!windowedWhales.length) return null;
+    const top=windowedWhales.reduce((max,a)=>num(a.amount)>num(max.amount)?a:max,windowedWhales[0]);
     const key=TOKEN_PRICE_MAP[top.token];
     if(!key||!oraclePrices[key]?.price) return null;
     return num(top.amount)*oraclePrices[key].price;
-  },[whales,oraclePrices]);
+  },[windowedWhales,oraclePrices]);
 
   // ── Burst detection (≥3 whale events in 60s) ─────────────────────────────
   const burst: Burst = useMemo(()=>{
@@ -659,18 +694,18 @@ export default function WhaleDashboard(){
 
         {/* Global KPI row */}
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(140px, 1fr))",gap:8,marginBottom:12}}>
-          <KpiCard t={t} label="Whale Events"     value={whales.length}/>
-          <KpiCard t={t} label="Reactions"         value={reactions.length}   sub="Phase 2"/>
-          <KpiCard t={t} label="Alerts"            value={alertCount}          sub="Phase 2"/>
-          <KpiCard t={t} label="🔥 Momentum"       value={momentumCount}       color="#ef4444" sub="on-chain bursts"/>
+          <KpiCard t={t} label="Whale Events"     value={windowedWhales.length}/>
+          <KpiCard t={t} label="Reactions"         value={windowedReactions.length}   sub="Phase 2"/>
+          <KpiCard t={t} label="Alerts"            value={windowedAlertCount}          sub="Phase 2"/>
+          <KpiCard t={t} label="🔥 Momentum"       value={windowedMomentumCount}       color="#ef4444" sub="on-chain bursts"/>
           <KpiCard t={t} label="🐋 Whale Volume"
-            value={totalVolUSD.sum>0 ? (totalVolUSD.sum>=1e9?`$${(totalVolUSD.sum/1e9).toFixed(2)}B`:totalVolUSD.sum>=1e6?`$${(totalVolUSD.sum/1e6).toFixed(2)}M`:`$${Math.round(totalVolUSD.sum).toLocaleString()}`) : Math.round(totalVol).toLocaleString()}
+            value={totalVolUSD.sum>0 ? (totalVolUSD.sum>=1e9?`$${(totalVolUSD.sum/1e9).toFixed(2)}B`:totalVolUSD.sum>=1e6?`$${(totalVolUSD.sum/1e6).toFixed(2)}M`:`$${Math.round(totalVolUSD.sum).toLocaleString()}`) : Math.round(windowedVol).toLocaleString()}
             sub={totalVolUSD.sum>0 ? (totalVolUSD.partial?"~USD partial":"~USD est.") : "tokens"}/>
           <KpiCard t={t} label="🐋 Whale Largest"
-            value={largestUSD!=null ? (largestUSD>=1e9?`$${(largestUSD/1e9).toFixed(2)}B`:largestUSD>=1e6?`$${(largestUSD/1e6).toFixed(2)}M`:`$${Math.round(largestUSD).toLocaleString()}`) : largestTransfer>0?Math.round(largestTransfer).toLocaleString():"—"}
+            value={largestUSD!=null ? (largestUSD>=1e9?`$${(largestUSD/1e9).toFixed(2)}B`:largestUSD>=1e6?`$${(largestUSD/1e6).toFixed(2)}M`:`$${Math.round(largestUSD).toLocaleString()}`) : windowedLargest>0?Math.round(windowedLargest).toLocaleString():"—"}
             sub={largestUSD!=null?"~USD est.":"tokens"}/>
-          <KpiCard t={t} label="🌐 Network Volume"  value={networkTotalSTT>0?`${Math.round(networkTotalSTT).toLocaleString()}`:"—"} sub="STT (all txns)"/>
-          <KpiCard t={t} label="🌐 Network Largest" value={networkLargestSTT>0?`${Math.round(networkLargestSTT).toLocaleString()}`:"—"} sub="STT (single txn)"/>
+          <KpiCard t={t} label="🌐 Network Txns"    value={windowedBlockTxs.length>0?windowedBlockTxs.length.toLocaleString():"—"} sub={timePreset>0?`last ${TIME_PRESETS.find(p=>p.ms===timePreset)?.label}`:"buffered window"}/>
+          <KpiCard t={t} label="🌐 Largest STT Txn" value={networkLargestSTT>0?`${Number(networkLargestSTT).toFixed(4)}`:"—"} sub="STT (native)"/>
         </div>
 
         {/* Tabs */}
@@ -689,7 +724,7 @@ export default function WhaleDashboard(){
       <div style={{maxWidth:1400,margin:"0 auto",padding:"16px 20px"}}>
         {showFilters&&<FilterBar t={t} search={search} setSearch={setSearch} minAmt={minAmt} setMinAmt={setMinAmt} maxAmt={maxAmt} setMaxAmt={setMaxAmt} token={tokenFilter} setToken={setTokenFilter} timePreset={timePreset} setTimePreset={setTimePreset} dateFrom={dateFrom} setDateFrom={setDateFrom} dateTo={dateTo} setDateTo={setDateTo} showTypes={showTypes} setShowTypes={setShowTypes} tokenList={tokenList}/>}
         <div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:16,overflow:"hidden"}}>
-          {tab==="feed"        && <LiveFeedTab    alerts={filtered} t={t} connectedAddr={walletAddr} burst={burst} oraclePrices={oraclePrices} blockTxs={blockTxs}/>}
+          {tab==="feed"        && <LiveFeedTab    alerts={filtered} t={t} connectedAddr={walletAddr} burst={burst} oraclePrices={oraclePrices} blockTxs={windowedBlockTxs} totalBlockTxsSeen={totalBlockTxsSeen} timePreset={timePreset}/>}
           {tab==="analytics"   && <AnalyticsTab   alerts={filtered} t={t} oraclePrices={oraclePrices}/>}
           {tab==="charts"      && <ChartsTab      alerts={filtered} t={t}/>}
           {tab==="leaderboard" && <LeaderboardTab alerts={filtered} t={t} persistedEntries={persistedEntries}/>}

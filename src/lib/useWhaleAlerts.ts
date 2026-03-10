@@ -81,7 +81,7 @@ function parseEntry(raw: any): WhaleAlert | null {
 function parseBlockTx(msg: any): BlockTx | null {
   try {
     const r = msg?.raw ?? msg;
-    const amountRaw = Number(r.amount ?? 0);
+    const amountRaw = parseFloat(r.amount ?? "0");
     return {
       id:          `btx-${Date.now()}-${Math.random()}`,
       from:        r.from        ?? "",
@@ -100,6 +100,8 @@ function parseBlockTx(msg: any): BlockTx | null {
 export function useWhaleAlerts(maxAlerts = 200) {
   const [alerts,    setAlerts]    = useState<WhaleAlert[]>([]);
   const [blockTxs,  setBlockTxs]  = useState<BlockTx[]>([]);
+  const [totalBlockTxsSeen, setTotalBlockTxsSeen] = useState(0);
+  const [networkLargestSTT,  setNetworkLargestSTT]  = useState(0);
   const [connected, setConnected] = useState(false);
   const [error,     setError]     = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
@@ -121,6 +123,8 @@ export function useWhaleAlerts(maxAlerts = 200) {
           .map(parseBlockTx).filter(Boolean).reverse() as BlockTx[];
         setAlerts(whaleParsed.slice(0, maxAlerts));
         setBlockTxs(blockParsed.slice(0, 500));
+        if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
+        if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
       }
       if (msg.type === "connected") setConnected(true);
       if (msg.type === "error")     setError(msg.message);
@@ -132,6 +136,8 @@ export function useWhaleAlerts(maxAlerts = 200) {
       if (msg.type === "block_tx") {
         const tx = parseBlockTx(msg);
         if (tx) setBlockTxs(prev => [tx, ...prev].slice(0, 500));
+        if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
+        if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
       }
     };
 
@@ -139,5 +145,5 @@ export function useWhaleAlerts(maxAlerts = 200) {
     return () => es.close();
   }, [maxAlerts]);
 
-  return { alerts, blockTxs, connected, error };
+  return { alerts, blockTxs, totalBlockTxsSeen, networkLargestSTT, connected, error };
 }
