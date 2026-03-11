@@ -82,15 +82,23 @@ function parseBlockTx(msg: any): BlockTx | null {
   try {
     const r = msg?.raw ?? msg;
     const amountRaw = parseFloat(r.amount ?? "0");
+    // Use actual block timestamp so historical backfill data has correct timestamps
+    // and QUICK time-window filters work. Fall back to Date.now() for live data.
+    let timestamp = Date.now();
+    try {
+      const tsHex = r.timestamp ?? "0x0";
+      const ts = Number(BigInt(tsHex)) * 1000;
+      if (ts > 0 && ts <= Date.now()) timestamp = ts;
+    } catch {}
     return {
       id:          `btx-${Date.now()}-${Math.random()}`,
       from:        r.from        ?? "",
       to:          r.to          ?? "",
-      amount:      amountRaw.toLocaleString(),
+      amount:      amountRaw > 0 ? amountRaw.toFixed(6) : "0",
       amountRaw,
       txHash:      r.txHash      ?? "",
       blockNumber: r.blockNumber ?? "",
-      timestamp:   Date.now(),
+      timestamp,
     };
   } catch {
     return null;

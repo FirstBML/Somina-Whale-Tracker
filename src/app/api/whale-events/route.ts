@@ -246,6 +246,77 @@ async function loadPastEvents() {
   console.log(`✅ Loaded ${logs.length} past WhaleTransfer events`);
 }
 
+// ── Historical block_tx backfill ──────────────────────────────────────────────
+// Runs in background (non-blocking). Fetches last LOOKBACK blocks in parallel
+// batches so QUICK time-window filters have meaningful spread of historical data.
+async function loadRecentBlockTxs() {
+  const pub = createPublicClient({ chain: somniaTestnet, transport: http("https://dream-rpc.somnia.network") });
+  try {
+    const latest = await pub.getBlockNumber();
+    const LOOKBACK = 50_000n;  // ~83 min at 10 blocks/s — covers 30m, 1h, 6h quick filters
+    const start = latest > LOOKBACK ? latest - LOOKBACK : 0n;
+    const BATCH  = 100;        // parallel fetches per round
+    const DELAY  = 80;         // ms between batches — avoids rate-limit
+
+    const nums: bigint[] = [];
+    for (let n = start; n <= latest; n++) nums.push(n);
+
+    let loaded = 0;
+    for (let i = 0; i < nums.length; i += BATCH) {
+      // Stop if buffer is full
+      const existing = alertCache.filter(e => e.type === "block_tx").length;
+      if (existing >= MAX_BLOCK_TX) break;
+
+      const batch = nums.slice(i, i + BATCH);
+      const results = await Promise.allSettled(
+        batch.map(n => pub.getBlock({ blockNumber: n, includeTransactions: true }))
+      );
+      for (const r of results) {
+        if (r.status !== "fulfilled" || !r.value?.transactions?.length) continue;
+        const block = r.value;
+        for (const tx of block.transactions as any[]) {
+          if (typeof tx !== "object" || !tx.hash) continue;
+          // Skip if already seen (live watcher may have captured this block)
+          if (alertCache.some(e => e.type === "block_tx" && e.raw.txHash === tx.hash)) continue;
+
+          const val       = tx.value ?? 0n;
+          const sttAmount = Number(val) / 1e18;
+          const blockTs   = Number(block.timestamp) * 1000;
+
+          totalBlockTxsSeen++;
+          if (sttAmount > networkLargestSTT) networkLargestSTT = sttAmount;
+
+          if (alertCache.filter(e => e.type === "block_tx").length < MAX_BLOCK_TX) {
+            // Insert in chronological position (older entries go before newer)
+            const entry: CacheEntry = {
+              type: "block_tx", receivedAt: blockTs,
+              raw: {
+                from:        (tx.from ?? "") as string,
+                to:          (tx.to  ?? "0x0000000000000000000000000000000000000000") as string,
+                amount:      sttAmount > 0 ? sttAmount.toFixed(6) : "0",
+                timestamp:   `0x${Math.floor(blockTs / 1000).toString(16)}`,
+                token:       "STT",
+                txHash:      tx.hash,
+                blockNumber: block.number?.toString() ?? "",
+                blockHash:   block.hash ?? "",
+              },
+            };
+            // Prepend — historical data is older, live data stays at tail
+            const firstLiveIdx = alertCache.findIndex(e => e.type === "block_tx");
+            if (firstLiveIdx === -1) alertCache.push(entry);
+            else alertCache.splice(firstLiveIdx, 0, entry);
+            loaded++;
+          }
+        }
+      }
+      await new Promise(r => setTimeout(r, DELAY));
+    }
+    console.log(`✅ Block_tx backfill: ${loaded} historical txns loaded (${nums.length} blocks scanned)`);
+  } catch (e: any) {
+    console.warn("⚠ Block_tx backfill failed (non-critical):", e.message?.split("\n")[0]);
+  }
+}
+
 // ── Real-chain block watcher ──────────────────────────────────────────────────
 async function getEthUsdPrice(pub: ReturnType<typeof createPublicClient>): Promise<number> {
   try {
@@ -306,7 +377,7 @@ async function startBlockWatcher(
         if (reporting) continue;
         reporting = true;
 
-        // Push whale event IMMEDIATELY to dashboard at low threshold
+        // Push whale event IMMEDIATELY to dashboard
         push({
           type: "whale", receivedAt: Date.now(),
           raw: {
@@ -317,9 +388,7 @@ async function startBlockWatcher(
           },
         });
 
-        // Only call reportTransfer if val meets the on-chain threshold
-        if (val < WATCH_THRESHOLD || reporting) continue;
-        reporting = true;
+        // Report to contract (triggers Reactivity Engine → WhaleHandler)
         try {
           const hash = await walClient.writeContract({
             address:      CONTRACT,
@@ -366,6 +435,9 @@ function scheduleReconnect() {
 async function ensureSubscriptions() {
   if (trackerSub && handlerSub && momentumSub && blockWatcher) return;
   await loadPastEvents();
+  // Fire block_tx backfill in background — doesn't block SSE or SDK subscriptions.
+  // Clients connected before it finishes will receive historical data via next init reload.
+  loadRecentBlockTxs().catch(() => {});  // errors logged inside, never throws
 
   const CONTRACT = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS  as `0x${string}`;
   const HANDLER  = process.env.HANDLER_CONTRACT_ADDRESS      as `0x${string}`;
