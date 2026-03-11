@@ -15,7 +15,7 @@ const T = {
 const TOKEN_COLORS: Record<string,string> = {STT:"#06b6d4",USDC:"#2775CA",WETH:"#627EEA",WBTC:"#F7931A",USDT:"#26A17B",LINK:"#2A5ADA",UNI:"#FF007A",AAVE:"#B6509E"};
 // ALL_TOKENS used as fallback — filter will be populated dynamically from actual events
 const ALL_TOKENS_FALLBACK = ["All","STT","USDC","WETH","WBTC","USDT","LINK","UNI","AAVE"];
-const TIME_PRESETS = [{label:"30m",ms:30*60_000},{label:"1h",ms:60*60_000},{label:"6h",ms:6*60*60_000},{label:"24h",ms:24*60*60_000},{label:"All",ms:0}];
+const TIME_PRESETS = [{label:"30m",ms:30*60_000},{label:"1h",ms:60*60_000},{label:"6h",ms:6*60*60_000},{label:"24h",ms:24*60*60_000},{label:"7d",ms:7*24*60*60_000},{label:"All",ms:0}];
 
 const short     = (a:string) => a ? `${a.slice(0,6)}…${a.slice(-4)}` : "—";
 const shortHash = (h:string) => h ? `${h.slice(0,10)}…${h.slice(-6)}` : "—";
@@ -542,7 +542,7 @@ function LeaderboardTab({alerts,t,persistedEntries}:{alerts:WhaleAlert[];t:typeo
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function WhaleDashboard(){
-  const{alerts,blockTxs,totalBlockTxsSeen,networkLargestSTT,connected,error}=useWhaleAlerts();
+  const{alerts,blockTxs,totalBlockTxsSeen,networkLargestSTT,currentThreshold,connected,error}=useWhaleAlerts();
   const{address:walletAddr,isConnected}=useAccount();
   const{prices:oraclePrices,loading:pricesLoading,lastFetchedAt}=useOraclePrices(10_000);
   const[simulating,setSimulating]=useState(false);
@@ -553,7 +553,7 @@ export default function WhaleDashboard(){
   const[minAmt,setMinAmt]=useState("");
   const[maxAmt,setMaxAmt]=useState("");
   const[tokenFilter,setTokenFilter]=useState("All");
-  const[timePreset,setTimePreset]=useState(0);
+  const[timePreset,setTimePreset]=useState(7*24*60*60_000); // default: rolling 7d
   const[dateFrom,setDateFrom]=useState("");
   const[dateTo,setDateTo]=useState("");
   const[showTypes,setShowTypes]=useState<string[]>(["whale","reaction","alert","momentum"]);
@@ -563,6 +563,10 @@ export default function WhaleDashboard(){
   useEffect(()=>{
     fetch("/api/streams-leaderboard").then(r=>r.json()).then(d=>{if(d.entries?.length)setPersistedEntries(d.entries);}).catch(()=>{});
   },[]);
+
+  // Live clock — updates every 10s so time-window filters stay accurate
+  const[now,setNow]=useState(()=>Date.now());
+  useEffect(()=>{const id=setInterval(()=>setNow(Date.now()),10_000);return()=>clearInterval(id);},[]);
 
   const prevLen=useRef(0);
   useEffect(()=>{if(alerts.length>prevLen.current&&soundEnabled&&prevLen.current>0)playPing();prevLen.current=alerts.length;},[alerts.length,soundEnabled]);
@@ -575,7 +579,7 @@ export default function WhaleDashboard(){
   const largestTransfer = useMemo(()=>whales.reduce((max,a)=>Math.max(max,num(a.amount)),0),[whales]);
 
   // Time-windowed counts for KPI cards — respect selected filter window
-  const windowCutoff = useMemo(()=>timePreset>0?Date.now()-timePreset:0,[timePreset]);
+  const windowCutoff = timePreset>0 ? now-timePreset : 0;
   const windowedWhales      = useMemo(()=>whales.filter(a=>!windowCutoff||a.timestamp>=windowCutoff),[whales,windowCutoff]);
   const windowedReactions   = useMemo(()=>reactions.filter(a=>!windowCutoff||a.timestamp>=windowCutoff),[reactions,windowCutoff]);
   const windowedAlertCount  = useMemo(()=>alerts.filter(a=>a.type==="alert"&&(!windowCutoff||a.timestamp>=windowCutoff)).length,[alerts,windowCutoff]);
@@ -630,7 +634,6 @@ export default function WhaleDashboard(){
   },[whales]);
 
   const filtered=useMemo(()=>{
-    const now=Date.now();
     const from=dateFrom?new Date(dateFrom).getTime():timePreset>0?now-timePreset:0;
     const to=dateTo?new Date(dateTo).getTime():now;
     return alerts.filter(a=>{
@@ -642,7 +645,7 @@ export default function WhaleDashboard(){
       if(maxAmt&&a.type==="whale"&&num(a.amount)>parseFloat(maxAmt))return false;
       return true;
     });
-  },[alerts,search,minAmt,maxAmt,tokenFilter,timePreset,dateFrom,dateTo,showTypes]);
+  },[alerts,search,minAmt,maxAmt,tokenFilter,timePreset,dateFrom,dateTo,showTypes,now]);
 
   async function simulateWhale(){setSimulating(true);try{const res=await fetch("/api/simulate-whale",{method:"POST"});const d=await res.json();if(!d.success)throw new Error(d.error);}catch(e){alert("Simulation failed: "+e);}finally{setSimulating(false);}}
 
@@ -704,8 +707,15 @@ export default function WhaleDashboard(){
           <KpiCard t={t} label="🐋 Whale Largest"
             value={largestUSD!=null ? (largestUSD>=1e9?`$${(largestUSD/1e9).toFixed(2)}B`:largestUSD>=1e6?`$${(largestUSD/1e6).toFixed(2)}M`:`$${Math.round(largestUSD).toLocaleString()}`) : windowedLargest>0?Math.round(windowedLargest).toLocaleString():"—"}
             sub={largestUSD!=null?"~USD est.":"tokens"}/>
-          <KpiCard t={t} label="🌐 Network Txns"    value={windowedBlockTxs.length>0?windowedBlockTxs.length.toLocaleString():"—"} sub={timePreset>0?`last ${TIME_PRESETS.find(p=>p.ms===timePreset)?.label}`:"buffered window"}/>
+          <KpiCard t={t} label="🌐 Network Txns"    value={windowedBlockTxs.length>0?windowedBlockTxs.length.toLocaleString():"—"} sub={(()=>{
+            if(!blockTxs.length) return "buffered window";
+            const oldestTs = blockTxs.reduce((min,tx)=>Math.min(min,tx.timestamp),Date.now());
+            const ageMs = now - oldestTs;
+            const ageLabel = ageMs<3600_000?`${Math.round(ageMs/60_000)}m`:ageMs<86400_000?`${(ageMs/3600_000).toFixed(1)}h`:`${(ageMs/86400_000).toFixed(1)}d`;
+            return timePreset>0?`in ${TIME_PRESETS.find(p=>p.ms===timePreset)?.label??"window"} · ${ageLabel} buffered`:`${ageLabel} buffered`;
+          })()}/>
           <KpiCard t={t} label="🌐 Largest STT Txn" value={networkLargestSTT>0?`${Number(networkLargestSTT).toFixed(4)}`:"—"} sub="STT (native)"/>
+          <KpiCard t={t} label="⚙ Whale Threshold" value={currentThreshold!=null?`${currentThreshold} STT`:"1 STT"} sub="on-chain · live"/>
         </div>
 
         {/* Tabs */}

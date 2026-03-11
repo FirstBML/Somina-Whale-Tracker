@@ -102,6 +102,7 @@ export function useWhaleAlerts(maxAlerts = 200) {
   const [blockTxs,  setBlockTxs]  = useState<BlockTx[]>([]);
   const [totalBlockTxsSeen, setTotalBlockTxsSeen] = useState(0);
   const [networkLargestSTT,  setNetworkLargestSTT]  = useState(0);
+  const [currentThreshold,   setCurrentThreshold]   = useState<number|null>(null);
   const [connected, setConnected] = useState(false);
   const [error,     setError]     = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
@@ -122,7 +123,7 @@ export function useWhaleAlerts(maxAlerts = 200) {
           .filter(a => a.type === "block_tx")
           .map(parseBlockTx).filter(Boolean).reverse() as BlockTx[];
         setAlerts(whaleParsed.slice(0, maxAlerts));
-        setBlockTxs(blockParsed.slice(0, 500));
+        setBlockTxs(blockParsed.slice(0, 5000));
         if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
         if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
       }
@@ -135,9 +136,12 @@ export function useWhaleAlerts(maxAlerts = 200) {
       }
       if (msg.type === "block_tx") {
         const tx = parseBlockTx(msg);
-        if (tx) setBlockTxs(prev => [tx, ...prev].slice(0, 500));
+        if (tx) setBlockTxs(prev => [tx, ...prev].slice(0, 5000));
         if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
         if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
+      }
+      if (msg.type === "threshold_update") {
+        setCurrentThreshold(parseFloat(msg.raw?.newValue ?? "0"));
       }
     };
 
@@ -145,5 +149,5 @@ export function useWhaleAlerts(maxAlerts = 200) {
     return () => es.close();
   }, [maxAlerts]);
 
-  return { alerts, blockTxs, totalBlockTxsSeen, networkLargestSTT, connected, error };
+  return { alerts, blockTxs, totalBlockTxsSeen, networkLargestSTT, currentThreshold, connected, error };
 }

@@ -54,18 +54,34 @@ const MOMENTUM_ABI = [{
   ],
 }] as const;
 
-// ABI for calling reportTransfer on WhaleTracker
-const TRACKER_ABI = [{
-  name: "reportTransfer",
-  type: "function",
-  stateMutability: "nonpayable",
-  inputs: [
-    { name: "from",   type: "address" },
-    { name: "to",     type: "address" },
-    { name: "amount", type: "uint256" },
-  ],
-  outputs: [],
-}] as const;
+// ABI matching deployed WhaleTracker.sol
+const TRACKER_ABI = [
+  {
+    name: "reportTransfer", type: "function", stateMutability: "nonpayable",
+    inputs: [
+      { name: "from",   type: "address" },
+      { name: "to",     type: "address" },
+      { name: "amount", type: "uint256" },
+      { name: "token",  type: "string"  },
+    ],
+    outputs: [],
+  },
+  {
+    name: "setThreshold", type: "function", stateMutability: "nonpayable",
+    inputs: [{ name: "_threshold", type: "uint256" }], outputs: [],
+  },
+  {
+    name: "threshold", type: "function", stateMutability: "view",
+    inputs: [], outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "ThresholdUpdated", type: "event",
+    inputs: [
+      { name: "oldValue", type: "uint256", indexed: false },
+      { name: "newValue", type: "uint256", indexed: false },
+    ],
+  },
+] as const;
 
 // Protofire ETH/USD feed on Somnia testnet
 const ETH_USD_FEED = "0xd9132c1d762D432672493F640a63B758891B449e" as const;
@@ -83,18 +99,18 @@ const AGGREGATOR_ABI = [{
   inputs: [], outputs: [{ type: "uint8" }],
 }] as const;
 
-// USD whale threshold — triggers when transfer value ≥ this in USD
-const USD_WHALE_THRESHOLD = 100_000; // $100k
-// STT fallback threshold (no USD feed available for native STT)
-const WATCH_THRESHOLD = parseEther("0.001"); // lowered for testnet testing
+// Single threshold — must match what's deployed in WhaleTracker.sol
+// Deploy with 1 STT (parseEther("1")) so real testnet transfers qualify
+const WATCH_THRESHOLD = parseEther("1");
 
 export type CacheEntry = {
-  type: "whale" | "reaction" | "alert" | "momentum" | "block_tx";
+  type: "whale" | "reaction" | "alert" | "momentum" | "block_tx" | "threshold_update";
   receivedAt: number;
   raw: {
     from: string; to: string; amount: string; timestamp: string; token: string;
     txHash: string; blockNumber: string; blockHash: string;
     reactionCount?: string; handlerEmitter?: string;
+    oldValue?: string; newValue?: string;
   };
 };
 
@@ -132,12 +148,12 @@ async function persistLeaderEntry(wallet: string, entry: LeaderEntry) {
 }
 
 // ── Server state ──────────────────────────────────────────────────────────────
-const MAX_CACHE    = 200;  // whale/reaction/alert/momentum events
-const MAX_BLOCK_TX = 500;  // raw block transactions
+const MAX_CACHE    = 200;   // whale/reaction/alert/momentum events
+const MAX_BLOCK_TX = 5000;  // network transactions — enough for 7d rolling window
 const alertCache: CacheEntry[] = [];
 let totalBlockTxsSeen = 0;
 let networkLargestSTT = 0;  // running max STT, never resets
-const BLOCK_TX_WINDOW_MS = 5 * 60 * 1000;
+const BLOCK_TX_WINDOW_MS = 7 * 24 * 60 * 60 * 1000; // 7-day rolling buffer
 let trackerSub:   { unsubscribe: () => Promise<any> } | null = null;
 let handlerSub:   { unsubscribe: () => Promise<any> } | null = null;
 let momentumSub:  { unsubscribe: () => Promise<any> } | null = null;
@@ -163,6 +179,12 @@ function push(entry: CacheEntry) {
     let i = 0;
     while (i < alertCache.length && alertCache[i].type === "block_tx" && alertCache[i].receivedAt < cutoff) i++;
     if (i > 0) alertCache.splice(0, i);
+    // Hard cap: if still over MAX_BLOCK_TX, evict oldest block_tx
+    const blockTxCount = alertCache.filter(e => e.type === "block_tx").length;
+    if (blockTxCount >= MAX_BLOCK_TX) {
+      const idx = alertCache.findIndex(e => e.type === "block_tx");
+      if (idx !== -1) alertCache.splice(idx, 1);
+    }
   } else {
     if (alertCache.filter(e => e.type !== "block_tx").length >= MAX_CACHE) {
       const idx = alertCache.findIndex(e => e.type !== "block_tx");
@@ -248,15 +270,14 @@ async function startBlockWatcher(
   setInterval(async () => { ethUsd = await getEthUsdPrice(httpPub) || ethUsd; }, 120_000);
   console.log(`💰 ETH/USD oracle price: $${ethUsd.toFixed(2)} (Protofire)`);
 
-  // WebSocket for real-time block notifications (Somnia = 0.1s blocks, HTTP polling too slow)
-  const wsPub = createPublicClient({
-    chain: somniaTestnet,
-    transport: webSocket("wss://dream-rpc.somnia.network/ws"),
-  });
-
-  const unwatch = wsPub.watchBlocks({
+  // Fast HTTP polling for full blocks — WebSocket watchBlocks on Somnia only gets headers,
+  // then viem fetches full block separately which can't keep up at 0.1s block times.
+  // HTTP polling at 500ms fetches full blocks with transactions in one call, reliably.
+  const unwatch = httpPub.watchBlocks({
     includeTransactions: true,
+    pollingInterval: 500,   // 500ms — fast enough to catch most blocks without flooding
     onBlock: async (block) => {
+      if (!block?.transactions) return;
       for (const tx of block.transactions) {
         if (typeof tx !== "object") continue;
         const val  = tx.value ?? 0n;
@@ -285,7 +306,7 @@ async function startBlockWatcher(
         if (reporting) continue;
         reporting = true;
 
-        // Push whale event IMMEDIATELY to dashboard — don't wait for RE round-trip
+        // Push whale event IMMEDIATELY to dashboard at low threshold
         push({
           type: "whale", receivedAt: Date.now(),
           raw: {
@@ -296,12 +317,15 @@ async function startBlockWatcher(
           },
         });
 
+        // Only call reportTransfer if val meets the on-chain threshold
+        if (val < WATCH_THRESHOLD || reporting) continue;
+        reporting = true;
         try {
           const hash = await walClient.writeContract({
             address:      CONTRACT,
             abi:          TRACKER_ABI,
             functionName: "reportTransfer",
-            args:         [from, to, val],
+            args:         [from, to, val, "STT"],
             chain:        somniaTestnet,
             account:      walClient.account!,
           });
@@ -350,10 +374,11 @@ async function ensureSubscriptions() {
   const walClient = createWalletClient({ account, chain: somniaTestnet, transport: http("https://dream-rpc.somnia.network") });
   const sdk       = new SDK({ public: pubClient, wallet: walClient });
 
-  const WHALE_TOPIC    = keccak256(toBytes("WhaleTransfer(address,address,uint256,uint256,string)"));
-  const REACTED_TOPIC  = keccak256(toBytes("ReactedToWhaleTransfer(address,bytes32,address,address,uint256)"));
-  const ALERT_TOPIC    = keccak256(toBytes("AlertThresholdCrossed(uint256,uint256)"));
-  const MOMENTUM_TOPIC = keccak256(toBytes("WhaleMomentumDetected(uint256,uint256)"));
+  const WHALE_TOPIC     = keccak256(toBytes("WhaleTransfer(address,address,uint256,uint256,string)"));
+  const REACTED_TOPIC   = keccak256(toBytes("ReactedToWhaleTransfer(address,bytes32,address,address,uint256)"));
+  const ALERT_TOPIC     = keccak256(toBytes("AlertThresholdCrossed(uint256,uint256)"));
+  const MOMENTUM_TOPIC  = keccak256(toBytes("WhaleMomentumDetected(uint256,uint256)"));
+  const THRESHOLD_TOPIC = keccak256(toBytes("ThresholdUpdated(uint256,uint256)"));
 
   if (!trackerSub) {
     const r1 = await sdk.subscribe({
@@ -506,6 +531,29 @@ async function ensureSubscriptions() {
       momentumSub = r4;
       console.log("✅ WhaleMomentumDetected subscription:", r4.subscriptionId);
     }
+
+    // ── ThresholdUpdated subscription — broadcast to dashboard ───────────────
+    await sdk.subscribe({
+      ethCalls: [], eventContractSources: [CONTRACT], topicOverrides: [THRESHOLD_TOPIC],
+      onData: (data: any) => {
+        try {
+          const r = data?.result ?? data;
+          const decoded = decodeEventLog({
+            abi: TRACKER_ABI, data: r?.data as `0x${string}`,
+            topics: r?.topics as [`0x${string}`, ...`0x${string}`[]],
+          });
+          const a = decoded.args as any;
+          const newVal = Number(a.newValue) / 1e18;
+          const oldVal = Number(a.oldValue) / 1e18;
+          console.log(`⚙ Threshold updated: ${oldVal} → ${newVal} STT`);
+          broadcast({
+            type: "threshold_update", receivedAt: Date.now(),
+            raw: { from:"", to:"", amount:"0", timestamp:"0x0", token:"", txHash:"", blockNumber:"", blockHash:"", oldValue: oldVal.toString(), newValue: newVal.toString() },
+          });
+        } catch (e) { console.error("ThresholdUpdated parse error:", e); }
+      },
+      onError: (e: Error) => console.error("Threshold SDK error:", e.message),
+    });
   } else if (!HANDLER) {
     console.log("ℹ HANDLER_CONTRACT_ADDRESS not set — skipping Phase 2 subscriptions");
   }

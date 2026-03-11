@@ -6,9 +6,10 @@ async function main() {
   console.log("Balance:", ethers.formatEther(await deployer.provider.getBalance(deployer.address)), "STT\n");
 
   // ── Step 1: Deploy WhaleTracker ──────────────────────────────────────────────
+  
   // Threshold: 1,000 STT — low enough to catch real testnet transfers
   // Raise to 100,000+ for mainnet/production
-  const threshold = ethers.parseEther("1000");
+  const threshold = ethers.parseEther("1"); // 1 STT — matches real testnet transfer sizes
   const WhaleTracker = await ethers.getContractFactory("WhaleTracker");
   const tracker = await WhaleTracker.deploy(threshold);
   await tracker.waitForDeployment();
