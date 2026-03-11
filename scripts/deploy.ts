@@ -30,7 +30,7 @@ async function main() {
   console.log(`NEXT_PUBLIC_CONTRACT_ADDRESS=${trackerAddr}`);
   console.log(`HANDLER_CONTRACT_ADDRESS=${handlerAddr}`);
   console.log("\n📋 Also update WATCH_THRESHOLD in whale-events/route.ts to match:");
-  console.log(`const WATCH_THRESHOLD = parseEther("1000");`);
+  console.log(`const WATCH_THRESHOLD = parseEther("1");`);
   console.log("\n📋 Then run:");
   console.log("npx tsx scripts/createSubscription.ts");
 }
