@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 
 export type AlertType = "whale" | "reaction" | "alert" | "momentum";
 
@@ -25,6 +25,7 @@ export type BlockTx = {
   to:          string;
   amount:      string;
   amountRaw:   number;
+  isTransfer:  boolean; // true = STT value > 0, false = contract call
   txHash:      string;
   blockNumber: string;
   timestamp:   number;
@@ -39,10 +40,7 @@ function parseEntry(raw: any): WhaleAlert | null {
       return {
         id:            `${Date.now()}-${Math.random()}`,
         type,
-        from:          "",
-        to:            "",
-        amount:        "0",
-        amountRaw:     0n,
+        from: "", to: "", amount: "0", amountRaw: 0n,
         timestamp:     Number(BigInt(r.timestamp ?? "0x0")) * 1000 || Date.now(),
         token:         "",
         txHash:        r.txHash      ?? "",
@@ -52,10 +50,8 @@ function parseEntry(raw: any): WhaleAlert | null {
       };
     }
 
-    const amountHex = r?.amount    ?? "0x0";
-    const tsHex     = r?.timestamp ?? "0x0";
-    const amount    = BigInt(amountHex);
-    const timestamp = BigInt(tsHex);
+    const amount    = BigInt(r?.amount    ?? "0x0");
+    const timestamp = BigInt(r?.timestamp ?? "0x0");
 
     return {
       id:             `${Date.now()}-${Math.random()}`,
@@ -82,20 +78,18 @@ function parseBlockTx(msg: any): BlockTx | null {
   try {
     const r = msg?.raw ?? msg;
     const amountRaw = parseFloat(r.amount ?? "0");
-    // Use actual block timestamp so historical backfill data has correct timestamps
-    // and QUICK time-window filters work. Fall back to Date.now() for live data.
     let timestamp = Date.now();
     try {
-      const tsHex = r.timestamp ?? "0x0";
-      const ts = Number(BigInt(tsHex)) * 1000;
+      const ts = Number(BigInt(r.timestamp ?? "0x0")) * 1000;
       if (ts > 0 && ts <= Date.now()) timestamp = ts;
     } catch {}
     return {
       id:          `btx-${Date.now()}-${Math.random()}`,
       from:        r.from        ?? "",
       to:          r.to          ?? "",
-      amount:      amountRaw > 0 ? amountRaw.toFixed(6) : "0",
+      amount:      amountRaw > 0 ? amountRaw.toFixed(6) : "0.000000",
       amountRaw,
+      isTransfer:  amountRaw > 0,
       txHash:      r.txHash      ?? "",
       blockNumber: r.blockNumber ?? "",
       timestamp,
@@ -106,56 +100,84 @@ function parseBlockTx(msg: any): BlockTx | null {
 }
 
 export function useWhaleAlerts(maxAlerts = 200) {
-  const [alerts,    setAlerts]    = useState<WhaleAlert[]>([]);
-  const [blockTxs,  setBlockTxs]  = useState<BlockTx[]>([]);
+  const [alerts,            setAlerts]           = useState<WhaleAlert[]>([]);
+  const [blockTxs,          setBlockTxs]         = useState<BlockTx[]>([]);
   const [totalBlockTxsSeen, setTotalBlockTxsSeen] = useState(0);
-  const [networkLargestSTT,  setNetworkLargestSTT]  = useState(0);
-  const [currentThreshold,   setCurrentThreshold]   = useState<number|null>(null);
-  const [connected, setConnected] = useState(false);
-  const [error,     setError]     = useState<string | null>(null);
-  const esRef = useRef<EventSource | null>(null);
+  const [networkLargestSTT, setNetworkLargestSTT] = useState(0);
+  const [currentThreshold,  setCurrentThreshold]  = useState<number|null>(null);
+  const [connected,         setConnected]         = useState(false);
+  const [error,             setError]             = useState<string | null>(null);
+  const esRef      = useRef<EventSource | null>(null);
+  const retryCount = useRef(0);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    const es = new EventSource("/api/whale-events");
-    esRef.current = es;
+    function connect() {
+      if (esRef.current) { esRef.current.close(); esRef.current = null; }
+      const es = new EventSource("/api/whale-events");
+      esRef.current = es;
 
-    es.onmessage = (e) => {
-      const msg = JSON.parse(e.data);
+      es.onopen = () => { setConnected(true); setError(null); retryCount.current = 0; };
 
-      if (msg.type === "init") {
-        const allEntries = msg.alerts as any[];
-        const whaleParsed = allEntries
-          .filter(a => a.type !== "block_tx")
-          .map(parseEntry).filter(Boolean).reverse() as WhaleAlert[];
-        const blockParsed = allEntries
-          .filter(a => a.type === "block_tx")
-          .map(parseBlockTx).filter(Boolean).reverse() as BlockTx[];
-        setAlerts(whaleParsed.slice(0, maxAlerts));
-        setBlockTxs(blockParsed.slice(0, 5000));
-        if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
-        if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
-      }
-      if (msg.type === "connected") setConnected(true);
-      if (msg.type === "error")     setError(msg.message);
+      es.onmessage = (e) => {
+        if (e.data === ": ping") return;
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === "init") {
+            const all = msg.alerts as any[];
+            setAlerts(
+              all.filter(a => a.type !== "block_tx")
+                .map(parseEntry).filter(Boolean).reverse().slice(0, maxAlerts) as WhaleAlert[]
+            );
+            setBlockTxs(
+              all.filter(a => a.type === "block_tx")
+                .map(parseBlockTx).filter(Boolean).reverse().slice(0, 50_000) as BlockTx[]
+            );
+            if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
+            if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
+          }
+          if (msg.type === "connected") { setConnected(true); setError(null); }
+          if (msg.type === "error") setError(msg.message);
+          if (["whale","reaction","alert","momentum"].includes(msg.type)) {
+            const a = parseEntry(msg);
+            if (a) setAlerts(prev => [a, ...prev].slice(0, maxAlerts));
+          }
+          if (msg.type === "block_tx") {
+            const tx = parseBlockTx(msg);
+            if (tx) setBlockTxs(prev => [tx, ...prev].slice(0, 50_000));
+            if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
+            if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
+          }
+          if (msg.type === "threshold_update") setCurrentThreshold(parseFloat(msg.raw?.newValue ?? "0"));
+        } catch {}
+      };
 
-      if (["whale", "reaction", "alert", "momentum"].includes(msg.type)) {
-        const alert = parseEntry(msg);
-        if (alert) setAlerts(prev => [alert, ...prev].slice(0, maxAlerts));
-      }
-      if (msg.type === "block_tx") {
-        const tx = parseBlockTx(msg);
-        if (tx) setBlockTxs(prev => [tx, ...prev].slice(0, 5000));
-        if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
-        if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
-      }
-      if (msg.type === "threshold_update") {
-        setCurrentThreshold(parseFloat(msg.raw?.newValue ?? "0"));
-      }
+      es.onerror = () => {
+        setConnected(false);
+        es.close();
+        esRef.current = null;
+        const delay = Math.min(1000 * 2 ** retryCount.current, 30_000);
+        retryCount.current = Math.min(retryCount.current + 1, 10);
+        setError(`SSE disconnected. Retrying in ${Math.round(delay / 1000)}s…`);
+        retryTimer.current = setTimeout(connect, delay);
+      };
+    }
+
+    connect();
+    return () => {
+      if (retryTimer.current) clearTimeout(retryTimer.current);
+      esRef.current?.close();
+      esRef.current = null;
     };
-
-    es.onerror = () => setError("SSE connection lost. Retrying...");
-    return () => es.close();
   }, [maxAlerts]);
 
-  return { alerts, blockTxs, totalBlockTxsSeen, networkLargestSTT, currentThreshold, connected, error };
+  // Memoised — avoids filtering 50k entries on every render
+  const sttTransfers  = useMemo(() => blockTxs.filter(tx =>  tx.isTransfer), [blockTxs]);
+  const contractCalls = useMemo(() => blockTxs.filter(tx => !tx.isTransfer), [blockTxs]);
+
+  return {
+    alerts, blockTxs, sttTransfers, contractCalls,
+    totalBlockTxsSeen, networkLargestSTT, currentThreshold,
+    connected, error,
+  };
 }

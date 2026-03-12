@@ -15,7 +15,14 @@ const T = {
 const TOKEN_COLORS: Record<string,string> = {STT:"#06b6d4",USDC:"#2775CA",WETH:"#627EEA",WBTC:"#F7931A",USDT:"#26A17B",LINK:"#2A5ADA",UNI:"#FF007A",AAVE:"#B6509E"};
 // ALL_TOKENS used as fallback — filter will be populated dynamically from actual events
 const ALL_TOKENS_FALLBACK = ["All","STT","USDC","WETH","WBTC","USDT","LINK","UNI","AAVE"];
-const TIME_PRESETS = [{label:"30m",ms:30*60_000},{label:"1h",ms:60*60_000},{label:"6h",ms:6*60*60_000},{label:"24h",ms:24*60*60_000},{label:"7d",ms:7*24*60*60_000},{label:"All",ms:0}];
+const TIME_PRESETS = [
+  {label:"30m", ms:30*60_000},
+  {label:"1h",  ms:60*60_000},
+  {label:"1d",  ms:24*60*60_000},
+  {label:"7d",  ms:7*24*60*60_000},
+  {label:"30d", ms:30*24*60*60_000},
+];
+const MAX_CUSTOM_RANGE_MS = 30*24*60*60_000; // custom date picker cap
 
 const short     = (a:string) => a ? `${a.slice(0,6)}…${a.slice(-4)}` : "—";
 const shortHash = (h:string) => h ? `${h.slice(0,10)}…${h.slice(-6)}` : "—";
@@ -123,17 +130,33 @@ function FilterBar({t,search,setSearch,minAmt,setMinAmt,maxAmt,setMaxAmt,token,s
       <div><label style={lbl}>Token</label><select value={token} onChange={e=>setToken(e.target.value)} style={{...inp,cursor:"pointer"}}>{tokenList.map(tk=><option key={tk}>{tk}</option>)}</select></div>
       <div><label style={lbl}>Min Amount</label><input type="number" value={minAmt} onChange={e=>setMinAmt(e.target.value)} placeholder="0" style={inp}/></div>
       <div><label style={lbl}>Max Amount</label><input type="number" value={maxAmt} onChange={e=>setMaxAmt(e.target.value)} placeholder="∞" style={inp}/></div>
-      <div><label style={lbl}>Date From</label><input type="datetime-local" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} style={inp}/></div>
-      <div><label style={lbl}>Date To</label><input type="datetime-local" value={dateTo} onChange={e=>setDateTo(e.target.value)} style={inp}/></div>
+      <div><label style={lbl}>Date From</label><input type="datetime-local" value={dateFrom} onChange={e=>{
+        const from=e.target.value;
+        setDateFrom(from);
+        if(from&&dateTo){
+          const diff=new Date(dateTo).getTime()-new Date(from).getTime();
+          if(diff>MAX_CUSTOM_RANGE_MS) setDateTo(new Date(new Date(from).getTime()+MAX_CUSTOM_RANGE_MS).toISOString().slice(0,16));
+        }
+        if(from) setTimePreset(0);
+      }} style={inp}/></div>
+      <div><label style={lbl}>Date To</label><input type="datetime-local" value={dateTo} onChange={e=>{
+        const to=e.target.value;
+        if(dateFrom){
+          const diff=new Date(to).getTime()-new Date(dateFrom).getTime();
+          if(diff>MAX_CUSTOM_RANGE_MS){alert("Custom date range cannot exceed 30 days.");return;}
+        }
+        setDateTo(to);
+        if(to) setTimePreset(0);
+      }} style={inp}/></div>
     </div>
     <div style={{display:"flex",gap:6,marginTop:12,alignItems:"center",flexWrap:"wrap"}}>
       <span style={{color:t.muted,fontSize:9,fontFamily:"monospace"}}>TYPE:</span>
-      {[{key:"whale",label:"🐋 Whale",color:"#06b6d4"},{key:"reaction",label:"⚡ Reaction",color:"#a855f7"},{key:"alert",label:"🚨 Alert",color:"#f97316"},{key:"momentum",label:"🔥 Momentum",color:"#ef4444"}].map(({key,label,color})=>(
+      {[{key:"whale",label:"🐋 Whale",color:"#06b6d4"},{key:"reaction",label:"⚡ Reaction",color:"#a855f7"},{key:"alert",label:"🚨 Alert",color:"#f97316"}].map(({key,label,color})=>(
         <button key={key} onClick={()=>toggleType(key)} style={{fontSize:10,fontFamily:"monospace",padding:"3px 10px",borderRadius:6,cursor:"pointer",background:showTypes.includes(key)?`${color}22`:"transparent",color:showTypes.includes(key)?color:t.muted,border:`1px solid ${showTypes.includes(key)?`${color}66`:"transparent"}`}}>{label}</button>
       ))}
       <span style={{color:t.muted,fontSize:9,fontFamily:"monospace",marginLeft:8}}>QUICK:</span>
-      {TIME_PRESETS.map(p=>(<button key={p.label} onClick={()=>{setTimePreset(p.ms);setDateFrom("");setDateTo("");}} style={{fontSize:10,fontFamily:"monospace",padding:"3px 10px",borderRadius:6,cursor:"pointer",background:timePreset===p.ms?t.accentBg:"transparent",color:timePreset===p.ms?t.accent:t.muted,border:`1px solid ${timePreset===p.ms?t.accent:"transparent"}`}}>{p.label}</button>))}
-      <button onClick={()=>{setSearch("");setMinAmt("");setMaxAmt("");setToken("All");setTimePreset(0);setDateFrom("");setDateTo("");setShowTypes(["whale","reaction","alert","momentum"]);}} style={{fontSize:10,fontFamily:"monospace",padding:"3px 10px",borderRadius:6,cursor:"pointer",color:t.errText,background:"transparent",border:"1px solid transparent",marginLeft:"auto"}}>✕ Clear</button>
+      {TIME_PRESETS.map(p=>(<button key={p.label} onClick={()=>{setTimePreset(p.ms);setDateFrom("");setDateTo("");}} style={{fontSize:10,fontFamily:"monospace",padding:"3px 10px",borderRadius:6,cursor:"pointer",background:timePreset===p.ms&&!dateFrom&&!dateTo?t.accentBg:"transparent",color:timePreset===p.ms&&!dateFrom&&!dateTo?t.accent:t.muted,border:`1px solid ${timePreset===p.ms&&!dateFrom&&!dateTo?t.accent:"transparent"}`}}>{p.label}</button>))}
+      <button onClick={()=>{setSearch("");setMinAmt("");setMaxAmt("");setToken("All");setTimePreset(30*24*60*60_000);setDateFrom("");setDateTo("");setShowTypes(["whale","reaction","alert","momentum"]);}} style={{fontSize:10,fontFamily:"monospace",padding:"3px 10px",borderRadius:6,cursor:"pointer",color:t.errText,background:"transparent",border:"1px solid transparent",marginLeft:"auto"}}>✕ Clear</button>
     </div>
   </div>);}
 
@@ -146,7 +169,7 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
   const totalPages=Math.max(1,Math.ceil(alerts.length/PAGE));
   const pageAlerts=alerts.slice(page*PAGE,(page+1)*PAGE);
   const[sttOnly,setSttOnly]=useState(false);
-  const filteredBlockTxs=useMemo(()=>sttOnly?blockTxs.filter(tx=>tx.amountRaw>0):blockTxs,[blockTxs,sttOnly]);
+  const filteredBlockTxs=useMemo(()=>sttOnly?blockTxs.filter(tx=>tx.isTransfer):blockTxs,[blockTxs,sttOnly]);
 
   // Reset to page 0 when new alerts arrive
   const prevCount=useRef(alerts.length);
@@ -217,7 +240,7 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
             <span style={{color:"#4ade80",fontSize:10,fontFamily:"monospace",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.12em"}}>🌐 Network Activity</span>
             <span style={{color:t.muted,fontSize:9,fontFamily:"monospace"}}>
-              {blockTxs.filter(tx=>tx.amountRaw>0).length} STT transfers · {blockTxs.filter(tx=>tx.amountRaw===0).length} contract calls
+              {blockTxs.filter(tx=>tx.isTransfer).length} STT transfers · {blockTxs.filter(tx=>!tx.isTransfer).length} contract calls
             </span>
             <button onClick={()=>{setSttOnly(v=>!v);setNetPage(0);}} style={{fontSize:9,fontFamily:"monospace",padding:"2px 8px",borderRadius:5,cursor:"pointer",background:sttOnly?t.accentBg:"transparent",color:sttOnly?t.accent:t.muted,border:`1px solid ${sttOnly?t.accent:t.border}`}}>
               {sttOnly?"✓ STT only":"STT only"}
@@ -232,7 +255,7 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
                   <tr key={tx.id} style={{background:i%2===0?t.tableRow:t.tableAlt}}>
                     <Td t={t}><ExLink href={addrUrl(tx.from)} label={short(tx.from)} t={t}/></Td>
                     <Td t={t}><ExLink href={addrUrl(tx.to)}   label={short(tx.to)}   t={t}/></Td>
-                    <Td t={t} accent bold>{tx.amountRaw>0?`${tx.amount} STT`:<span style={{color:t.muted,fontSize:10}}>contract call</span>}</Td>
+                    <Td t={t} accent bold>{tx.isTransfer ? `${tx.amount} STT` : <span style={{color:t.muted,fontSize:10}}>0.000000 STT</span>}</Td>
                     <Td t={t}><ExLink href={txUrl(tx.txHash)} label={shortHash(tx.txHash)} t={t}/></Td>
                     <Td t={t}><span style={{color:t.subtext,fontSize:11}}>{tx.blockNumber}</span></Td>
                     <Td t={t}><span style={{color:t.muted,fontSize:10}}>{timeAgo(tx.timestamp)}</span></Td>
@@ -542,7 +565,7 @@ function LeaderboardTab({alerts,t,persistedEntries}:{alerts:WhaleAlert[];t:typeo
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function WhaleDashboard(){
-  const{alerts,blockTxs,totalBlockTxsSeen,networkLargestSTT,currentThreshold,connected,error}=useWhaleAlerts();
+  const{alerts,blockTxs,totalBlockTxsSeen,connected,error}=useWhaleAlerts();
   const{address:walletAddr,isConnected}=useAccount();
   const{prices:oraclePrices,loading:pricesLoading,lastFetchedAt}=useOraclePrices(10_000);
   const[simulating,setSimulating]=useState(false);
@@ -589,7 +612,6 @@ export default function WhaleDashboard(){
 
   // Time-windowed network txns for KPI — available at top level
   const windowedBlockTxs = useMemo(()=>!windowCutoff?blockTxs:blockTxs.filter(tx=>tx.timestamp>=windowCutoff),[blockTxs,windowCutoff]);
-
   // Network-wide stats (all block transactions regardless of amount)
   const networkTotalSTT  = useMemo(()=>blockTxs.reduce((s,tx)=>s+tx.amountRaw,0),[blockTxs]);
 
@@ -700,22 +722,26 @@ export default function WhaleDashboard(){
           <KpiCard t={t} label="Whale Events"     value={windowedWhales.length}/>
           <KpiCard t={t} label="Reactions"         value={windowedReactions.length}   sub="Phase 2"/>
           <KpiCard t={t} label="Alerts"            value={windowedAlertCount}          sub="Phase 2"/>
-          <KpiCard t={t} label="🔥 Momentum"       value={windowedMomentumCount}       color="#ef4444" sub="on-chain bursts"/>
+          <KpiCard t={t} label="🔥 Momentum"
+            value={windowedMomentumCount>0 ? windowedMomentumCount : burst?.count ?? 0}
+            color="#ef4444"
+            sub={windowedMomentumCount>0 ? "on-chain bursts" : burst ? burst.count+" in "+burst.windowSec+"s \u00b7 live" : "on-chain bursts"}/>
           <KpiCard t={t} label="🐋 Whale Volume"
             value={totalVolUSD.sum>0 ? (totalVolUSD.sum>=1e9?`$${(totalVolUSD.sum/1e9).toFixed(2)}B`:totalVolUSD.sum>=1e6?`$${(totalVolUSD.sum/1e6).toFixed(2)}M`:`$${Math.round(totalVolUSD.sum).toLocaleString()}`) : Math.round(windowedVol).toLocaleString()}
             sub={totalVolUSD.sum>0 ? (totalVolUSD.partial?"~USD partial":"~USD est.") : "tokens"}/>
           <KpiCard t={t} label="🐋 Whale Largest"
             value={largestUSD!=null ? (largestUSD>=1e9?`$${(largestUSD/1e9).toFixed(2)}B`:largestUSD>=1e6?`$${(largestUSD/1e6).toFixed(2)}M`:`$${Math.round(largestUSD).toLocaleString()}`) : windowedLargest>0?Math.round(windowedLargest).toLocaleString():"—"}
             sub={largestUSD!=null?"~USD est.":"tokens"}/>
-          <KpiCard t={t} label="🌐 Network Txns"    value={windowedBlockTxs.length>0?windowedBlockTxs.length.toLocaleString():"—"} sub={(()=>{
-            if(!blockTxs.length) return "buffered window";
-            const oldestTs = blockTxs.reduce((min,tx)=>Math.min(min,tx.timestamp),Date.now());
-            const ageMs = now - oldestTs;
-            const ageLabel = ageMs<3600_000?`${Math.round(ageMs/60_000)}m`:ageMs<86400_000?`${(ageMs/3600_000).toFixed(1)}h`:`${(ageMs/86400_000).toFixed(1)}d`;
-            return timePreset>0?`in ${TIME_PRESETS.find(p=>p.ms===timePreset)?.label??"window"} · ${ageLabel} buffered`:`${ageLabel} buffered`;
-          })()}/>
-          <KpiCard t={t} label="🌐 Largest STT Txn" value={networkLargestSTT>0?`${Number(networkLargestSTT).toFixed(4)}`:"—"} sub="STT (native)"/>
-          <KpiCard t={t} label="⚙ Whale Threshold" value={currentThreshold!=null?`${currentThreshold} STT`:"1 STT"} sub="on-chain · live"/>
+          <KpiCard t={t} label="🌐 STT Transfers"
+            value={windowedBlockTxs.filter(tx=>tx.isTransfer).length.toLocaleString()}
+            sub={(()=>{
+              if(!blockTxs.length) return "buffered";
+              const ageMs=now-blockTxs.reduce((min,tx)=>Math.min(min,tx.timestamp),Date.now());
+              return ageMs<3600_000?`${Math.round(ageMs/60_000)}m buffered`:ageMs<86400_000?`${(ageMs/3600_000).toFixed(1)}h buffered`:`${(ageMs/86400_000).toFixed(1)}d buffered`;
+            })()}/>
+          <KpiCard t={t} label="📞 Contract Calls"
+            value={windowedBlockTxs.filter(tx=>!tx.isTransfer).length.toLocaleString()}
+            sub="zero-value txns"/>
         </div>
 
         {/* Tabs */}
