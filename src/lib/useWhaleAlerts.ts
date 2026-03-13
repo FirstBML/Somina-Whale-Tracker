@@ -17,6 +17,7 @@ export type WhaleAlert = {
   blockHash:      string;
   reactionCount?: string;
   handlerEmitter?: string;
+  txFee?:         string; // estimated fee in STT
 };
 
 export type BlockTx = {
@@ -29,6 +30,7 @@ export type BlockTx = {
   txHash:      string;
   blockNumber: string;
   timestamp:   number;
+  txFee:       string; // estimated fee in STT (gasPrice * gasLimit / 1e18)
 };
 
 function parseEntry(raw: any): WhaleAlert | null {
@@ -59,7 +61,7 @@ function parseEntry(raw: any): WhaleAlert | null {
       from:           r.from  ?? "",
       to:             r.to    ?? "",
       amountRaw:      amount,
-      amount:         (Number(amount) / 1e18).toLocaleString(undefined, { maximumFractionDigits: 2 }),
+      amount:         (Number(amount) / 1e18).toFixed(8),
       timestamp:      Number(timestamp) * 1000 || Date.now(),
       token:          r.token ?? "",
       txHash:         r.txHash      ?? "",
@@ -67,6 +69,7 @@ function parseEntry(raw: any): WhaleAlert | null {
       blockHash:      r.blockHash   ?? "",
       reactionCount:  r.reactionCount,
       handlerEmitter: r.handlerEmitter,
+      txFee:          r.txFee ?? "0",
     };
   } catch (e) {
     console.error("parseEntry error:", e, raw);
@@ -87,17 +90,25 @@ function parseBlockTx(msg: any): BlockTx | null {
       id:          `btx-${Date.now()}-${Math.random()}`,
       from:        r.from        ?? "",
       to:          r.to          ?? "",
-      amount:      amountRaw > 0 ? amountRaw.toFixed(6) : "0.000000",
+      amount:      amountRaw > 0 ? amountRaw.toFixed(8) : "0.00000000",
       amountRaw,
       isTransfer:  amountRaw > 0,
       txHash:      r.txHash      ?? "",
       blockNumber: r.blockNumber ?? "",
       timestamp,
+      txFee:       r.txFee ?? "0",
     };
   } catch {
     return null;
   }
 }
+
+export type ExplorerStats = {
+  txCount24h:   number;
+  totalFees24h: number;
+  avgFee24h:    number;
+  fetchedAt:    number;
+};
 
 export function useWhaleAlerts(maxAlerts = 200) {
   const [alerts,            setAlerts]           = useState<WhaleAlert[]>([]);
@@ -105,6 +116,7 @@ export function useWhaleAlerts(maxAlerts = 200) {
   const [totalBlockTxsSeen, setTotalBlockTxsSeen] = useState(0);
   const [networkLargestSTT, setNetworkLargestSTT] = useState(0);
   const [currentThreshold,  setCurrentThreshold]  = useState<number|null>(null);
+  const [explorerStats,     setExplorerStats]     = useState<ExplorerStats|null>(null);
   const [connected,         setConnected]         = useState(false);
   const [error,             setError]             = useState<string | null>(null);
   const esRef      = useRef<EventSource | null>(null);
@@ -135,6 +147,7 @@ export function useWhaleAlerts(maxAlerts = 200) {
             );
             if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
             if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
+            if (msg.explorerStats)     setExplorerStats(msg.explorerStats);
           }
           if (msg.type === "connected") { setConnected(true); setError(null); }
           if (msg.type === "error") setError(msg.message);
@@ -148,6 +161,13 @@ export function useWhaleAlerts(maxAlerts = 200) {
             if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
             if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
           }
+          // Receipt fee resolved — patch the txFee on the matching whale alert
+          if (msg.type === "whale_fee_update" && msg.txHash && msg.txFee) {
+            setAlerts(prev => prev.map(a =>
+              a.txHash === msg.txHash ? { ...a, txFee: msg.txFee } : a
+            ));
+          }
+          if (msg.type === "explorer_stats" && msg.stats) setExplorerStats(msg.stats);
           if (msg.type === "threshold_update") setCurrentThreshold(parseFloat(msg.raw?.newValue ?? "0"));
         } catch {}
       };
@@ -178,6 +198,6 @@ export function useWhaleAlerts(maxAlerts = 200) {
   return {
     alerts, blockTxs, sttTransfers, contractCalls,
     totalBlockTxsSeen, networkLargestSTT, currentThreshold,
-    connected, error,
+    explorerStats, connected, error,
   };
 }

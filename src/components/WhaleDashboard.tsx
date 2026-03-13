@@ -17,12 +17,12 @@ const TOKEN_COLORS: Record<string,string> = {STT:"#06b6d4",USDC:"#2775CA",WETH:"
 const ALL_TOKENS_FALLBACK = ["All","STT","USDC","WETH","WBTC","USDT","LINK","UNI","AAVE"];
 const TIME_PRESETS = [
   {label:"30m", ms:30*60_000},
-  {label:"1h",  ms:60*60_000},
-  {label:"1d",  ms:24*60*60_000},
+  {label:"24h", ms:24*60*60_000},
+  {label:"60h", ms:60*60*60_000},
   {label:"7d",  ms:7*24*60*60_000},
-  {label:"30d", ms:30*24*60*60_000},
 ];
-const MAX_CUSTOM_RANGE_MS = 30*24*60*60_000; // custom date picker cap
+
+const MAX_CUSTOM_RANGE_MS = 60*60*60_000; // 60 hours in ms = 216,000,000ms
 
 const short     = (a:string) => a ? `${a.slice(0,6)}…${a.slice(-4)}` : "—";
 const shortHash = (h:string) => h ? `${h.slice(0,10)}…${h.slice(-6)}` : "—";
@@ -67,22 +67,27 @@ const SYMBOL_COLORS: Record<string,string> = {ETH:"#627EEA",BTC:"#F7931A",USDC:"
 function PriceTicker({prices,loading,t,lastFetchedAt}:{prices:Record<string,OraclePrice>;loading:boolean;t:typeof T.dark;lastFetchedAt:number}){
   const available=TICKER_SYMBOLS.filter(s=>prices[s]&&prices[s].price>0);
   if(loading&&!available.length) return null;
+  const items = available.map(s=>{
+    const p=prices[s];
+    const color=SYMBOL_COLORS[s]??t.accent;
+    return(
+      <span key={s} style={{display:"inline-flex",alignItems:"center",gap:5,marginRight:32,flexShrink:0}}>
+        <span style={{fontSize:9,fontFamily:"monospace",fontWeight:700,color,padding:"1px 5px",borderRadius:3,background:`${color}18`,border:`1px solid ${color}33`}}>{s}</span>
+        <span style={{fontSize:11,fontFamily:"monospace",fontWeight:700,color:t.text}}>{formatUsd(p.price)}</span>
+      </span>
+    );
+  });
   return(
-    <div style={{display:"flex",gap:20,alignItems:"center",overflowX:"auto",flexWrap:"nowrap",borderTop:`1px solid ${t.border}`,marginTop:8,paddingTop:8}}>
-      <span style={{color:t.muted,fontSize:8,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.15em",flexShrink:0}}>Oracle Prices</span>
-      {available.map(s=>{
-        const p=prices[s];
-        const color=SYMBOL_COLORS[s]??t.accent;
-        return(
-          <div key={s} style={{display:"flex",alignItems:"center",gap:5,flexShrink:0}}>
-            <span style={{fontSize:9,fontFamily:"monospace",fontWeight:700,color,padding:"1px 5px",borderRadius:3,background:`${color}18`,border:`1px solid ${color}33`}}>{s}</span>
-            <span style={{fontSize:11,fontFamily:"monospace",fontWeight:700,color:t.text}}>{formatUsd(p.price)}</span>
-          </div>
-        );
-      })}
-      <span style={{fontSize:8,color:t.muted,fontFamily:"monospace",marginLeft:"auto",flexShrink:0}}>
+    <div style={{display:"flex",alignItems:"center",gap:12,borderTop:`1px solid ${t.border}`,marginTop:8,paddingTop:8,overflow:"hidden"}}>
+      <span style={{color:t.muted,fontSize:8,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.15em",flexShrink:0,whiteSpace:"nowrap"}}>Oracle Prices</span>
+      <div style={{flex:1,overflow:"hidden",position:"relative"}}>
+        <div style={{display:"inline-flex",animation:"tickerScroll 20s linear infinite",whiteSpace:"nowrap"}}>
+          {items}{items}{/* duplicate for seamless loop */}
+        </div>
+      </div>
+      <span style={{fontSize:8,color:t.muted,fontFamily:"monospace",flexShrink:0,whiteSpace:"nowrap"}}>
         Protofire · DIA · Somnia Testnet
-        {lastFetchedAt>0&&<span style={{marginLeft:6,color:t.muted}}>· fetched {timeAgo(lastFetchedAt)}</span>}
+        {lastFetchedAt>0&&<span style={{marginLeft:6}}>· {timeAgo(lastFetchedAt)}</span>}
       </span>
     </div>
   );
@@ -109,7 +114,7 @@ function BurstBanner({burst,t}:{burst:Burst;t:typeof T.dark}){
       <div>
         <div style={{color:"#f97316",fontWeight:700,fontSize:12,fontFamily:"monospace",letterSpacing:"0.1em",textTransform:"uppercase"}}>Whale Momentum Detected</div>
         <div style={{color:"#fed7aa",fontSize:11,fontFamily:"monospace",marginTop:2}}>
-          {burst.count} transfers · {Math.round(burst.volume).toLocaleString()} tokens · within {burst.windowSec}s
+          {burst.count} transfers · {burst.volume.toFixed(8)} tokens · within {burst.windowSec}s
           <span style={{color:"#f97316",marginLeft:10}}>{tokenList}</span>
         </div>
       </div>
@@ -119,7 +124,7 @@ function BurstBanner({burst,t}:{burst:Burst;t:typeof T.dark}){
 }
 
 // ── Filter Bar ────────────────────────────────────────────────────────────────
-function FilterBar({t,search,setSearch,minAmt,setMinAmt,maxAmt,setMaxAmt,token,setToken,timePreset,setTimePreset,dateFrom,setDateFrom,dateTo,setDateTo,showTypes,setShowTypes,tokenList}:{t:typeof T.dark;search:string;setSearch:(v:string)=>void;minAmt:string;setMinAmt:(v:string)=>void;maxAmt:string;setMaxAmt:(v:string)=>void;token:string;setToken:(v:string)=>void;timePreset:number;setTimePreset:(v:number)=>void;dateFrom:string;setDateFrom:(v:string)=>void;dateTo:string;setDateTo:(v:string)=>void;showTypes:string[];setShowTypes:(v:string[])=>void;tokenList:string[];}){
+function FilterBar({t,search,setSearch,minAmt,setMinAmt,maxAmt,setMaxAmt,token,setToken,timePreset,setTimePreset,showTypes,setShowTypes,tokenList}:{t:typeof T.dark;search:string;setSearch:(v:string)=>void;minAmt:string;setMinAmt:(v:string)=>void;maxAmt:string;setMaxAmt:(v:string)=>void;token:string;setToken:(v:string)=>void;timePreset:number;setTimePreset:(v:number)=>void;showTypes:string[];setShowTypes:(v:string[])=>void;tokenList:string[];}){
   const inp:React.CSSProperties={background:t.input,border:`1px solid ${t.border}`,borderRadius:7,padding:"7px 10px",fontSize:11,fontFamily:"monospace",color:t.text,outline:"none",width:"100%",boxSizing:"border-box"};
   const lbl:React.CSSProperties={color:t.subtext,fontSize:9,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",display:"block",marginBottom:4};
   const toggleType=(type:string)=>setShowTypes(showTypes.includes(type)?showTypes.filter(x=>x!==type):[...showTypes,type]);
@@ -130,50 +135,30 @@ function FilterBar({t,search,setSearch,minAmt,setMinAmt,maxAmt,setMaxAmt,token,s
       <div><label style={lbl}>Token</label><select value={token} onChange={e=>setToken(e.target.value)} style={{...inp,cursor:"pointer"}}>{tokenList.map(tk=><option key={tk}>{tk}</option>)}</select></div>
       <div><label style={lbl}>Min Amount</label><input type="number" value={minAmt} onChange={e=>setMinAmt(e.target.value)} placeholder="0" style={inp}/></div>
       <div><label style={lbl}>Max Amount</label><input type="number" value={maxAmt} onChange={e=>setMaxAmt(e.target.value)} placeholder="∞" style={inp}/></div>
-      <div><label style={lbl}>Date From</label><input type="datetime-local" value={dateFrom} onChange={e=>{
-        const from=e.target.value;
-        setDateFrom(from);
-        if(from&&dateTo){
-          const diff=new Date(dateTo).getTime()-new Date(from).getTime();
-          if(diff>MAX_CUSTOM_RANGE_MS) setDateTo(new Date(new Date(from).getTime()+MAX_CUSTOM_RANGE_MS).toISOString().slice(0,16));
-        }
-        if(from) setTimePreset(0);
-      }} style={inp}/></div>
-      <div><label style={lbl}>Date To</label><input type="datetime-local" value={dateTo} onChange={e=>{
-        const to=e.target.value;
-        if(dateFrom){
-          const diff=new Date(to).getTime()-new Date(dateFrom).getTime();
-          if(diff>MAX_CUSTOM_RANGE_MS){alert("Custom date range cannot exceed 30 days.");return;}
-        }
-        setDateTo(to);
-        if(to) setTimePreset(0);
-      }} style={inp}/></div>
+      <div><label style={lbl}>Date Window</label><select value={timePreset} onChange={e=>setTimePreset(parseInt(e.target.value))} style={{...inp,cursor:"pointer"}}>{TIME_PRESETS.map(p=><option key={p.label} value={p.ms}>{p.label}</option>)}</select></div>
     </div>
     <div style={{display:"flex",gap:6,marginTop:12,alignItems:"center",flexWrap:"wrap"}}>
       <span style={{color:t.muted,fontSize:9,fontFamily:"monospace"}}>TYPE:</span>
       {[{key:"whale",label:"🐋 Whale",color:"#06b6d4"},{key:"reaction",label:"⚡ Reaction",color:"#a855f7"},{key:"alert",label:"🚨 Alert",color:"#f97316"}].map(({key,label,color})=>(
         <button key={key} onClick={()=>toggleType(key)} style={{fontSize:10,fontFamily:"monospace",padding:"3px 10px",borderRadius:6,cursor:"pointer",background:showTypes.includes(key)?`${color}22`:"transparent",color:showTypes.includes(key)?color:t.muted,border:`1px solid ${showTypes.includes(key)?`${color}66`:"transparent"}`}}>{label}</button>
       ))}
-      <span style={{color:t.muted,fontSize:9,fontFamily:"monospace",marginLeft:8}}>QUICK:</span>
-      {TIME_PRESETS.map(p=>(<button key={p.label} onClick={()=>{setTimePreset(p.ms);setDateFrom("");setDateTo("");}} style={{fontSize:10,fontFamily:"monospace",padding:"3px 10px",borderRadius:6,cursor:"pointer",background:timePreset===p.ms&&!dateFrom&&!dateTo?t.accentBg:"transparent",color:timePreset===p.ms&&!dateFrom&&!dateTo?t.accent:t.muted,border:`1px solid ${timePreset===p.ms&&!dateFrom&&!dateTo?t.accent:"transparent"}`}}>{p.label}</button>))}
-      <button onClick={()=>{setSearch("");setMinAmt("");setMaxAmt("");setToken("All");setTimePreset(30*24*60*60_000);setDateFrom("");setDateTo("");setShowTypes(["whale","reaction","alert","momentum"]);}} style={{fontSize:10,fontFamily:"monospace",padding:"3px 10px",borderRadius:6,cursor:"pointer",color:t.errText,background:"transparent",border:"1px solid transparent",marginLeft:"auto"}}>✕ Clear</button>
+      <button onClick={()=>{setSearch("");setMinAmt("");setMaxAmt("");setToken("All");setTimePreset(7*24*60*60_000);setShowTypes(["whale","reaction","alert","momentum"]);}} style={{fontSize:10,fontFamily:"monospace",padding:"3px 10px",borderRadius:6,cursor:"pointer",color:t.errText,background:"transparent",border:"1px solid transparent",marginLeft:"auto"}}>✕ Clear</button>
     </div>
-  </div>);}
+  </div>);
+}
 
 // ── Live Feed Tab ─────────────────────────────────────────────────────────────
-function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBlockTxsSeen,timePreset}:{alerts:WhaleAlert[];t:typeof T.dark;connectedAddr?:string;burst:Burst;oraclePrices:Record<string,any>;blockTxs:BlockTx[];totalBlockTxsSeen:number;timePreset:number}){
+function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBlockTxsSeen,timePreset,feedSubTab,setFeedSubTab,netMinAmt,setNetMinAmt,netMaxAmt,setNetMaxAmt}:{alerts:WhaleAlert[];t:typeof T.dark;connectedAddr?:string;burst:Burst;oraclePrices:Record<string,any>;blockTxs:BlockTx[];totalBlockTxsSeen:number;timePreset:number;feedSubTab:"alerts"|"network-activity";setFeedSubTab:(v:"alerts"|"network-activity")=>void;netMinAmt:string;setNetMinAmt:(v:string)=>void;netMaxAmt:string;setNetMaxAmt:(v:string)=>void;}){
   const[expanded,setExpanded]=useState<string|null>(null);
   const[page,setPage]=useState(0);
-  const[netPage,setNetPage]=useState(0);
-  const PAGE=10, NET_PAGE=10;
+  const PAGE=10;
   const totalPages=Math.max(1,Math.ceil(alerts.length/PAGE));
   const pageAlerts=alerts.slice(page*PAGE,(page+1)*PAGE);
-  const[sttOnly,setSttOnly]=useState(false);
-  const filteredBlockTxs=useMemo(()=>sttOnly?blockTxs.filter(tx=>tx.isTransfer):blockTxs,[blockTxs,sttOnly]);
 
   // Reset to page 0 when new alerts arrive
   const prevCount=useRef(alerts.length);
   useEffect(()=>{if(alerts.length!==prevCount.current){setPage(0);prevCount.current=alerts.length;}},[alerts.length]);
+  
   function rowBg(a:WhaleAlert,i:number){
     const isMyTx=connectedAddr&&(a.from.toLowerCase()===connectedAddr.toLowerCase()||a.to.toLowerCase()===connectedAddr.toLowerCase());
     if(isMyTx)return t.myTxRow;
@@ -182,99 +167,120 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
     if(a.type==="momentum")return "rgba(239,68,68,0.08)";
     return i%2===0?t.tableRow:t.tableAlt;
   }
+
+  // Network Activity filters
+  const filteredNetTxs = useMemo(()=>{
+    return blockTxs.filter(tx=>{
+      if(netMinAmt && tx.amountRaw < parseFloat(netMinAmt)) return false;
+      if(netMaxAmt && tx.amountRaw > parseFloat(netMaxAmt)) return false;
+      return true;
+    }).sort((a,b)=>b.timestamp-a.timestamp);
+  },[blockTxs,netMinAmt,netMaxAmt]);
+
+  const[netPage,setNetPage]=useState(0);
+  const NET_PAGE=10;
+  const netPages=Math.max(1,Math.ceil(filteredNetTxs.length/NET_PAGE));
+  const netSlice=filteredNetTxs.slice(netPage*NET_PAGE,(netPage+1)*NET_PAGE);
   return(<div style={{padding:"14px 14px 0"}}>
     <BurstBanner burst={burst} t={t}/>
-    {!alerts.length
-      ? <div style={{padding:48,textAlign:"center",color:t.muted,fontFamily:"monospace",fontSize:13}}>Waiting for activity...</div>
-      : <><div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
-          <thead><tr>{["Type","Token","Amount","USD Value","From","To","TX Hash","Block","Time",""].map(h=><Th key={h} t={t}>{h}</Th>)}</tr></thead>
-          <tbody>{pageAlerts.map((a,i)=>{
-            const isMyTx=connectedAddr&&(a.from.toLowerCase()===connectedAddr.toLowerCase()||a.to.toLowerCase()===connectedAddr.toLowerCase());
-            const usd=a.type==="whale"?usdVal(num(a.amount),a.token,oraclePrices):null;
-            return(<>
-              <tr key={a.id} style={{background:rowBg(a,i),cursor:"pointer",transition:"background 0.15s"}} onMouseEnter={e=>(e.currentTarget.style.background=t.rowHover)} onMouseLeave={e=>(e.currentTarget.style.background=rowBg(a,i))}>
-                <Td t={t}><div style={{display:"flex",gap:4,alignItems:"center"}}><TypeBadge type={a.type} t={t}/>{isMyTx&&<span style={{fontSize:8,background:"rgba(74,222,128,0.2)",color:"#4ade80",border:"1px solid rgba(74,222,128,0.4)",borderRadius:3,padding:"1px 5px",fontFamily:"monospace"}}>YOU</span>}</div></Td>
-                <Td t={t}>{a.token?<Badge text={a.token} color={TOKEN_COLORS[a.token]} t={t}/>:<span style={{color:t.muted,fontSize:11}}>—</span>}</Td>
-                <Td t={t} accent bold>{a.type==="whale"?num(a.amount).toLocaleString():<span style={{color:t.muted}}>—</span>}</Td>
-                <Td t={t}>{usd?<span style={{color:"#4ade80",fontFamily:"monospace",fontSize:11,fontWeight:700}}>{usd}</span>:a.type==="whale"&&a.token?<span style={{color:t.muted,fontSize:10}}>{num(a.amount).toLocaleString()} {a.token}</span>:<span style={{color:t.muted,fontSize:10}}>—</span>}</Td>
-                <Td t={t}><ExLink href={a.from?addrUrl(a.from):""} label={a.from?short(a.from):"—"} t={t}/></Td>
-                <Td t={t}><ExLink href={a.to?addrUrl(a.to):""} label={a.to?short(a.to):"—"} t={t}/></Td>
-                <Td t={t}><ExLink href={a.txHash?txUrl(a.txHash):""} label={shortHash(a.txHash)} t={t}/></Td>
-                <Td t={t}><span style={{color:t.subtext,fontSize:11}}>{a.blockNumber||"—"}</span></Td>
-                <Td t={t}><span style={{color:t.muted,fontSize:10}}>{timeAgo(a.timestamp)}</span></Td>
-                <td style={{padding:"10px 12px",borderBottom:`1px solid ${t.border}`}}><button onClick={()=>setExpanded(expanded===a.id?null:a.id)} style={{fontSize:9,fontFamily:"monospace",padding:"2px 8px",borderRadius:4,cursor:"pointer",background:t.accentBg,color:t.accent,border:`1px solid ${t.border}`}}>{expanded===a.id?"▲":"▼"}</button></td>
-              </tr>
-              {expanded===a.id&&(<tr key={`${a.id}-exp`} style={{background:t.accentBg}}><td colSpan={10} style={{padding:"12px 16px",borderBottom:`1px solid ${t.border}`}}>
-                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(260px, 1fr))",gap:12,fontFamily:"monospace",fontSize:11}}>
-                  <div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Full TX Hash</span><div style={{marginTop:4}}><ExLink href={txUrl(a.txHash)} label={a.txHash||"—"} t={t}/></div></div>
-                  {a.type==="whale"&&<><div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>From</span><div style={{marginTop:4}}><ExLink href={addrUrl(a.from)} label={a.from} t={t}/></div></div><div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>To</span><div style={{marginTop:4}}><ExLink href={addrUrl(a.to)} label={a.to} t={t}/></div></div><div><span style={{color:t.accent,fontWeight:700,marginTop:4,fontSize:9,textTransform:"uppercase"}}>Amount</span><div style={{color:t.accent,fontWeight:700,marginTop:4}}>{num(a.amount).toLocaleString()} <span style={{color:t.muted}}>{a.token}</span>{usd&&<span style={{color:"#4ade80",marginLeft:8}}>{usd}</span>}</div></div></>}
-                  {a.type==="reaction"&&<><div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Reaction #</span><div style={{color:"#a855f7",fontWeight:700,marginTop:4}}>{a.reactionCount}</div></div><div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Handler Emitter</span><div style={{marginTop:4}}><ExLink href={addrUrl(a.handlerEmitter??"")} label={short(a.handlerEmitter??"")} t={t}/></div></div></>}
-                  {a.type==="alert"&&<div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Alert At Reaction</span><div style={{color:"#f97316",fontWeight:700,marginTop:4}}>#{a.reactionCount}</div></div>}
-                  <div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Block</span><div style={{color:t.text,marginTop:4}}>{a.blockNumber||"—"}</div></div>
-                  <div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Timestamp</span><div style={{color:t.text,marginTop:4}}>{fmtTime(a.timestamp)}</div></div>
-                </div>
-              </td></tr>)}
-            </>);
-          })}</tbody>
-        </table></div>
-        {/* Pagination */}
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 4px",borderTop:`1px solid ${t.border}`}}>
-          <span style={{color:t.muted,fontSize:10,fontFamily:"monospace"}}>{alerts.length} events · page {page+1} of {totalPages}</span>
-          <div style={{display:"flex",gap:6}}>
-            <button onClick={()=>setPage(0)} disabled={page===0} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:page===0?"not-allowed":"pointer",background:t.accentBg,color:page===0?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:page===0?0.4:1}}>«</button>
-            <button onClick={()=>setPage(p=>Math.max(0,p-1))} disabled={page===0} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:page===0?"not-allowed":"pointer",background:t.accentBg,color:page===0?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:page===0?0.4:1}}>‹ Prev</button>
-            <button onClick={()=>setPage(p=>Math.min(totalPages-1,p+1))} disabled={page>=totalPages-1} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:page>=totalPages-1?"not-allowed":"pointer",background:t.accentBg,color:page>=totalPages-1?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:page>=totalPages-1?0.4:1}}>Next ›</button>
-            <button onClick={()=>setPage(totalPages-1)} disabled={page>=totalPages-1} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:page>=totalPages-1?"not-allowed":"pointer",background:t.accentBg,color:page>=totalPages-1?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:page>=totalPages-1?0.4:1}}>»</button>
+    
+    {/* Sub-tabs for Live Feed */}
+    <div style={{display:"flex",gap:4,marginBottom:12,borderBottom:`1px solid ${t.border}`,paddingBottom:8}}>
+      <button onClick={()=>setFeedSubTab("alerts")} style={{fontSize:10,fontFamily:"monospace",padding:"4px 12px",borderRadius:6,cursor:"pointer",background:feedSubTab==="alerts"?t.accentBg:"transparent",color:feedSubTab==="alerts"?t.accent:t.muted,border:`1px solid ${feedSubTab==="alerts"?t.accent:"transparent"}`}}>Whale Alerts</button>
+      <button onClick={()=>setFeedSubTab("network-activity")} style={{fontSize:10,fontFamily:"monospace",padding:"4px 12px",borderRadius:6,cursor:"pointer",background:feedSubTab==="network-activity"?t.accentBg:"transparent",color:feedSubTab==="network-activity"?t.accent:t.muted,border:`1px solid ${feedSubTab==="network-activity"?t.accent:"transparent"}`}}>🌐 Network Activity</button>
+    </div>
+
+    {feedSubTab==="alerts"&&(
+      <>
+        {!alerts.length
+          ? <div style={{padding:48,textAlign:"center",color:t.muted,fontFamily:"monospace",fontSize:13}}>Waiting for activity...</div>
+          : <><div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
+              <thead><tr>{["Type","Token","Amount","USD Value","Tx Fee (STT)","From","To","TX Hash","Block","Time",""].map(h=><Th key={h} t={t}>{h}</Th>)}</tr></thead>
+              <tbody>{pageAlerts.map((a,i)=>{
+                const isMyTx=connectedAddr&&(a.from.toLowerCase()===connectedAddr.toLowerCase()||a.to.toLowerCase()===connectedAddr.toLowerCase());
+                const usd=a.type==="whale"?usdVal(num(a.amount),a.token,oraclePrices):null;
+                return(<>
+                  <tr key={a.id} style={{background:rowBg(a,i),cursor:"pointer",transition:"background 0.15s"}} onMouseEnter={e=>(e.currentTarget.style.background=t.rowHover)} onMouseLeave={e=>(e.currentTarget.style.background=rowBg(a,i))}>
+                    <Td t={t}><div style={{display:"flex",gap:4,alignItems:"center"}}><TypeBadge type={a.type} t={t}/>{isMyTx&&<span style={{fontSize:8,background:"rgba(74,222,128,0.2)",color:"#4ade80",border:"1px solid rgba(74,222,128,0.4)",borderRadius:3,padding:"1px 5px",fontFamily:"monospace"}}>YOU</span>}</div></Td>
+                    <Td t={t}>{a.token?<Badge text={a.token} color={TOKEN_COLORS[a.token]} t={t}/>:<span style={{color:t.muted,fontSize:11}}>—</span>}</Td>
+                    <Td t={t} accent bold>{a.type==="whale"?parseFloat(a.amount).toFixed(8):<span style={{color:t.muted}}>—</span>}</Td>
+                    <Td t={t}>{usd?<span style={{color:"#4ade80",fontFamily:"monospace",fontSize:11,fontWeight:700}}>{usd}</span>:a.type==="whale"&&a.token?<span style={{color:t.muted,fontSize:10}}>{parseFloat(a.amount).toFixed(8)} {a.token}</span>:<span style={{color:t.muted,fontSize:10}}>—</span>}</Td>
+                    <Td t={t}><span style={{color:a.txFee?.startsWith("~")?t.muted:"#f59e0b",fontSize:10,fontFamily:"monospace"}}>{a.txFee&&parseFloat(a.txFee.replace("~",""))>0?(a.txFee.startsWith("~")?"~":"")+parseFloat(a.txFee.replace("~","")).toFixed(8):"—"}</span></Td>
+                    <Td t={t}><ExLink href={a.from?addrUrl(a.from):""} label={a.from?short(a.from):"—"} t={t}/></Td>
+                    <Td t={t}><ExLink href={a.to?addrUrl(a.to):""} label={a.to?short(a.to):"—"} t={t}/></Td>
+                    <Td t={t}><ExLink href={a.txHash?txUrl(a.txHash):""} label={shortHash(a.txHash)} t={t}/></Td>
+                    <Td t={t}><span style={{color:t.subtext,fontSize:11}}>{a.blockNumber||"—"}</span></Td>
+                    <Td t={t}><span style={{color:t.muted,fontSize:10}}>{timeAgo(a.timestamp)}</span></Td>
+                    <td style={{padding:"10px 12px",borderBottom:`1px solid ${t.border}`}}><button onClick={()=>setExpanded(expanded===a.id?null:a.id)} style={{fontSize:9,fontFamily:"monospace",padding:"2px 8px",borderRadius:4,cursor:"pointer",background:t.accentBg,color:t.accent,border:`1px solid ${t.border}`}}>{expanded===a.id?"▲":"▼"}</button></td>
+                  </tr>
+                  {expanded===a.id&&(<tr key={`${a.id}-exp`} style={{background:t.accentBg}}><td colSpan={11} style={{padding:"12px 16px",borderBottom:`1px solid ${t.border}`}}>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(260px, 1fr))",gap:12,fontFamily:"monospace",fontSize:11}}>
+                      <div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Full TX Hash</span><div style={{marginTop:4}}><ExLink href={txUrl(a.txHash)} label={a.txHash||"—"} t={t}/></div></div>
+                      {a.type==="whale"&&<><div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>From</span><div style={{marginTop:4}}><ExLink href={addrUrl(a.from)} label={a.from} t={t}/></div></div><div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>To</span><div style={{marginTop:4}}><ExLink href={addrUrl(a.to)} label={a.to} t={t}/></div></div><div><span style={{color:t.accent,fontWeight:700,marginTop:4,fontSize:9,textTransform:"uppercase"}}>Amount</span><div style={{color:t.accent,fontWeight:700,marginTop:4}}>{num(a.amount).toLocaleString()} <span style={{color:t.muted}}>{a.token}</span>{usd&&<span style={{color:"#4ade80",marginLeft:8}}>{usd}</span>}</div></div></>}
+                      {a.type==="reaction"&&<><div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Reaction #</span><div style={{color:"#a855f7",fontWeight:700,marginTop:4}}>{a.reactionCount}</div></div><div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Handler Emitter</span><div style={{marginTop:4}}><ExLink href={addrUrl(a.handlerEmitter??"")} label={short(a.handlerEmitter??"")} t={t}/></div></div></>}
+                      {a.type==="alert"&&<div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Alert At Reaction</span><div style={{color:"#f97316",fontWeight:700,marginTop:4}}>#{a.reactionCount}</div></div>}
+                      <div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Block</span><div style={{color:t.text,marginTop:4}}>{a.blockNumber||"—"}</div></div>
+                      <div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Timestamp</span><div style={{color:t.text,marginTop:4}}>{fmtTime(a.timestamp)}</div></div>
+                    </div>
+                  </td></tr>)}
+                </>);
+              })}</tbody>
+            </table></div>
+            {/* Pagination */}
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 4px",borderTop:`1px solid ${t.border}`}}>
+              <span style={{color:t.muted,fontSize:10,fontFamily:"monospace"}}>{alerts.length} events · page {page+1} of {totalPages}</span>
+              <div style={{display:"flex",gap:6}}>
+                <button onClick={()=>setPage(0)} disabled={page===0} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:page===0?"not-allowed":"pointer",background:t.accentBg,color:page===0?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:page===0?0.4:1}}>«</button>
+                <button onClick={()=>setPage(p=>Math.max(0,p-1))} disabled={page===0} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:page===0?"not-allowed":"pointer",background:t.accentBg,color:page===0?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:page===0?0.4:1}}>‹ Prev</button>
+                <button onClick={()=>setPage(p=>Math.min(totalPages-1,p+1))} disabled={page>=totalPages-1} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:page>=totalPages-1?"not-allowed":"pointer",background:t.accentBg,color:page>=totalPages-1?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:page>=totalPages-1?0.4:1}}>Next ›</button>
+                <button onClick={()=>setPage(totalPages-1)} disabled={page>=totalPages-1} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:page>=totalPages-1?"not-allowed":"pointer",background:t.accentBg,color:page>=totalPages-1?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:page>=totalPages-1?0.4:1}}>»</button>
+              </div>
+            </div>
+          </>
+        }
+      </>
+    )}
+
+    {feedSubTab==="network-activity"&&(
+      <>
+        {/* Network Activity Filters */}
+        <div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:12,padding:12,marginBottom:12}}>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(120px, 1fr))",gap:8}}>
+            <div><label style={{color:t.subtext,fontSize:9,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",display:"block",marginBottom:4}}>Min Amount (STT)</label><input type="number" value={netMinAmt} onChange={e=>setNetMinAmt(e.target.value)} placeholder="0" style={{background:t.input,border:`1px solid ${t.border}`,borderRadius:7,padding:"7px 10px",fontSize:11,fontFamily:"monospace",color:t.text,outline:"none",width:"100%",boxSizing:"border-box"}}/></div>
+            <div><label style={{color:t.subtext,fontSize:9,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",display:"block",marginBottom:4}}>Max Amount (STT)</label><input type="number" value={netMaxAmt} onChange={e=>setNetMaxAmt(e.target.value)} placeholder="∞" style={{background:t.input,border:`1px solid ${t.border}`,borderRadius:7,padding:"7px 10px",fontSize:11,fontFamily:"monospace",color:t.text,outline:"none",width:"100%",boxSizing:"border-box"}}/></div>
+            <div style={{display:"flex",alignItems:"flex-end"}}><button onClick={()=>{setNetMinAmt("");setNetMaxAmt("");}} style={{fontSize:9,fontFamily:"monospace",padding:"6px 12px",borderRadius:6,cursor:"pointer",color:t.errText,background:"transparent",border:"1px solid transparent"}}>✕ Clear</button></div>
           </div>
         </div>
-      </>
-    }
 
-    {/* ── Network Activity Table ─────────────────────────────────────────── */}
-    <div style={{marginTop:20,borderTop:`1px solid ${t.border}`,paddingTop:14}}>
-      {(()=>{
-        const netPages=Math.max(1,Math.ceil(filteredBlockTxs.length/NET_PAGE));
-        const netSlice=filteredBlockTxs.slice(netPage*NET_PAGE,(netPage+1)*NET_PAGE);
-        const windowLabel=timePreset>0?`last ${TIME_PRESETS.find(p=>p.ms===timePreset)?.label??""}`:"all buffered";
-        return(<>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-            <span style={{color:"#4ade80",fontSize:10,fontFamily:"monospace",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.12em"}}>🌐 Network Activity</span>
-            <span style={{color:t.muted,fontSize:9,fontFamily:"monospace"}}>
-              {blockTxs.filter(tx=>tx.isTransfer).length} STT transfers · {blockTxs.filter(tx=>!tx.isTransfer).length} contract calls
-            </span>
-            <button onClick={()=>{setSttOnly(v=>!v);setNetPage(0);}} style={{fontSize:9,fontFamily:"monospace",padding:"2px 8px",borderRadius:5,cursor:"pointer",background:sttOnly?t.accentBg:"transparent",color:sttOnly?t.accent:t.muted,border:`1px solid ${sttOnly?t.accent:t.border}`}}>
-              {sttOnly?"✓ STT only":"STT only"}
-            </button>
-            <span style={{marginLeft:"auto",color:t.muted,fontSize:9,fontFamily:"monospace"}}>{filteredBlockTxs.length} shown · {totalBlockTxsSeen.toLocaleString()} seen total</span>
-          </div>
-          {filteredBlockTxs.length===0
-            ? <div style={{padding:"24px",textAlign:"center",color:t.muted,fontSize:11,fontFamily:"monospace"}}>Waiting for block activity...</div>
-            : <><div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
-                <thead><tr>{["From","To","Amount (STT)","TX Hash","Block","Time"].map(h=><Th key={h} t={t}>{h}</Th>)}</tr></thead>
-                <tbody>{netSlice.map((tx,i)=>(
-                  <tr key={tx.id} style={{background:i%2===0?t.tableRow:t.tableAlt}}>
-                    <Td t={t}><ExLink href={addrUrl(tx.from)} label={short(tx.from)} t={t}/></Td>
-                    <Td t={t}><ExLink href={addrUrl(tx.to)}   label={short(tx.to)}   t={t}/></Td>
-                    <Td t={t} accent bold>{tx.isTransfer ? `${tx.amount} STT` : <span style={{color:t.muted,fontSize:10}}>0.000000 STT</span>}</Td>
-                    <Td t={t}><ExLink href={txUrl(tx.txHash)} label={shortHash(tx.txHash)} t={t}/></Td>
-                    <Td t={t}><span style={{color:t.subtext,fontSize:11}}>{tx.blockNumber}</span></Td>
-                    <Td t={t}><span style={{color:t.muted,fontSize:10}}>{timeAgo(tx.timestamp)}</span></Td>
-                  </tr>
-                ))}</tbody>
-              </table></div>
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 4px",borderTop:`1px solid ${t.border}`}}>
-                <span style={{color:t.muted,fontSize:10,fontFamily:"monospace"}}>{filteredBlockTxs.length} shown · page {netPage+1} of {netPages}</span>
-                <div style={{display:"flex",gap:6}}>
-                  {[["«",()=>setNetPage(0),netPage===0],["‹ Prev",()=>setNetPage(p=>Math.max(0,p-1)),netPage===0],["Next ›",()=>setNetPage(p=>Math.min(netPages-1,p+1)),netPage>=netPages-1],["»",()=>setNetPage(netPages-1),netPage>=netPages-1]].map(([label,fn,dis])=>(
-                    <button key={label as string} onClick={fn as any} disabled={dis as boolean} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:(dis as boolean)?"not-allowed":"pointer",background:t.accentBg,color:(dis as boolean)?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:(dis as boolean)?0.4:1}}>{label as string}</button>
-                  ))}
-                </div>
+        {filteredNetTxs.length===0
+          ? <div style={{padding:"24px",textAlign:"center",color:t.muted,fontSize:11,fontFamily:"monospace"}}>Waiting for block activity...</div>
+          : <><div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
+              <thead><tr>{["From","To","Amount (STT)","Tx Fee (STT)","TX Hash","Block","Time"].map(h=><Th key={h} t={t}>{h}</Th>)}</tr></thead>
+              <tbody>{netSlice.map((tx,i)=>(
+                <tr key={tx.id} style={{background:i%2===0?t.tableRow:t.tableAlt}}>
+                  <Td t={t}><ExLink href={addrUrl(tx.from)} label={short(tx.from)} t={t}/></Td>
+                  <Td t={t}><ExLink href={addrUrl(tx.to)}   label={short(tx.to)}   t={t}/></Td>
+                  <Td t={t} accent bold>{tx.isTransfer ? `${(parseFloat(tx.amount)).toFixed(8)} STT` : <span style={{color:t.muted,fontSize:10}}>0.00000000 STT</span>}</Td>
+                  <Td t={t}><span style={{color:tx.txFee?.startsWith("~")?t.muted:"#f59e0b",fontSize:10,fontFamily:"monospace"}}>{tx.txFee&&parseFloat(tx.txFee.replace("~",""))>0?(tx.txFee.startsWith("~")?"~":"")+parseFloat(tx.txFee.replace("~","")).toFixed(8)+" STT":"—"}</span></Td>
+                  <Td t={t}><ExLink href={txUrl(tx.txHash)} label={shortHash(tx.txHash)} t={t}/></Td>
+                  <Td t={t}><span style={{color:t.subtext,fontSize:11}}>{tx.blockNumber}</span></Td>
+                  <Td t={t}><span style={{color:t.muted,fontSize:10}}>{timeAgo(tx.timestamp)}</span></Td>
+                </tr>
+              ))}</tbody>
+            </table></div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 4px",borderTop:`1px solid ${t.border}`}}>
+              <span style={{color:t.muted,fontSize:10,fontFamily:"monospace"}}>{filteredNetTxs.length} total · page {netPage+1} of {netPages}</span>
+              <div style={{display:"flex",gap:6}}>
+                <button onClick={()=>setNetPage(0)} disabled={netPage===0} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:netPage===0?"not-allowed":"pointer",background:t.accentBg,color:netPage===0?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:netPage===0?0.4:1}}>«</button>
+                <button onClick={()=>setNetPage(p=>Math.max(0,p-1))} disabled={netPage===0} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:netPage===0?"not-allowed":"pointer",background:t.accentBg,color:netPage===0?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:netPage===0?0.4:1}}>‹ Prev</button>
+                <button onClick={()=>setNetPage(p=>Math.min(netPages-1,p+1))} disabled={netPage>=netPages-1} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:netPage>=netPages-1?"not-allowed":"pointer",background:t.accentBg,color:netPage>=netPages-1?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:netPage>=netPages-1?0.4:1}}>Next ›</button>
+                <button onClick={()=>setNetPage(netPages-1)} disabled={netPage>=netPages-1} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:netPage>=netPages-1?"not-allowed":"pointer",background:t.accentBg,color:netPage>=netPages-1?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:netPage>=netPages-1?0.4:1}}>»</button>
               </div>
-            </>
-          }
-        </>);
-      })()}
-    </div>
+            </div>
+          </>
+        }
+      </>
+    )}
   </div>);}
 
 // ── My Wallet Tab ─────────────────────────────────────────────────────────────
@@ -565,16 +571,19 @@ function LeaderboardTab({alerts,t,persistedEntries}:{alerts:WhaleAlert[];t:typeo
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function WhaleDashboard(){
-  const{alerts,blockTxs,totalBlockTxsSeen,connected,error}=useWhaleAlerts();
+  const{alerts,blockTxs,totalBlockTxsSeen,connected,error,explorerStats}=useWhaleAlerts();
   const{address:walletAddr,isConnected}=useAccount();
   const{prices:oraclePrices,loading:pricesLoading,lastFetchedAt}=useOraclePrices(10_000);
   const[simulating,setSimulating]=useState(false);
-  const[soundEnabled,setSoundEnabled]=useState(false);
+  const[soundEnabled,setSoundEnabled]=useState(true);
   const[theme,setTheme]=useState<Theme>("dark");
   const[tab,setTab]=useState<"feed"|"analytics"|"charts"|"leaderboard"|"flow"|"howto"|"mywallet">("feed");
+  const[feedSubTab,setFeedSubTab]=useState<"alerts"|"network-activity">("alerts");
   const[search,setSearch]=useState("");
   const[minAmt,setMinAmt]=useState("");
   const[maxAmt,setMaxAmt]=useState("");
+  const[netMinAmt,setNetMinAmt]=useState("");
+  const[netMaxAmt,setNetMaxAmt]=useState("");
   const[tokenFilter,setTokenFilter]=useState("All");
   const[timePreset,setTimePreset]=useState(7*24*60*60_000); // default: rolling 7d
   const[dateFrom,setDateFrom]=useState("");
@@ -609,6 +618,13 @@ export default function WhaleDashboard(){
   const windowedMomentumCount=useMemo(()=>alerts.filter(a=>a.type==="momentum"&&(!windowCutoff||a.timestamp>=windowCutoff)).length,[alerts,windowCutoff]);
   const windowedVol         = useMemo(()=>windowedWhales.reduce((s,a)=>s+num(a.amount),0),[windowedWhales]);
   const windowedLargest     = useMemo(()=>windowedWhales.reduce((max,a)=>Math.max(max,num(a.amount)),0),[windowedWhales]);
+  // Total fees paid by whale transactions (actual where receipt available, estimated otherwise)
+  const whaleTotalFees      = useMemo(()=>windowedWhales.reduce((s,a)=>{
+    if(!a.txFee) return s;
+    const f=parseFloat(a.txFee.replace("~",""));
+    return s+(isNaN(f)?0:f);
+  },0),[windowedWhales]);
+  const whaleFeeEstimated   = useMemo(()=>windowedWhales.some(a=>a.txFee?.startsWith("~")),[windowedWhales]);
 
   // Time-windowed network txns for KPI — available at top level
   const windowedBlockTxs = useMemo(()=>!windowCutoff?blockTxs:blockTxs.filter(tx=>tx.timestamp>=windowCutoff),[blockTxs,windowCutoff]);
@@ -688,6 +704,7 @@ export default function WhaleDashboard(){
     <style>{`
       @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
       @keyframes burstPulse{0%,100%{box-shadow:0 0 0 0 rgba(249,115,22,0.15)}50%{box-shadow:0 0 0 10px rgba(249,115,22,0)}}
+      @keyframes tickerScroll{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
       input,select{color-scheme:${theme==="dark"?"dark":"light"}}
       ::-webkit-scrollbar{width:5px;height:5px}
       ::-webkit-scrollbar-thumb{background:rgba(6,182,212,0.25);border-radius:3px}
@@ -732,6 +749,10 @@ export default function WhaleDashboard(){
           <KpiCard t={t} label="🐋 Whale Largest"
             value={largestUSD!=null ? (largestUSD>=1e9?`$${(largestUSD/1e9).toFixed(2)}B`:largestUSD>=1e6?`$${(largestUSD/1e6).toFixed(2)}M`:`$${Math.round(largestUSD).toLocaleString()}`) : windowedLargest>0?Math.round(windowedLargest).toLocaleString():"—"}
             sub={largestUSD!=null?"~USD est.":"tokens"}/>
+          <KpiCard t={t} label="💸 Whale Fees"
+            value={whaleTotalFees>0 ? (whaleTotalFees>=1000?`${Math.round(whaleTotalFees).toLocaleString()} STT`:`${whaleTotalFees.toFixed(8)} STT`) : "—"}
+            color="#f59e0b"
+            sub={whaleTotalFees>0 ? (whaleFeeEstimated ? "~estimated" : "actual fees") : "no data"}/>
           <KpiCard t={t} label="🌐 STT Transfers"
             value={windowedBlockTxs.filter(tx=>tx.isTransfer).length.toLocaleString()}
             sub={(()=>{
@@ -739,9 +760,9 @@ export default function WhaleDashboard(){
               const ageMs=now-blockTxs.reduce((min,tx)=>Math.min(min,tx.timestamp),Date.now());
               return ageMs<3600_000?`${Math.round(ageMs/60_000)}m buffered`:ageMs<86400_000?`${(ageMs/3600_000).toFixed(1)}h buffered`:`${(ageMs/86400_000).toFixed(1)}d buffered`;
             })()}/>
-          <KpiCard t={t} label="📞 Contract Calls"
-            value={windowedBlockTxs.filter(tx=>!tx.isTransfer).length.toLocaleString()}
-            sub="zero-value txns"/>
+          <KpiCard t={t} label="🌐 Txn Count"
+            value={windowedBlockTxs.length.toLocaleString()}
+            sub={`${Math.ceil(timePreset/(24*60*60*1000))}d window`}/>
         </div>
 
         {/* Tabs */}
@@ -751,6 +772,16 @@ export default function WhaleDashboard(){
 
         {/* Live Price Ticker */}
         <PriceTicker prices={oraclePrices} loading={pricesLoading} t={t} lastFetchedAt={lastFetchedAt}/>
+        {/* Explorer 24h stats banner */}
+        {explorerStats&&(
+          <div style={{display:"flex",gap:16,alignItems:"center",marginTop:6,padding:"5px 10px",borderRadius:7,background:t.accentBg,border:`1px solid ${t.border}`,flexWrap:"wrap"}}>
+            <span style={{color:t.muted,fontSize:8,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.12em",flexShrink:0}}>24h Network</span>
+            <span style={{color:t.text,fontSize:10,fontFamily:"monospace"}}><span style={{color:t.accent,fontWeight:700}}>{explorerStats.txCount24h.toLocaleString()}</span> txns</span>
+            <span style={{color:t.text,fontSize:10,fontFamily:"monospace"}}><span style={{color:"#f59e0b",fontWeight:700}}>{explorerStats.totalFees24h.toFixed(2)} STT</span> fees</span>
+            <span style={{color:t.text,fontSize:10,fontFamily:"monospace"}}>avg <span style={{color:t.subtext,fontWeight:700}}>{explorerStats.avgFee24h.toFixed(6)} STT</span>/tx</span>
+            <span style={{color:t.muted,fontSize:8,fontFamily:"monospace",marginLeft:"auto"}}>shannon-explorer · {timeAgo(explorerStats.fetchedAt)}</span>
+          </div>
+        )}
       </div>
     </div>
 
@@ -758,9 +789,9 @@ export default function WhaleDashboard(){
     <div style={{flex:1,overflowY:"auto"}}>
       {error&&<div style={{background:t.errBg,border:`1px solid ${t.errBorder}`,margin:"12px 20px 0",borderRadius:10,padding:12,color:t.errText,fontSize:12,fontFamily:"monospace"}}>⚠ {error}</div>}
       <div style={{maxWidth:1400,margin:"0 auto",padding:"16px 20px"}}>
-        {showFilters&&<FilterBar t={t} search={search} setSearch={setSearch} minAmt={minAmt} setMinAmt={setMinAmt} maxAmt={maxAmt} setMaxAmt={setMaxAmt} token={tokenFilter} setToken={setTokenFilter} timePreset={timePreset} setTimePreset={setTimePreset} dateFrom={dateFrom} setDateFrom={setDateFrom} dateTo={dateTo} setDateTo={setDateTo} showTypes={showTypes} setShowTypes={setShowTypes} tokenList={tokenList}/>}
+        {showFilters&&<FilterBar t={t} search={search} setSearch={setSearch} minAmt={minAmt} setMinAmt={setMinAmt} maxAmt={maxAmt} setMaxAmt={setMaxAmt} token={tokenFilter} setToken={setTokenFilter} timePreset={timePreset} setTimePreset={setTimePreset} showTypes={showTypes} setShowTypes={setShowTypes} tokenList={tokenList}/>}
         <div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:16,overflow:"hidden"}}>
-          {tab==="feed"        && <LiveFeedTab    alerts={filtered} t={t} connectedAddr={walletAddr} burst={burst} oraclePrices={oraclePrices} blockTxs={windowedBlockTxs} totalBlockTxsSeen={totalBlockTxsSeen} timePreset={timePreset}/>}
+          {tab==="feed"        && <LiveFeedTab    alerts={filtered} t={t} connectedAddr={walletAddr} burst={burst} oraclePrices={oraclePrices} blockTxs={windowedBlockTxs} totalBlockTxsSeen={totalBlockTxsSeen} timePreset={timePreset} feedSubTab={feedSubTab} setFeedSubTab={setFeedSubTab} netMinAmt={netMinAmt} setNetMinAmt={setNetMinAmt} netMaxAmt={netMaxAmt} setNetMaxAmt={setNetMaxAmt}/>}
           {tab==="analytics"   && <AnalyticsTab   alerts={filtered} t={t} oraclePrices={oraclePrices}/>}
           {tab==="charts"      && <ChartsTab      alerts={filtered} t={t}/>}
           {tab==="leaderboard" && <LeaderboardTab alerts={filtered} t={t} persistedEntries={persistedEntries}/>}

@@ -7,6 +7,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
+import Database from 'better-sqlite3';
 
 const somniaTestnet = defineChain({
   id: 50312,
@@ -19,6 +20,26 @@ const somniaTestnet = defineChain({
     },
   },
 });
+
+// Initialize database
+const db = new Database('whales.db');
+
+// Create tables on startup
+db.exec(`
+  CREATE TABLE IF NOT EXISTS whale_events (
+    id TEXT PRIMARY KEY,
+    type TEXT,
+    from_addr TEXT,
+    to_addr TEXT,
+    amount TEXT,
+    timestamp INTEGER,
+    token TEXT,
+    tx_hash TEXT,
+    block_number INTEGER,
+    block_hash TEXT
+  );
+  CREATE INDEX idx_timestamp ON whale_events(timestamp);
+`);
 
 const WHALE_ABI = [{
   name: "WhaleTransfer", type: "event",
@@ -114,6 +135,7 @@ export type CacheEntry = {
     txHash: string; blockNumber: string; blockHash: string;
     reactionCount?: string; handlerEmitter?: string;
     oldValue?: string; newValue?: string;
+    txFee?: string; // actual tx fee in STT (gasUsed × gasPrice from receipt); "~" prefix = estimated
   };
 };
 
@@ -151,8 +173,8 @@ async function persistLeaderEntry(wallet: string, entry: LeaderEntry) {
 }
 
 // ── Server state ──────────────────────────────────────────────────────────────
-const MAX_CACHE    = 200;
-const MAX_BLOCK_TX = 50_000;
+const MAX_CACHE = 5000; 
+const MAX_BLOCK_TX = 200_000;
 const alertCache: CacheEntry[] = [];
 let totalBlockTxsSeen = 0;
 let networkLargestSTT = 0;
@@ -164,10 +186,29 @@ let blockWatcher: (() => void) | null = null;
 const encoder     = new TextEncoder();
 const controllers = new Set<ReadableStreamDefaultController>();
 
-// Dedup set — prevents the same whale tx appearing twice when both
-// startBlockWatcher AND trackerSub (Reactivity SDK) fire for the same hash.
-// Capped at 500 entries; oldest evicted when full.
-const seenWhaleTxHashes: string[] = [];
+// ── Explorer aggregate stats (Blockscout API, refreshed every 5 min) ─────────
+export type ExplorerStats = {
+  txCount24h:   number; // total txns last 24h
+  totalFees24h: number; // total fees in STT last 24h
+  avgFee24h:    number; // avg fee per tx in STT last 24h
+  fetchedAt:    number;
+};
+let explorerStats: ExplorerStats | null = null;
+
+// Dedup — prevents same whale tx appearing twice when startBlockWatcher
+// and trackerSub fire concurrently for the same hash. Set is atomic, no race.
+const seenWhaleTxHashes = new Set<string>();
+const MAX_SEEN_HASHES = 500;
+const seenHashQueue: string[] = []; // FIFO for eviction
+function markSeen(hash: string): boolean {
+  if (seenWhaleTxHashes.has(hash)) return false; // already seen
+  if (seenHashQueue.length >= MAX_SEEN_HASHES) {
+    seenWhaleTxHashes.delete(seenHashQueue.shift()!);
+  }
+  seenWhaleTxHashes.add(hash);
+  seenHashQueue.push(hash);
+  return true; // first time seen
+}
 
 // ── File-based block_tx cache — survives server restarts ──────────────────────
 const CACHE_FILE = join(process.cwd(), ".whale-block-tx-cache.json");
@@ -206,6 +247,7 @@ function broadcast(entry: CacheEntry) {
   const msg = encoder.encode(`data: ${JSON.stringify(payload)}\n\n`);
   controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
 }
+
 function push(entry: CacheEntry) {
   if (entry.type === "block_tx") {
     totalBlockTxsSeen++;
@@ -230,9 +272,141 @@ function push(entry: CacheEntry) {
   }
   alertCache.push(entry);
   broadcast(entry);
+
+  if (entry.type !== "block_tx") {  // Skip block_tx to save space
+    db.prepare(`
+      INSERT OR REPLACE INTO whale_events 
+      (id, type, from_addr, to_addr, amount, timestamp, token, tx_hash, block_number, block_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      `${entry.receivedAt}-${Math.random()}`,
+      entry.type,
+      entry.raw.from,
+      entry.raw.to,
+      entry.raw.amount,
+      entry.receivedAt,
+      entry.raw.token,
+      entry.raw.txHash,
+      entry.raw.blockNumber,
+      entry.raw.blockHash
+    );
+  }
 }
 
-// ── Historical event loader ───────────────────────────────────────────────────
+// ── NEW: Function to get historical events from database ───────────────────
+function getHistoricalEvents(timeRangeMs: number): CacheEntry[] {
+  const cutoff = Date.now() - timeRangeMs;
+  const rows = db.prepare(`
+    SELECT * FROM whale_events 
+    WHERE timestamp > ? 
+    ORDER BY timestamp DESC 
+    LIMIT 1000
+  `).all(cutoff);
+  
+  // Convert DB rows back to CacheEntry format
+  return rows.map((row: any) => ({
+    type: row.type,
+    receivedAt: row.timestamp,
+    raw: {
+      from: row.from_addr,
+      to: row.to_addr,
+      amount: row.amount,
+      timestamp: `0x${Math.floor(row.timestamp/1000).toString(16)}`,
+      token: row.token,
+      txHash: row.tx_hash,
+      blockNumber: row.block_number.toString(),
+      blockHash: row.block_hash,
+      txFee: "0", // Default value since we don't store this
+    }
+  })) as CacheEntry[];
+}
+
+// ── Actual fee from receipt ──────────────────────────────────────────────────
+// Fetches the real fee (gasUsed × effectiveGasPrice) for a transaction.
+// Much more accurate than gasLimit × gasPrice which overestimates by ~30–50%.
+async function fetchActualFee(
+  pub: ReturnType<typeof createPublicClient>,
+  txHash: `0x${string}`,
+): Promise<string> {
+  try {
+    const receipt = await pub.getTransactionReceipt({ hash: txHash });
+    const fee = Number(receipt.gasUsed * (receipt.effectiveGasPrice ?? 0n)) / 1e18;
+    return fee > 0 ? fee.toFixed(8) : "0";
+  } catch { return ""; } // empty = unknown, not estimated
+}
+
+// ── Startup 30-day eviction ──────────────────────────────────────────────────
+// Purges entries older than 30 days from alertCache. Called at startup so stale
+// cached data never pollutes a fresh session.
+function evictExpiredEntries() {
+  const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
+  const before = alertCache.length;
+  for (let i = alertCache.length - 1; i >= 0; i--) {
+    if (alertCache[i].receivedAt < cutoff) alertCache.splice(i, 1);
+  }
+  const removed = before - alertCache.length;
+  if (removed > 0) console.log(`🗑 Evicted ${removed} entries older than 30d on startup`);
+}
+
+
+// ── Explorer aggregate stats (Blockscout /api) ───────────────────────────────
+// Blockscout exposes module=stats endpoints. We pull the daily transaction count
+// and fee totals. Falls back gracefully if the API is unavailable.
+const EXPLORER_BASE = "https://shannon-explorer.somnia.network";
+
+async function fetchExplorerStats(): Promise<void> {
+  try {
+    // Blockscout stats API — returns network-wide daily stats
+    const [statsRes, feeRes] = await Promise.allSettled([
+      fetch(`${EXPLORER_BASE}/api?module=stats&action=ethsupply`),
+      fetch(`${EXPLORER_BASE}/api/v2/stats`),
+    ]);
+
+    // Try v2 stats endpoint (newer Blockscout)
+    if (feeRes.status === "fulfilled" && feeRes.value.ok) {
+      const data = await feeRes.value.json();
+      // Blockscout v2 /api/v2/stats returns: { transactions_today, gas_used_today, ... }
+      const txCount  = data.transactions_today ?? data.transaction_count_today ?? 0;
+      const gasUsed  = BigInt(data.gas_used_today ?? "0");
+      // Somnia avg gas price ≈ 6 Gwei = 6e9 wei
+      const AVG_GAS_PRICE = 6_000_000_000n;
+      const totalFeesWei  = gasUsed * AVG_GAS_PRICE;
+      const totalFees24h  = Number(totalFeesWei) / 1e18;
+      const avgFee24h     = txCount > 0 ? totalFees24h / txCount : 0;
+      explorerStats = { txCount24h: txCount, totalFees24h, avgFee24h, fetchedAt: Date.now() };
+      console.log(`📡 Explorer stats: ${txCount.toLocaleString()} txns/24h · ${totalFees24h.toFixed(2)} STT fees`);
+      broadcastExplorerStats();
+      return;
+    }
+
+    // Fallback: derive from our own block watcher counters
+    const blockTxs24h = alertCache.filter(
+      e => e.type === "block_tx" && e.receivedAt >= Date.now() - 24 * 60 * 60_000
+    );
+    if (blockTxs24h.length > 0) {
+      const totalFees24h = blockTxs24h.reduce((s, e) => {
+        const f = parseFloat(e.raw.txFee?.replace("~","") ?? "0");
+        return s + (isNaN(f) ? 0 : f);
+      }, 0);
+      explorerStats = {
+        txCount24h:   totalBlockTxsSeen,
+        totalFees24h,
+        avgFee24h:    blockTxs24h.length > 0 ? totalFees24h / blockTxs24h.length : 0,
+        fetchedAt:    Date.now(),
+      };
+      broadcastExplorerStats();
+    }
+  } catch (e: any) {
+    console.warn("⚠ Explorer stats fetch failed (non-critical):", e.message?.split("\n")[0]);
+  }
+}
+
+function broadcastExplorerStats() {
+  if (!explorerStats) return;
+  const msg = encoder.encode(`data: ${JSON.stringify({ type: "explorer_stats", stats: explorerStats })}\n\n`);
+  controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
+}
+
 async function loadPastEvents() {
   const CONTRACT = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS as `0x${string}`;
   const pub = createPublicClient({ chain: somniaTestnet, transport: http("https://dream-rpc.somnia.network") });
@@ -290,9 +464,10 @@ async function loadRecentBlockTxs() {
   const pub = createPublicClient({ chain: somniaTestnet, transport: http("https://dream-rpc.somnia.network") });
   try {
     const latest  = await pub.getBlockNumber();
-    // 7 days at 10 blocks/s = 6,048,000 blocks. We scan newest→oldest and stop early
-    // once MAX_BLOCK_TX is filled — cache pre-load means this completes fast on restarts.
-    const LOOKBACK = 6_048_000n;
+    // 30 days at 10 blocks/s = 25,920,000 blocks. Backfill stops early at MAX_BLOCK_TX
+    // so in practice only the most recent data fills the buffer — LOOKBACK just sets
+    // the maximum historical window the watcher will attempt to cover.
+    const LOOKBACK = 25_920_000n;
     const oldest   = latest > LOOKBACK ? latest - LOOKBACK : 0n;
     const BATCH    = 100;  // 100 concurrent block fetches per batch
     const DELAY    = 100;  // ms between batches
@@ -332,6 +507,9 @@ async function loadRecentBlockTxs() {
 
           const val       = tx.value ?? 0n;
           const sttAmount = Number(val) / 1e18;
+          const gasP = (tx as any).gasPrice ?? (tx as any).maxFeePerGas ?? 0n;
+          const gasL = (tx as any).gas ?? 21000n;
+          const feeSTT = (typeof gasP === "bigint" ? Number(gasP * gasL) : 0) / 1e18;
 
           totalBlockTxsSeen++;
           if (sttAmount > networkLargestSTT) networkLargestSTT = sttAmount;
@@ -343,14 +521,32 @@ async function loadRecentBlockTxs() {
               raw: {
                 from:        (tx.from ?? "") as string,
                 to:          (tx.to  ?? "0x0000000000000000000000000000000000000000") as string,
-                amount:      sttAmount > 0 ? sttAmount.toFixed(6) : "0",
+                amount:      sttAmount > 0 ? sttAmount.toFixed(8) : "0",
                 timestamp:   `0x${Math.floor(blockTs / 1000).toString(16)}`,
                 token:       "STT", txHash: tx.hash,
                 blockNumber: block.number?.toString() ?? "",
                 blockHash:   block.hash ?? "",
+                txFee:       feeSTT > 0 ? `~${feeSTT.toFixed(8)}` : "0",
               },
             });
             loaded++;
+          }
+
+          // Also push as historical whale event for the Live Feed (value-only, cap 2000)
+          if (val > 0n && alertCache.filter(e => e.type === "whale").length < 2000) {
+            alertCache.push({
+              type: "whale", receivedAt: blockTs,
+              raw: {
+                from:        (tx.from ?? "") as string,
+                to:          (tx.to  ?? "0x0000000000000000000000000000000000000000") as string,
+                amount:      sttAmount.toFixed(8),
+                timestamp:   `0x${Math.floor(blockTs / 1000).toString(16)}`,
+                token:       "STT", txHash: tx.hash,
+                blockNumber: block.number?.toString() ?? "",
+                blockHash:   block.hash ?? "",
+                txFee:       feeSTT > 0 ? `~${feeSTT.toFixed(8)}` : "0",
+              },
+            });
           }
         }
       }
@@ -389,6 +585,9 @@ async function startBlockWatcher(
   setInterval(async () => { ethUsd = await getEthUsdPrice(httpPub) || ethUsd; }, 120_000);
   console.log(`💰 ETH/USD oracle price: $${ethUsd.toFixed(2)} (Protofire)`);
 
+  // Refresh explorer aggregate stats every 5 minutes
+  setInterval(() => fetchExplorerStats().catch(() => {}), 5 * 60_000);
+
   // Fast HTTP polling for full blocks — WebSocket watchBlocks on Somnia only gets headers,
   // then viem fetches full block separately which can't keep up at 0.1s block times.
   // HTTP polling at 500ms fetches full blocks with transactions in one call, reliably.
@@ -406,37 +605,58 @@ async function startBlockWatcher(
         const txHash = tx.hash ?? "";
         const blockNum = block.number?.toString() ?? "";
         const ts = `0x${Math.floor(Date.now() / 1000).toString(16)}`;
+        // Estimate tx fee: gasPrice × gasLimit / 1e18 (max, not actual used gas)
+        const gasP = (tx as any).gasPrice ?? (tx as any).maxFeePerGas ?? 0n;
+        const gasL = (tx as any).gas ?? 21000n;
+        // "~" prefix = estimated (gasPrice × gasLimit). Actual fee uses gasUsed from receipt.
+        const estFeeSTT = (typeof gasP === "bigint" ? Number(gasP * gasL) : 0) / 1e18;
 
-        // Push ALL transactions as block_tx for network monitoring
+        // Push ALL transactions as block_tx for network monitoring (estimated fee)
         if (tx.hash) {
           push({
             type: "block_tx", receivedAt: Date.now(),
             raw: {
               from, to,
-              amount: sttAmount > 0 ? sttAmount.toFixed(6) : "0",
+              amount: sttAmount > 0 ? sttAmount.toFixed(8) : "0",
               timestamp: ts, token: "STT",
               txHash, blockNumber: blockNum, blockHash: block.hash ?? "",
+              txFee: estFeeSTT > 0 ? `~${estFeeSTT.toFixed(8)}` : "0",
             },
           });
         }
 
         // Only push as whale if actual STT value transferred (> 0).
-        // Zero-value txns are contract calls and must not appear in the whale feed.
-        if (val > WHALE_DISPLAY_THRESHOLD && txHash && !seenWhaleTxHashes.includes(txHash)) {
-          if (seenWhaleTxHashes.length >= 500) seenWhaleTxHashes.shift();
-          seenWhaleTxHashes.push(txHash);
-          push({
+        // Fetch actual receipt fee async — update entry when available.
+        if (val > WHALE_DISPLAY_THRESHOLD && txHash && markSeen(txHash)) {
+          const entry: CacheEntry = {
             type: "whale", receivedAt: Date.now(),
             raw: {
               from, to,
               amount: `0x${val.toString(16)}`,
               timestamp: `0x${Math.floor(Date.now()/1000).toString(16)}`,
               token: "STT", txHash, blockNumber: blockNum, blockHash: block.hash ?? "",
+              txFee: estFeeSTT > 0 ? `~${estFeeSTT.toFixed(8)}` : "0",
             },
-          });
+          };
+          push(entry);
           const usdEstimate = ethUsd > 0 ? sttAmount * ethUsd : 0;
           const label = usdEstimate > 0 ? `~$${Math.round(usdEstimate).toLocaleString()} USD` : `${sttAmount.toFixed(4)} STT`;
           console.log(`🌊 Whale detected: ${label}  ${from.slice(0,8)}→${to.slice(0,8)}  tx:${txHash.slice(0,10)}`);
+
+          // Fetch actual fee from receipt in background — updates entry in-place + re-broadcasts
+          if (txHash) {
+            fetchActualFee(httpPub, txHash as `0x${string}`).then(actualFee => {
+              if (!actualFee) return; // receipt not available
+              // Find and patch the entry in alertCache
+              const idx = alertCache.findIndex(e => e.type === "whale" && e.raw.txHash === txHash);
+              if (idx !== -1) {
+                alertCache[idx].raw.txFee = actualFee;
+                // Broadcast updated entry
+                const msg = encoder.encode(`data: ${JSON.stringify({ ...alertCache[idx], type: "whale_fee_update", txHash, txFee: actualFee })}\n\n`);
+                controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
+              }
+            }).catch(() => {});
+          }
         }
       }
     },
@@ -463,8 +683,10 @@ function scheduleReconnect() {
 async function ensureSubscriptions() {
   if (trackerSub && handlerSub && momentumSub && blockWatcher) return;
   loadBlockTxCache();               // sync — fast disk read, pre-fills cache immediately
+  evictExpiredEntries();            // sync — purge anything older than 30d from cache
   loadPastEvents().catch(() => {}); // async — scans chain for past whale events
   loadRecentBlockTxs().catch(() => {}); // async — backfills block_tx
+  fetchExplorerStats().catch(() => {}); // async — pull 24h aggregate stats from explorer
 
   const CONTRACT = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS  as `0x${string}`;
   const HANDLER  = process.env.HANDLER_CONTRACT_ADDRESS      as `0x${string}`;
@@ -514,13 +736,9 @@ async function ensureSubscriptions() {
 
           // If startBlockWatcher already pushed this tx, skip the SSE push
           // but still update leaderboard (it has the correct on-chain data).
-          if (txHash && seenWhaleTxHashes.includes(txHash)) {
+          if (txHash && !markSeen(txHash)) {
             updateLeaderMap(a.from, a.to, amount, ts);
           } else {
-            if (txHash) {
-              if (seenWhaleTxHashes.length >= 500) seenWhaleTxHashes.shift();
-              seenWhaleTxHashes.push(txHash);
-            }
             push(entry);
             updateLeaderMap(a.from, a.to, amount, ts);
           }
@@ -695,10 +913,31 @@ export async function GET(req: NextRequest) {
     ensureSubscriptions().catch(e => { initStarted = false; });
   }
 
+  // ── NEW: Get 7 days of historical data from database ────────────────────
+  const timeRange = 7 * 24 * 60 * 60 * 1000; // 7 days
+  const historicalEvents = getHistoricalEvents(timeRange);
+  
+  // Combine with current cache (avoid duplicates by txHash)
+  const allAlerts = [...historicalEvents, ...alertCache];
+  
+  // Optional: Remove duplicates by txHash if needed
+  const uniqueAlerts = Array.from(
+    new Map(allAlerts.map(item => [item.raw.txHash, item])).values()
+  );
+
   const stream = new ReadableStream({
     start(controller) {
       controllers.add(controller);
-      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "init", alerts: alertCache, totalBlockTxsSeen, networkLargestSTT })}\n\n`));
+      
+      // ── MODIFIED: Send combined historical + current data ─────────────────
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ 
+        type: "init", 
+        alerts: uniqueAlerts,  // Now includes 7 days of history!
+        totalBlockTxsSeen, 
+        networkLargestSTT, 
+        explorerStats 
+      })}\n\n`));
+      
       controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "connected" })}\n\n`));
 
       const ping = setInterval(() => {
