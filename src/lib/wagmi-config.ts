@@ -1,4 +1,5 @@
-import { getDefaultConfig } from "@rainbow-me/rainbowkit";
+import { http, createConfig } from "wagmi";
+import { injected } from "wagmi/connectors";
 import { defineChain } from "viem";
 
 export const somniaTestnet = defineChain({
@@ -20,10 +21,11 @@ export const somniaTestnet = defineChain({
   testnet: true,
 });
 
-export const wagmiConfig = getDefaultConfig({
-  appName: "Somnia Whale Tracker",
-  // Get a free projectId at https://cloud.walletconnect.com
-  projectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? "whale-tracker-dev",
+export const wagmiConfig = createConfig({
   chains: [somniaTestnet],
+  connectors: [injected()], // Only browser injected wallets (MetaMask, etc.)
+  transports: {
+    [somniaTestnet.id]: http(),
+  },
   ssr: true,
 });

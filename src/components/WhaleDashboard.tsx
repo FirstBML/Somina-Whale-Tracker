@@ -13,16 +13,14 @@ const T = {
 };
 
 const TOKEN_COLORS: Record<string,string> = {STT:"#06b6d4",USDC:"#2775CA",WETH:"#627EEA",WBTC:"#F7931A",USDT:"#26A17B",LINK:"#2A5ADA",UNI:"#FF007A",AAVE:"#B6509E"};
-// ALL_TOKENS used as fallback — filter will be populated dynamically from actual events
 const ALL_TOKENS_FALLBACK = ["All","STT","USDC","WETH","WBTC","USDT","LINK","UNI","AAVE"];
+
 const TIME_PRESETS = [
   {label:"30m", ms:30*60_000},
   {label:"24h", ms:24*60*60_000},
-  {label:"60h", ms:60*60*60_000},
-  {label:"7d",  ms:7*24*60*60_000},
+  {label:"72h", ms:72*60*60_000},
 ];
-
-const MAX_CUSTOM_RANGE_MS = 60*60*60_000; // 60 hours in ms = 216,000,000ms
+const MAX_CUSTOM_RANGE_MS = 72*60*60_000;
 
 const short     = (a:string) => a ? `${a.slice(0,6)}…${a.slice(-4)}` : "—";
 const shortHash = (h:string) => h ? `${h.slice(0,10)}…${h.slice(-6)}` : "—";
@@ -142,7 +140,7 @@ function FilterBar({t,search,setSearch,minAmt,setMinAmt,maxAmt,setMaxAmt,token,s
       {[{key:"whale",label:"🐋 Whale",color:"#06b6d4"},{key:"reaction",label:"⚡ Reaction",color:"#a855f7"},{key:"alert",label:"🚨 Alert",color:"#f97316"}].map(({key,label,color})=>(
         <button key={key} onClick={()=>toggleType(key)} style={{fontSize:10,fontFamily:"monospace",padding:"3px 10px",borderRadius:6,cursor:"pointer",background:showTypes.includes(key)?`${color}22`:"transparent",color:showTypes.includes(key)?color:t.muted,border:`1px solid ${showTypes.includes(key)?`${color}66`:"transparent"}`}}>{label}</button>
       ))}
-      <button onClick={()=>{setSearch("");setMinAmt("");setMaxAmt("");setToken("All");setTimePreset(7*24*60*60_000);setShowTypes(["whale","reaction","alert","momentum"]);}} style={{fontSize:10,fontFamily:"monospace",padding:"3px 10px",borderRadius:6,cursor:"pointer",color:t.errText,background:"transparent",border:"1px solid transparent",marginLeft:"auto"}}>✕ Clear</button>
+      <button onClick={()=>{setSearch("");setMinAmt("");setMaxAmt("");setToken("All");setTimePreset(24*60*60_000);setShowTypes(["whale","reaction","alert","momentum"]);}} style={{fontSize:10,fontFamily:"monospace",padding:"3px 10px",borderRadius:6,cursor:"pointer",color:t.errText,background:"transparent",border:"1px solid transparent",marginLeft:"auto"}}>✕ Clear</button>
     </div>
   </div>);
 }
@@ -571,7 +569,7 @@ function LeaderboardTab({alerts,t,persistedEntries}:{alerts:WhaleAlert[];t:typeo
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function WhaleDashboard(){
-  const{alerts,blockTxs,totalBlockTxsSeen,connected,error,explorerStats}=useWhaleAlerts();
+  const{alerts,blockTxs,totalBlockTxsSeen,connected,error}=useWhaleAlerts();
   const{address:walletAddr,isConnected}=useAccount();
   const{prices:oraclePrices,loading:pricesLoading,lastFetchedAt}=useOraclePrices(10_000);
   const[simulating,setSimulating]=useState(false);
@@ -579,16 +577,24 @@ export default function WhaleDashboard(){
   const[theme,setTheme]=useState<Theme>("dark");
   const[tab,setTab]=useState<"feed"|"analytics"|"charts"|"leaderboard"|"flow"|"howto"|"mywallet">("feed");
   const[feedSubTab,setFeedSubTab]=useState<"alerts"|"network-activity">("alerts");
-  const[search,setSearch]=useState("");
-  const[minAmt,setMinAmt]=useState("");
-  const[maxAmt,setMaxAmt]=useState("");
-  const[netMinAmt,setNetMinAmt]=useState("");
-  const[netMaxAmt,setNetMaxAmt]=useState("");
-  const[tokenFilter,setTokenFilter]=useState("All");
-  const[timePreset,setTimePreset]=useState(7*24*60*60_000); // default: rolling 7d
-  const[dateFrom,setDateFrom]=useState("");
-  const[dateTo,setDateTo]=useState("");
-  const[showTypes,setShowTypes]=useState<string[]>(["whale","reaction","alert","momentum"]);
+  const[filters,setFilters]=useState({
+  search:"", minAmt:"", maxAmt:"",
+  token:"All", timePreset:24*60*60_000,
+  dateFrom:"", dateTo:"",
+  showTypes:["whale","reaction","alert","momentum"] as string[],
+  netMinAmt:"", netMaxAmt:"",  
+});
+  const setNetMinAmt  =(v:string)=>setFilters(f=>({...f,netMinAmt:v}));
+  const setNetMaxAmt  =(v:string)=>setFilters(f=>({...f,netMaxAmt:v}));
+  const{search,minAmt,maxAmt,token:tokenFilter,timePreset,dateFrom,dateTo,showTypes,netMinAmt,netMaxAmt}=filters;
+  const setSearch    =(v:string)=>setFilters(f=>({...f,search:v}));
+  const setMinAmt    =(v:string)=>setFilters(f=>({...f,minAmt:v}));
+  const setMaxAmt    =(v:string)=>setFilters(f=>({...f,maxAmt:v}));
+  const setTokenFilter=(v:string)=>setFilters(f=>({...f,token:v}));
+  const setTimePreset=(v:number)=>setFilters(f=>({...f,timePreset:v}));
+  const setDateFrom  =(v:string)=>setFilters(f=>({...f,dateFrom:v}));
+  const setDateTo    =(v:string)=>setFilters(f=>({...f,dateTo:v}));
+  const setShowTypes =(v:string[])=>setFilters(f=>({...f,showTypes:v}));
   const[persistedEntries,setPersistedEntries]=useState<any[]>([]);
   const t=T[theme];
 
@@ -596,9 +602,9 @@ export default function WhaleDashboard(){
     fetch("/api/streams-leaderboard").then(r=>r.json()).then(d=>{if(d.entries?.length)setPersistedEntries(d.entries);}).catch(()=>{});
   },[]);
 
-  // Live clock — updates every 10s so time-window filters stay accurate
+  // Live clock — updates every 1s for smooth buffered time display
   const[now,setNow]=useState(()=>Date.now());
-  useEffect(()=>{const id=setInterval(()=>setNow(Date.now()),10_000);return()=>clearInterval(id);},[]);
+  useEffect(()=>{const id=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(id);},[]);
 
   const prevLen=useRef(0);
   useEffect(()=>{if(alerts.length>prevLen.current&&soundEnabled&&prevLen.current>0)playPing();prevLen.current=alerts.length;},[alerts.length,soundEnabled]);
@@ -762,7 +768,7 @@ export default function WhaleDashboard(){
             })()}/>
           <KpiCard t={t} label="🌐 Txn Count"
             value={windowedBlockTxs.length.toLocaleString()}
-            sub={`${Math.ceil(timePreset/(24*60*60*1000))}d window`}/>
+            sub={timePreset<3600_000?`${Math.round(timePreset/60_000)}m window`:timePreset<86400_000?`${Math.round(timePreset/3600_000)}h window`:`${Math.ceil(timePreset/86400_000)}d window`}/>
         </div>
 
         {/* Tabs */}
@@ -772,16 +778,7 @@ export default function WhaleDashboard(){
 
         {/* Live Price Ticker */}
         <PriceTicker prices={oraclePrices} loading={pricesLoading} t={t} lastFetchedAt={lastFetchedAt}/>
-        {/* Explorer 24h stats banner */}
-        {explorerStats&&(
-          <div style={{display:"flex",gap:16,alignItems:"center",marginTop:6,padding:"5px 10px",borderRadius:7,background:t.accentBg,border:`1px solid ${t.border}`,flexWrap:"wrap"}}>
-            <span style={{color:t.muted,fontSize:8,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.12em",flexShrink:0}}>24h Network</span>
-            <span style={{color:t.text,fontSize:10,fontFamily:"monospace"}}><span style={{color:t.accent,fontWeight:700}}>{explorerStats.txCount24h.toLocaleString()}</span> txns</span>
-            <span style={{color:t.text,fontSize:10,fontFamily:"monospace"}}><span style={{color:"#f59e0b",fontWeight:700}}>{explorerStats.totalFees24h.toFixed(2)} STT</span> fees</span>
-            <span style={{color:t.text,fontSize:10,fontFamily:"monospace"}}>avg <span style={{color:t.subtext,fontWeight:700}}>{explorerStats.avgFee24h.toFixed(6)} STT</span>/tx</span>
-            <span style={{color:t.muted,fontSize:8,fontFamily:"monospace",marginLeft:"auto"}}>shannon-explorer · {timeAgo(explorerStats.fetchedAt)}</span>
-          </div>
-        )}
+
       </div>
     </div>
 

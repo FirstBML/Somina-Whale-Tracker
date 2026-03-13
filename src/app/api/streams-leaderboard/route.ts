@@ -42,7 +42,7 @@ const queue: WriteJob[] = [];
 const inFlight = new Set<string>();
 let processing = false;
 
-function enqueue(job: WriteJob) {
+export function enqueue(job: WriteJob) {
   const qi = queue.findIndex(j => j.wallet === job.wallet);
   if (qi !== -1) { queue[qi] = job; return; }
   queue.push(job);

@@ -157,8 +157,11 @@ export function useWhaleAlerts(maxAlerts = 200) {
           }
           if (msg.type === "block_tx") {
             const tx = parseBlockTx(msg);
-            if (tx) setBlockTxs(prev => [tx, ...prev].slice(0, 50_000));
-            if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
+            if (tx) {
+              setBlockTxs(prev => [tx, ...prev].slice(0, 50_000));
+              // ✅ FIX 1: Increment the counter when new block_tx arrives
+              setTotalBlockTxsSeen(prev => prev + 1);
+            }
             if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
           }
           // Receipt fee resolved — patch the txFee on the matching whale alert

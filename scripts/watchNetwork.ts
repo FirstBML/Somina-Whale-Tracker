@@ -1,31 +1,3 @@
-/**
- * watchNetwork.ts — Standalone Somnia Network Watcher
- *
- * Runs independently of Next.js. Monitors every block for native STT transfers
- * >= threshold and calls WhaleTracker.reportTransfer(), feeding the full
- * Reactivity Engine pipeline:
- *
- *   Real STT transfer
- *     ↓
- *   watchNetwork.ts detects it (block polling, 500ms)
- *     ↓
- *   reportTransfer(from, to, amount, "STT")
- *     ↓
- *   WhaleTracker emits WhaleTransfer
- *     ↓
- *   Somnia Reactivity Engine → WhaleHandler._onEvent()
- *     ↓
- *   ReactedToWhaleTransfer / AlertThresholdCrossed / WhaleMomentumDetected
- *     ↓
- *   Frontend SSE dashboard
- *
- * Run:
- *   npx tsx scripts/watchNetwork.ts
- *
- * Keep running alongside npm run dev in a separate terminal.
- * Uses its own nonce tracking so it never conflicts with the Next.js server.
- */
-
 import dotenv from "dotenv";
 dotenv.config({ path: ".env.local" });
 
