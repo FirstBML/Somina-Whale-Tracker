@@ -47,7 +47,38 @@ function usdVal(amount:number, token:string, prices:Record<string,any>): string|
 function timeAgo(ts:number){const d=Math.floor((Date.now()-ts)/1000);if(d<60)return`${d}s ago`;if(d<3600)return`${Math.floor(d/60)}m ago`;return`${Math.floor(d/3600)}h ago`;}
 function fmtTime(ts:number){return new Date(ts).toLocaleString(undefined,{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit"});}
 function fmtMs(ms:number){if(ms<1000)return`${Math.round(ms)}ms`;if(ms<60000)return`${(ms/1000).toFixed(1)}s`;return`${Math.floor(ms/60000)}m ${Math.round((ms%60000)/1000)}s`;}
-function playPing(){try{const ctx=new((window as any).AudioContext||(window as any).webkitAudioContext)();const o=ctx.createOscillator(),g=ctx.createGain();o.connect(g);g.connect(ctx.destination);o.frequency.setValueAtTime(880,ctx.currentTime);o.frequency.exponentialRampToValueAtTime(440,ctx.currentTime+0.3);g.gain.setValueAtTime(0.3,ctx.currentTime);g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.4);o.start();o.stop(ctx.currentTime+0.4);}catch{}}
+
+let _audioCtx: AudioContext | null = null;
+
+function getAudioCtx(): AudioContext | null {
+  try {
+    if (!_audioCtx) _audioCtx = new ((window as any).AudioContext || (window as any).webkitAudioContext)();
+    return _audioCtx;
+  } catch { return null; }
+}
+
+function resumeAudio() {
+  const ctx = getAudioCtx();
+  if (ctx && ctx.state === "suspended") ctx.resume();
+}
+
+function playPing() {
+  try {
+    const ctx = getAudioCtx();
+    if (!ctx) return;
+    if (ctx.state === "suspended") ctx.resume();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.connect(g);
+    g.connect(ctx.destination);
+    o.frequency.setValueAtTime(880, ctx.currentTime);
+    o.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.3);
+    g.gain.setValueAtTime(0.4, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+    o.start();
+    o.stop(ctx.currentTime + 0.4);
+  } catch {}
+}
 function downloadCSV(alerts:WhaleAlert[]){const rows=["type,timestamp,from,to,amount_tokens,token,tx_hash,block_number,reaction_count",...alerts.map(a=>`${a.type},${new Date(a.timestamp).toISOString()},${a.from},${a.to},${a.amount},${a.token},${a.txHash},${a.blockNumber},${a.reactionCount??""}`)];const blob=new Blob([rows.join("\n")],{type:"text/csv"});const url=URL.createObjectURL(blob);const el=document.createElement("a");el.href=url;el.download="whale_alerts.csv";el.click();URL.revokeObjectURL(url);}
 
 // ── Shared UI ─────────────────────────────────────────────────────────────────
@@ -730,7 +761,7 @@ export default function WhaleDashboard(){
           <div style={{display:"flex",alignItems:"center",gap:7,flexWrap:"wrap"}}>
             <ConnectButton showBalance={false} chainStatus="none" accountStatus="address"/>
             <button onClick={()=>setTheme(v=>v==="dark"?"light":"dark")} style={{...btn,background:t.accentBg,color:t.accent,border:`1px solid ${t.border}`}}>{theme==="dark"?"☀":"🌙"}</button>
-            <button onClick={()=>setSoundEnabled(v=>!v)} style={{...btn,background:soundEnabled?t.accentBg:"transparent",color:soundEnabled?t.accent:t.muted,border:`1px solid ${soundEnabled?t.accent:t.border}`}}>{soundEnabled?"🔊":"🔇"}</button>
+            <button onClick={()=>{ resumeAudio(); setSoundEnabled(v=>!v); }} style={{...btn,background:soundEnabled?t.accentBg:"transparent",color:soundEnabled?t.accent:t.muted,border:`1px solid ${soundEnabled?t.accent:t.border}`}}>{soundEnabled?"🔊":"🔇"}</button>
             <button onClick={()=>downloadCSV(filtered)} disabled={filtered.length===0} style={{...btn,background:"transparent",color:t.muted,border:`1px solid ${t.border}`,opacity:filtered.length===0?0.4:1}}>↓ CSV</button>
             <button onClick={simulateWhale} disabled={simulating} style={{...btn,background:t.accentBg,color:t.accent,border:`1px solid ${t.accent}`,opacity:simulating?0.6:1}}>{simulating?"⏳":"⚡ SIMULATE"}</button>
             <div style={{display:"flex",alignItems:"center",gap:7,padding:"7px 12px",borderRadius:8,background:t.card,border:`1px solid ${t.border}`}}>
@@ -786,7 +817,7 @@ export default function WhaleDashboard(){
     <div style={{flex:1,overflowY:"auto"}}>
       {error&&<div style={{background:t.errBg,border:`1px solid ${t.errBorder}`,margin:"12px 20px 0",borderRadius:10,padding:12,color:t.errText,fontSize:12,fontFamily:"monospace"}}>⚠ {error}</div>}
       <div style={{maxWidth:1400,margin:"0 auto",padding:"16px 20px"}}>
-        {showFilters&&<FilterBar t={t} search={search} setSearch={setSearch} minAmt={minAmt} setMinAmt={setMinAmt} maxAmt={maxAmt} setMaxAmt={setMaxAmt} token={tokenFilter} setToken={setTokenFilter} timePreset={timePreset} setTimePreset={setTimePreset} showTypes={showTypes} setShowTypes={setShowTypes} tokenList={tokenList}/>}
+        <FilterBar t={t} search={search} setSearch={setSearch} minAmt={minAmt} setMinAmt={setMinAmt} maxAmt={maxAmt} setMaxAmt={setMaxAmt} token={tokenFilter} setToken={setTokenFilter} timePreset={timePreset} setTimePreset={setTimePreset} showTypes={showTypes} setShowTypes={setShowTypes} tokenList={tokenList}/>
         <div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:16,overflow:"hidden"}}>
           {tab==="feed"        && <LiveFeedTab    alerts={filtered} t={t} connectedAddr={walletAddr} burst={burst} oraclePrices={oraclePrices} blockTxs={windowedBlockTxs} totalBlockTxsSeen={totalBlockTxsSeen} timePreset={timePreset} feedSubTab={feedSubTab} setFeedSubTab={setFeedSubTab} netMinAmt={netMinAmt} setNetMinAmt={setNetMinAmt} netMaxAmt={netMaxAmt} setNetMaxAmt={setNetMaxAmt}/>}
           {tab==="analytics"   && <AnalyticsTab   alerts={filtered} t={t} oraclePrices={oraclePrices}/>}

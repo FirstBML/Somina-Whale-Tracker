@@ -6,8 +6,6 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { enqueue as enqueueLeaderboard } from "../streams-leaderboard/route";
-import { existsSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
 import Database from 'better-sqlite3';
 
 const somniaTestnet = defineChain({
@@ -39,8 +37,21 @@ db.exec(`
     block_number INTEGER,
     block_hash TEXT
   );
-  CREATE INDEX IF NOT EXISTS idx_timestamp 
-ON whale_events(timestamp);
+  CREATE INDEX IF NOT EXISTS idx_timestamp ON whale_events(timestamp);
+
+  CREATE TABLE IF NOT EXISTS block_tx_events (
+    id TEXT PRIMARY KEY,
+    from_addr TEXT,
+    to_addr TEXT,
+    amount TEXT,
+    is_transfer INTEGER,
+    tx_hash TEXT UNIQUE,
+    block_number TEXT,
+    block_hash TEXT,
+    tx_fee TEXT,
+    received_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS idx_block_tx_received_at ON block_tx_events(received_at);
 `);
 
 const WHALE_ABI = [{
@@ -168,12 +179,11 @@ function persistLeaderEntry(wallet: string, entry: LeaderEntry) {
 }
 
 // ── Server state ──────────────────────────────────────────────────────────────
-const MAX_CACHE = 5000; 
-const MAX_BLOCK_TX = 200_000;
+const MAX_CACHE = 5000;
 const alertCache: CacheEntry[] = [];
 let totalBlockTxsSeen = 0;
 let networkLargestSTT = 0;
-const BLOCK_TX_WINDOW_MS = 3 * 24 * 60 * 60 * 1000; // 72 hours
+const BLOCK_TX_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
 let trackerSub:   { unsubscribe: () => Promise<any> } | null = null;
 let handlerSub:   { unsubscribe: () => Promise<any> } | null = null;
 let momentumSub:  { unsubscribe: () => Promise<any> } | null = null;
@@ -202,33 +212,51 @@ function markSeen(hash: string): boolean {
   return true;
 }
 
-// ── File-based block_tx cache ─────────────────────────────────────────────────
-const CACHE_FILE = join(process.cwd(), ".whale-block-tx-cache.json");
+// ── SQLite-backed block_tx persistence ───────────────────────────────────────
+// Replaces the old JSON file cache. block_tx rows are written on every push()
+// and loaded back on startup — survives restarts and deployments with no count cap.
 
-function loadBlockTxCache() {
-  try {
-    if (!existsSync(CACHE_FILE)) return;
-    const raw = JSON.parse(readFileSync(CACHE_FILE, "utf8"));
-    if (!Array.isArray(raw.entries)) return;
-    const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
-    const entries: CacheEntry[] = raw.entries.filter((e: CacheEntry) => e.receivedAt >= cutoff);
-    alertCache.push(...entries);
-    totalBlockTxsSeen = raw.totalSeen ?? entries.length;
-    networkLargestSTT = raw.largestSTT ?? 0;
-    console.log(`📂 Loaded ${entries.length} block_tx from cache (${raw.entries.length - entries.length} expired)`);
-  } catch (e: any) {
-    console.warn("⚠ block_tx cache load failed (non-critical):", e.message);
+const insertBlockTx = db.prepare(`
+  INSERT OR IGNORE INTO block_tx_events
+  (id, from_addr, to_addr, amount, is_transfer, tx_hash, block_number, block_hash, tx_fee, received_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+
+function loadBlockTxFromDb() {
+  const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
+  const rows = db.prepare(
+    `SELECT * FROM block_tx_events WHERE received_at >= ? ORDER BY received_at ASC`
+  ).all(cutoff) as any[];
+  if (!rows.length) return;
+  for (const row of rows) {
+    const amountRaw = parseFloat(row.amount ?? "0");
+    if (amountRaw > networkLargestSTT) networkLargestSTT = amountRaw;
+    alertCache.push({
+      type: "block_tx",
+      receivedAt: row.received_at,
+      raw: {
+        from:        row.from_addr,
+        to:          row.to_addr,
+        amount:      row.amount,
+        timestamp:   `0x${Math.floor(row.received_at / 1000).toString(16)}`,
+        token:       "STT",
+        txHash:      row.tx_hash,
+        blockNumber: row.block_number,
+        blockHash:   row.block_hash,
+        txFee:       row.tx_fee ?? "0",
+      },
+    });
   }
+  totalBlockTxsSeen = rows.length;
+  console.log(`📂 Loaded ${rows.length} block_tx from SQLite (last 72h)`);
 }
 
-function saveBlockTxCache() {
-  try {
-    const entries = alertCache.filter(e => e.type === "block_tx").slice(-10_000);
-    writeFileSync(CACHE_FILE, JSON.stringify({ entries, totalSeen: totalBlockTxsSeen, largestSTT: networkLargestSTT }));
-  } catch {}
-}
-
-setInterval(saveBlockTxCache, 2 * 60_000);
+// Evict block_tx rows older than 72h — runs every 6h
+setInterval(() => {
+  const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
+  const { changes } = db.prepare(`DELETE FROM block_tx_events WHERE received_at < ?`).run(cutoff);
+  if (changes > 0) console.log(`🗑 Evicted ${changes} expired block_tx rows from SQLite`);
+}, 6 * 60 * 60_000);
 
 function broadcast(entry: CacheEntry) {
   const payload = entry.type === "block_tx"
@@ -241,17 +269,30 @@ function broadcast(entry: CacheEntry) {
 function push(entry: CacheEntry) {
   if (entry.type === "block_tx") {
     totalBlockTxsSeen++;
-    const amt = Number((entry.raw as any)?.amount ?? 0);
+    const amt = parseFloat((entry.raw as any)?.amount ?? "0");
     if (amt > networkLargestSTT) networkLargestSTT = amt;
+
+    // Time-based eviction only — no count cap
     const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
     let i = 0;
     while (i < alertCache.length && alertCache[i].type === "block_tx" && alertCache[i].receivedAt < cutoff) i++;
     if (i > 0) alertCache.splice(0, i);
-    const blockTxCount = alertCache.filter(e => e.type === "block_tx").length;
-    if (blockTxCount >= MAX_BLOCK_TX) {
-      const idx = alertCache.findIndex(e => e.type === "block_tx");
-      if (idx !== -1) alertCache.splice(idx, 1);
-    }
+
+    // Persist to SQLite so data survives restarts/deployments
+    try {
+      insertBlockTx.run(
+        `btx-${entry.receivedAt}-${Math.random()}`,
+        entry.raw.from,
+        entry.raw.to,
+        entry.raw.amount,
+        amt > 0 ? 1 : 0,
+        entry.raw.txHash,
+        entry.raw.blockNumber,
+        entry.raw.blockHash,
+        entry.raw.txFee ?? "0",
+        entry.receivedAt,
+      );
+    } catch {} // IGNORE = duplicate tx_hash, silently skip
   } else {
     if (alertCache.filter(e => e.type !== "block_tx").length >= MAX_CACHE) {
       const idx = alertCache.findIndex(e => e.type !== "block_tx");
@@ -263,7 +304,7 @@ function push(entry: CacheEntry) {
 
   if (entry.type !== "block_tx") {
     db.prepare(`
-      INSERT OR IGNORE INTO whale_events 
+      INSERT OR IGNORE INTO whale_events
       (id, type, from_addr, to_addr, amount, timestamp, token, tx_hash, block_number, block_hash)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
@@ -276,7 +317,7 @@ function push(entry: CacheEntry) {
       entry.raw.token,
       entry.raw.txHash,
       entry.raw.blockNumber,
-      entry.raw.blockHash
+      entry.raw.blockHash,
     );
   }
 }
@@ -286,9 +327,10 @@ function getHistoricalEvents(timeRangeMs: number): CacheEntry[] {
   const rows = db.prepare(`
     SELECT * FROM whale_events 
     WHERE timestamp > ? 
-    ORDER BY timestamp DESC
-  `).all(cutoff); 
-    
+    ORDER BY timestamp DESC 
+    LIMIT 1000
+  `).all(cutoff);
+  
   return rows.map((row: any) => ({
     type: row.type,
     receivedAt: row.timestamp,
@@ -306,9 +348,12 @@ function getHistoricalEvents(timeRangeMs: number): CacheEntry[] {
   })) as CacheEntry[];
 }
 
+// ── FIX 2: Seed whale history from SQLite at startup ─────────────────────────
+// Fast synchronous DB read — no chain scan. Ensures Whale Alerts tab has
+// historical data immediately on every restart.
 function seedWhaleEventsFromDb() {
-  const SEVENTY_TWO_HOURS = 3 * 24 * 60 * 60_000;
-  const dbWhales = getHistoricalEvents(SEVENTY_TWO_HOURS);
+  const SEVEN_DAYS = 7 * 24 * 60 * 60_000;
+  const dbWhales   = getHistoricalEvents(SEVEN_DAYS);
   if (!dbWhales.length) return;
   const seenHashes = new Set(alertCache.map(e => e.raw.txHash).filter(Boolean));
   let seeded = 0;
@@ -318,7 +363,7 @@ function seedWhaleEventsFromDb() {
     if (entry.raw.txHash) seenHashes.add(entry.raw.txHash);
     seeded++;
   }
-  if (seeded > 0) console.log(`📂 Seeded ${seeded} whale events from SQLite (last 72h)`);
+  if (seeded > 0) console.log(`📂 Seeded ${seeded} whale events from SQLite`);
 }
 
 async function fetchActualFee(
@@ -339,7 +384,7 @@ function evictExpiredEntries() {
     if (alertCache[i].receivedAt < cutoff) alertCache.splice(i, 1);
   }
   const removed = before - alertCache.length;
-  if (removed > 0) console.log(`🗑 Evicted ${removed} entries older than 72h on startup`);
+  if (removed > 0) console.log(`🗑 Evicted ${removed} entries older than 30d on startup`);
 }
 
 const EXPLORER_BASE = "https://shannon-explorer.somnia.network";
@@ -360,7 +405,7 @@ async function fetchExplorerStats(): Promise<void> {
       const totalFees24h  = Number(totalFeesWei) / 1e18;
       const avgFee24h     = txCount > 0 ? totalFees24h / txCount : 0;
       explorerStats = { txCount24h: txCount, totalFees24h, avgFee24h, fetchedAt: Date.now() };
-      // console.log(`📡 Explorer stats: ${txCount.toLocaleString()} txns/24h · ${totalFees24h.toFixed(2)} STT fees`);
+      console.log(`📡 Explorer stats: ${txCount.toLocaleString()} txns/24h · ${totalFees24h.toFixed(2)} STT fees`);
       broadcastExplorerStats();
       return;
     }
@@ -409,14 +454,9 @@ async function loadRecentBlockTxs() {
     let scanned = 0;
     let cursor  = latest;
 
-    console.log(`📊 Backfilling block_tx (72h window, ${cachedHashes.size} already cached)…`);
+    console.log(`📊 Backfilling block_tx (1h window, ${cachedHashes.size} already cached)…`);
 
     while (cursor > oldest) {
-      if (alertCache.filter(e => e.type === "block_tx").length >= MAX_BLOCK_TX) {
-        console.log(`📊 block_tx cache full at ${MAX_BLOCK_TX}`);
-        break;
-      }
-
       const batch: bigint[] = [];
       for (let i = 0; i < BATCH && cursor > oldest; i++, cursor--) batch.push(cursor);
       scanned += batch.length;
@@ -439,45 +479,26 @@ async function loadRecentBlockTxs() {
           const gasL = (tx as any).gas ?? 21000n;
           const feeSTT = (typeof gasP === "bigint" ? Number(gasP * gasL) : 0) / 1e18;
 
-          totalBlockTxsSeen++;
-          if (sttAmount > networkLargestSTT) networkLargestSTT = sttAmount;
           cachedHashes.add(tx.hash);
 
-          if (alertCache.filter(e => e.type === "block_tx").length < MAX_BLOCK_TX) {
-            alertCache.push({
-              type: "block_tx", receivedAt: blockTs,
-              raw: {
-                from:        (tx.from ?? "") as string,
-                to:          (tx.to  ?? "0x0000000000000000000000000000000000000000") as string,
-                amount:      sttAmount > 0 ? sttAmount.toFixed(8) : "0",
-                timestamp:   `0x${Math.floor(blockTs / 1000).toString(16)}`,
-                token:       "STT", txHash: tx.hash,
-                blockNumber: block.number?.toString() ?? "",
-                blockHash:   block.hash ?? "",
-                txFee:       feeSTT > 0 ? `~${feeSTT.toFixed(8)}` : "0",
-              },
-            });
-            loaded++;
-          }
+          // push() handles SQLite insert + in-memory append + counters
+          push({
+            type: "block_tx", receivedAt: blockTs,
+            raw: {
+              from:        (tx.from ?? "") as string,
+              to:          (tx.to  ?? "0x0000000000000000000000000000000000000000") as string,
+              amount:      sttAmount > 0 ? sttAmount.toFixed(8) : "0",
+              timestamp:   `0x${Math.floor(blockTs / 1000).toString(16)}`,
+              token:       "STT", txHash: tx.hash,
+              blockNumber: block.number?.toString() ?? "",
+              blockHash:   block.hash ?? "",
+              txFee:       feeSTT > 0 ? `~${feeSTT.toFixed(8)}` : "0",
+            },
+          });
+          loaded++;
 
-          // FIX 1: amount must be hex bigint string.
-          // sttAmount.toFixed(8) is a decimal — BigInt() in parseEntry throws on it,
-          // silently dropping every backfill whale via .filter(Boolean).
-          if (val > 0n && alertCache.filter(e => e.type === "whale").length < 2000) {
-            alertCache.push({
-              type: "whale", receivedAt: blockTs,
-              raw: {
-                from:        (tx.from ?? "") as string,
-                to:          (tx.to  ?? "0x0000000000000000000000000000000000000000") as string,
-                amount:      `0x${val.toString(16)}`,  // ✅ was: sttAmount.toFixed(8)
-                timestamp:   `0x${Math.floor(blockTs / 1000).toString(16)}`,
-                token:       "STT", txHash: tx.hash,
-                blockNumber: block.number?.toString() ?? "",
-                blockHash:   block.hash ?? "",
-                txFee:       feeSTT > 0 ? `~${feeSTT.toFixed(8)}` : "0",
-              },
-            });
-          }
+          // Whale history is owned by seedWhaleEventsFromDb() (SQLite read).
+          // Generating whale entries here created duplicates — removed.
         }
       }
 
@@ -485,7 +506,7 @@ async function loadRecentBlockTxs() {
       await new Promise(r => setTimeout(r, DELAY));
     }
     console.log(`✅ Block_tx backfill: ${loaded} new txns loaded (${scanned} blocks scanned)`);
-    saveBlockTxCache();
+    // SQLite writes happen inside push() — no separate save step needed
   } catch (e: any) {
     console.warn("⚠ Block_tx backfill failed (non-critical):", e.message?.split("\n")[0]);
   }
@@ -596,10 +617,10 @@ function scheduleReconnect() {
 
 async function ensureSubscriptions() {
   if (trackerSub && handlerSub && momentumSub && blockWatcher) return;
-  loadBlockTxCache();               // sync — fast disk read, pre-fills cache immediately
-  evictExpiredEntries();            // sync — purge anything older than 30d from cache
+  loadBlockTxFromDb();              // sync — reads all 72h of block_tx from SQLite
+  evictExpiredEntries();            // sync — purge anything older than 72h from cache
   seedWhaleEventsFromDb();          // FIX 2: sync — seed whale history from SQLite on startup
-  loadRecentBlockTxs().catch(() => {}); // async — backfills block_tx
+  loadRecentBlockTxs().catch(() => {}); // async — backfills any block_tx not yet in SQLite
   fetchExplorerStats().catch(() => {}); // async — pull 24h aggregate stats from explorer
 
   const CONTRACT = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS  as `0x${string}`;
@@ -817,31 +838,19 @@ export async function GET(req: NextRequest) {
     ensureSubscriptions().catch(e => { initStarted = false; });
   }
 
-  // Get 72h of historical data
-  const SEVENTY_TWO_HOURS = 3 * 24 * 60 * 60_000;
-  const historicalEvents = getHistoricalEvents(SEVENTY_TWO_HOURS);
-  
-  // Combine with current cache (avoid duplicates)
-  const allAlerts = [...historicalEvents, ...alertCache];
-  
-  // Remove duplicates by txHash
-  const uniqueAlerts = Array.from(
-    new Map(allAlerts.map(item => [item.raw.txHash, item])).values()
-  );
-
   const stream = new ReadableStream({
     start(controller) {
       controllers.add(controller);
 
       controller.enqueue(encoder.encode(`data: ${JSON.stringify({
         type: "init",
-        alerts: uniqueAlerts,  // Use the combined unique alerts
+        alerts: alertCache,
         totalBlockTxsSeen,
         networkLargestSTT,
         explorerStats,
       })}\n\n`));
 
-       controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "connected" })}\n\n`));
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "connected" })}\n\n`));
 
       const ping = setInterval(() => {
         try { controller.enqueue(encoder.encode(`: ping\n\n`)); }

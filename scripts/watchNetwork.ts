@@ -5,6 +5,8 @@ import {
   createPublicClient, createWalletClient, http, defineChain, parseEther,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { existsSync, readFileSync, writeFileSync } from "fs";
+import { join } from "path";
 
 // ── Chain ─────────────────────────────────────────────────────────────────────
 const somniaTestnet = defineChain({
@@ -33,10 +35,13 @@ const TRACKER_ABI = [
 ] as const;
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const POLLING_MS   = 500;    // poll every 500ms — catch most blocks at 0.1s block time
-const REPORT_DELAY = 300;    // ms between reportTransfer calls — prevents nonce collisions
-const MAX_QUEUE    = 50;     // max pending transfers to report at once
-const LOG_INTERVAL = 60_000; // print stats every 60s
+const POLLING_MS    = 500;      // poll every 500ms
+const REPORT_DELAY  = 300;      // ms between reportTransfer calls
+const MAX_QUEUE     = 50;       // max pending transfers to report at once
+const LOG_INTERVAL  = 60_000;   // print stats every 60s
+// FIX 3 — gap backfill: max blocks to scan on restart (3h at 10 blocks/s)
+// Covers typical overnight RPC outages without taking too long to catch up.
+const MAX_BACKFILL  = 108_000n; // ~3 hours of blocks
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let lastBlock      = 0n;
@@ -44,13 +49,34 @@ let totalSeen      = 0;
 let totalReported  = 0;
 let totalSkipped   = 0;
 let totalErrors    = 0;
-let nonce          = -1;     // -1 = uninitialized, fetched fresh on first use
+let nonce          = -1;
 let reporting      = false;
 const reportQueue: { from: `0x${string}`; to: `0x${string}`; val: bigint; stt: number }[] = [];
 
+// ── FIX 1 — lastBlock persistence ────────────────────────────────────────────
+// Saves lastBlock to disk every 30s and on SIGINT/SIGTERM.
+// On startup, resumes from the saved block instead of always starting from head,
+// so any gap caused by crashes or restarts gets backfilled automatically.
+const LAST_BLOCK_FILE = join(process.cwd(), ".watchnetwork-lastblock.json");
+
+function loadLastBlock(): bigint {
+  try {
+    if (!existsSync(LAST_BLOCK_FILE)) return 0n;
+    const raw = JSON.parse(readFileSync(LAST_BLOCK_FILE, "utf8"));
+    const n = BigInt(raw.lastBlock ?? 0);
+    if (n > 0n) console.log(`📂 Resuming from saved block #${n}`);
+    return n;
+  } catch { return 0n; }
+}
+
+function saveLastBlock() {
+  try { writeFileSync(LAST_BLOCK_FILE, JSON.stringify({ lastBlock: lastBlock.toString() })); }
+  catch {}
+}
+
 // ── Clients ───────────────────────────────────────────────────────────────────
 function makeClients() {
-  const CONTRACT = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS as `0x${string}`;
+  const CONTRACT    = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS as `0x${string}`;
   const PRIVATE_KEY = process.env.PRIVATE_KEY as `0x${string}`;
 
   if (!CONTRACT || !PRIVATE_KEY) {
@@ -68,7 +94,6 @@ function makeClients() {
 // ── Nonce management ──────────────────────────────────────────────────────────
 async function getNextNonce(pub: ReturnType<typeof createPublicClient>, address: `0x${string}`): Promise<number> {
   if (nonce === -1) {
-    // Fetch from chain on first use or after error
     nonce = await pub.getTransactionCount({ address, blockTag: "pending" });
     console.log(`📌 Initial nonce: ${nonce}`);
   }
@@ -115,7 +140,7 @@ async function processQueue(
 
       if (msg.includes("nonce") || msg.includes("replacement")) {
         console.warn(`⚠ Nonce error — resetting and requeueing`);
-        reportQueue.unshift(item); // put back at front
+        reportQueue.unshift(item);
         await resetNonce(pub, address);
         await new Promise(r => setTimeout(r, 500));
         continue;
@@ -123,13 +148,11 @@ async function processQueue(
 
       if (msg.includes("Below whale threshold") || msg.includes("below threshold")) {
         totalSkipped++;
-        // Silently drop — transfer fell below on-chain threshold
       } else {
         console.error(`❌ reportTransfer failed: ${msg.split("\n")[0]}`);
       }
     }
 
-    // Small delay between reports to avoid flooding the mempool
     if (reportQueue.length > 0) {
       await new Promise(r => setTimeout(r, REPORT_DELAY));
     }
@@ -153,13 +176,12 @@ async function processBlock(
     if (typeof tx !== "object" || !tx.hash) continue;
 
     const val = tx.value ?? 0n;
-    if (val < threshold) continue;                  // below threshold — skip
-    if (tx.from?.toLowerCase() === address.toLowerCase()) continue; // skip our own txs
+    if (val < threshold) continue;
+    if (tx.from?.toLowerCase() === address.toLowerCase()) continue;
 
     const stt = Number(val) / 1e18;
     totalSeen++;
 
-    // Don't let queue grow unbounded
     if (reportQueue.length >= MAX_QUEUE) {
       console.warn(`⚠ Report queue full (${MAX_QUEUE}) — dropping oldest`);
       reportQueue.shift();
@@ -173,7 +195,6 @@ async function processBlock(
     });
   }
 
-  // Drain queue (non-blocking — fires and continues)
   processQueue(CONTRACT, pub, wal, address).catch(e =>
     console.error("Queue processor error:", e?.message?.split("\n")[0])
   );
@@ -203,6 +224,53 @@ function startStatsLogger() {
   }, LOG_INTERVAL);
 }
 
+// ── FIX 2 — Gap backfill ──────────────────────────────────────────────────────
+// When we resume from a saved lastBlock, scan the gap and report any missed
+// whale transfers. Capped at MAX_BACKFILL blocks to bound startup time.
+// At BATCH=50 blocks and 200ms delay: 108k blocks ≈ ~7 minutes to scan.
+async function backfillGap(
+  fromBlock: bigint,
+  toBlock: bigint,
+  threshold: bigint,
+  CONTRACT: `0x${string}`,
+  pub: ReturnType<typeof createPublicClient>,
+  wal: ReturnType<typeof createWalletClient>,
+  address: `0x${string}`,
+) {
+  const gap = toBlock - fromBlock;
+  if (gap <= 0n) return;
+
+  const capped = gap > MAX_BACKFILL ? MAX_BACKFILL : gap;
+  const startBlock = toBlock - capped;
+  console.log(`🔍 Backfilling gap: blocks #${startBlock} → #${toBlock} (${capped.toLocaleString()} blocks)`);
+
+  const BATCH = 50n;
+  let cursor = startBlock;
+  let found = 0;
+
+  while (cursor < toBlock) {
+    const end = cursor + BATCH < toBlock ? cursor + BATCH : toBlock;
+    const blockNums: bigint[] = [];
+    for (let n = cursor; n < end; n++) blockNums.push(n);
+    cursor = end;
+
+    const results = await Promise.allSettled(
+      blockNums.map(n => pub.getBlock({ blockNumber: n, includeTransactions: true }))
+    );
+
+    for (const r of results) {
+      if (r.status !== "fulfilled" || !r.value?.transactions?.length) continue;
+      const prevCount = totalSeen;
+      await processBlock(r.value, threshold, CONTRACT, pub, wal, address);
+      found += totalSeen - prevCount;
+    }
+
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  console.log(`✅ Gap backfill complete — ${found} whale transfers queued from missed blocks`);
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
   console.log("🐋 Somnia watchNetwork.ts starting...");
@@ -213,11 +281,9 @@ async function main() {
   console.log(`   Wallet:  ${account.address}`);
   console.log(`   Contract: ${CONTRACT}`);
 
-  // Fetch on-chain threshold so watcher stays in sync with any setThreshold() calls
   let threshold = await fetchThreshold(pub, CONTRACT);
   console.log(`   Threshold: ${Number(threshold) / 1e18} STT`);
 
-  // Refresh threshold every 5 min in case owner calls setThreshold()
   setInterval(async () => {
     const t = await fetchThreshold(pub, CONTRACT);
     if (t !== threshold) {
@@ -226,33 +292,61 @@ async function main() {
     }
   }, 5 * 60_000);
 
-  // Prime lastBlock so we don't reprocess old blocks on startup
-  lastBlock = await pub.getBlockNumber();
+  // FIX 1: load saved lastBlock; if none, start from chain head
+  const savedBlock = loadLastBlock();
+  const chainHead  = await pub.getBlockNumber();
+
+  if (savedBlock > 0n && savedBlock < chainHead) {
+    lastBlock = savedBlock;
+    // FIX 2: backfill gap between saved block and current head
+    await backfillGap(savedBlock, chainHead, threshold, CONTRACT, pub, wal, account.address);
+    lastBlock = chainHead;
+  } else {
+    lastBlock = chainHead;
+  }
+
   console.log(`✅ Ready — watching from block #${lastBlock}\n`);
+
+  // Save lastBlock to disk every 30s
+  setInterval(saveLastBlock, 30_000);
 
   startStatsLogger();
 
-  // ── Block watcher loop ───────────────────────────────────────────────────
-  // Uses HTTP polling at 500ms — reliable full-block delivery vs WebSocket
-  // watchBlocks which returns headers only and requires a second fetch.
+  // ── FIX 3 — RPC retry with exponential backoff ────────────────────────────
+  // viem's onError fires on every failed poll but auto-retries immediately.
+  // We track consecutive errors and add a delay so a flaky RPC doesn't spam
+  // the logs and allows the network time to recover before hammering it again.
+  let rpcErrorCount = 0;
+
   pub.watchBlocks({
     includeTransactions: true,
     pollingInterval: POLLING_MS,
     onBlock: async (block) => {
-      // Skip already-processed blocks (viem can deliver duplicates)
+      rpcErrorCount = 0; // reset on successful delivery
       if (!block.number || block.number <= lastBlock) return;
       lastBlock = block.number;
       await processBlock(block, threshold, CONTRACT, pub, wal, account.address);
     },
-    onError: (e) => {
-      console.error("⚠ Block watcher error:", e.message?.split("\n")[0]);
-      // viem auto-retries — no manual reconnect needed
+    onError: async (e) => {
+      rpcErrorCount++;
+      // Backoff: 2s → 4s → 8s → 16s → cap at 30s
+      const delay = Math.min(2000 * Math.pow(2, rpcErrorCount - 1), 30_000);
+      console.error(`⚠ Block watcher error (attempt ${rpcErrorCount}): ${e.message?.split("\n")[0]}`);
+      if (rpcErrorCount > 1) {
+        console.warn(`   Backing off ${Math.round(delay/1000)}s before next poll…`);
+        await new Promise(r => setTimeout(r, delay));
+      }
     },
   });
 
-  // Keep process alive
-  process.on("SIGINT",  () => { console.log("\n👋 watchNetwork stopped."); process.exit(0); });
-  process.on("SIGTERM", () => { console.log("\n👋 watchNetwork stopped."); process.exit(0); });
+  // Save on clean exit so next start resumes exactly where we left off
+  const shutdown = () => {
+    saveLastBlock();
+    console.log(`\n👋 watchNetwork stopped at block #${lastBlock}.`);
+    process.exit(0);
+  };
+  process.on("SIGINT",  shutdown);
+  process.on("SIGTERM", shutdown);
 }
 
 main().catch(e => {
