@@ -864,7 +864,7 @@ function LeaderboardTab({alerts,t,persistedEntries}:{alerts:WhaleAlert[];t:typeo
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function WhaleDashboard(){
-  const{alerts,blockTxs,totalBlockTxsSeen,connected,error}=useWhaleAlerts();
+  const{alerts,blockTxs,totalBlockTxsSeen,connected,error}=useWhaleAlerts(500);
   const{address:walletAddr,isConnected}=useAccount();
   const{prices:oraclePrices,loading:pricesLoading,lastFetchedAt}=useOraclePrices(10_000);
   const[simulating,setSimulating]=useState(false);
@@ -987,7 +987,7 @@ export default function WhaleDashboard(){
 
   const filtered=useMemo(()=>{
     const from=dateFrom?new Date(dateFrom).getTime():timePreset>0?now-timePreset:0;
-    const to=dateTo?new Date(dateTo).getTime():now;
+    const to=dateTo?new Date(dateTo).getTime():Date.now()+5000; // +5s buffer for clock skew
     return alerts.filter(a=>{
       if(!showTypes.includes(a.type))return false;
       if(a.timestamp<from||a.timestamp>to)return false;

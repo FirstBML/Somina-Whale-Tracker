@@ -1,6 +1,13 @@
 "use client";
 import { useEffect, useRef, useState, useMemo } from "react";
 
+// Add to global Window interface for TypeScript
+declare global {
+  interface Window {
+    _processedTxMap?: Map<string, number>;
+  }
+}
+
 export type AlertType = "whale" | "reaction" | "alert" | "momentum";
 
 export type WhaleAlert = {
@@ -133,9 +140,15 @@ export function useWhaleAlerts(maxAlerts = 200) {
 
       es.onmessage = (e) => {
         if (e.data === ": ping") return;
+        
         try {
           const msg = JSON.parse(e.data);
+          
+          // Log every message type (optional - comment out in production)
+          // console.log(`📨 Message type: ${msg.type}`, msg);
+          
           if (msg.type === "init") {
+            console.log(`🔄 INIT - totalBlockTxsSeen: ${msg.totalBlockTxsSeen}`);
             const all = msg.alerts as any[];
             setAlerts(
               all.filter(a => a.type !== "block_tx")
@@ -149,30 +162,114 @@ export function useWhaleAlerts(maxAlerts = 200) {
             if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
             if (msg.explorerStats)     setExplorerStats(msg.explorerStats);
           }
-          if (msg.type === "connected") { setConnected(true); setError(null); }
+          
+          if (msg.type === "connected") { 
+            console.log("🔌 Connected to SSE stream");
+            setConnected(true); 
+            setError(null); 
+          }
+          
           if (msg.type === "error") setError(msg.message);
+          
           if (["whale","reaction","alert","momentum"].includes(msg.type)) {
+            console.log(`🐋 New ${msg.type} event received`);
             const a = parseEntry(msg);
             if (a) setAlerts(prev => [a, ...prev].slice(0, maxAlerts));
           }
+          
+          // ============= FIXED BLOCK_TX HANDLING WITH DEDUPLICATION =============
           if (msg.type === "block_tx") {
+            // Initialize the deduplication map if it doesn't exist
+            if (typeof window !== 'undefined' && !window._processedTxMap) {
+              window._processedTxMap = new Map<string, number>(); // key: txHash, value: timestamp
+            }
+            
+            const txHash = msg.raw?.txHash;
+            const now = Date.now();
+            const ONE_HOUR = 60 * 60 * 1000; // 1 hour window
+            
+            // Clean up entries older than 1 hour (runs periodically)
+            if (typeof window !== 'undefined' && window._processedTxMap && window._processedTxMap.size > 0) {
+              // Only clean up every 100 messages to avoid performance hit
+              if (Math.random() < 0.01) { // 1% chance on each message
+                let cleaned = 0;
+                for (const [hash, timestamp] of window._processedTxMap.entries()) {
+                  if (now - timestamp > ONE_HOUR) {
+                    window._processedTxMap.delete(hash);
+                    cleaned++;
+                  }
+                }
+                if (cleaned > 0) {
+                  console.log(`🧹 Cleaned up ${cleaned} old entries from dedup map`);
+                }
+              }
+            }
+            
+            // Check for duplicates using the Map
+            if (txHash && typeof window !== 'undefined' && window._processedTxMap?.has(txHash)) {
+              console.log(`⏭️ Skipping duplicate tx: ${txHash.slice(0, 10)}...`);
+              return; // Skip this duplicate message
+            }
+            
+            // Mark as processed with timestamp
+            if (txHash && typeof window !== 'undefined' && window._processedTxMap) {
+              window._processedTxMap.set(txHash, now);
+            }
+            
+            // Log before state update
+            console.log(`📦 BLOCK TX - counter before: ${totalBlockTxsSeen}`);
+            
             const tx = parseBlockTx(msg);
             if (tx) {
-              setBlockTxs(prev => [tx, ...prev].slice(0, 50_000));
-              // ✅ FIX 1: Increment the counter when new block_tx arrives
-              setTotalBlockTxsSeen(prev => prev + 1);
+              setBlockTxs(prev => {
+                // Double-check in case the message slipped through (belt and suspenders)
+                const exists = prev.some(t => t.txHash === tx.txHash);
+                if (exists) {
+                  console.log(`⚠️ Duplicate tx ${tx.txHash.slice(0,10)}... found in array, skipping`);
+                  return prev;
+                }
+                
+                console.log(`   Adding new TX: ${tx.txHash.slice(0, 10)}... amount: ${tx.amount} STT`);
+                return [tx, ...prev].slice(0, 50_000);
+              });
+              
+              // Use the server's counter if available, otherwise increment
+              if (msg.totalBlockTxsSeen !== undefined) {
+                console.log(`📊 Using server counter: ${msg.totalBlockTxsSeen}`);
+                setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
+              } else {
+                setTotalBlockTxsSeen(prev => {
+                  const newVal = prev + 1;
+                  console.log(`📊 Incrementing counter from ${prev} to ${newVal}`);
+                  return newVal;
+                });
+              }
             }
+            
             if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
           }
+          // ============= END OF FIXED SECTION =============
+          
           // Receipt fee resolved — patch the txFee on the matching whale alert
           if (msg.type === "whale_fee_update" && msg.txHash && msg.txFee) {
+            console.log(`💰 Fee update for ${msg.txHash.slice(0,10)}: ${msg.txFee} STT`);
             setAlerts(prev => prev.map(a =>
               a.txHash === msg.txHash ? { ...a, txFee: msg.txFee } : a
             ));
           }
-          if (msg.type === "explorer_stats" && msg.stats) setExplorerStats(msg.stats);
-          if (msg.type === "threshold_update") setCurrentThreshold(parseFloat(msg.raw?.newValue ?? "0"));
-        } catch {}
+          
+          if (msg.type === "explorer_stats" && msg.stats) {
+            console.log(`📊 Explorer stats received`, msg.stats);
+            setExplorerStats(msg.stats);
+          }
+          
+          if (msg.type === "threshold_update") {
+            console.log(`⚙ Threshold update: ${msg.raw?.newValue} STT`);
+            setCurrentThreshold(parseFloat(msg.raw?.newValue ?? "0"));
+          }
+        } catch (err) {
+          console.error("Error parsing SSE message:", err);
+        }
       };
 
       es.onerror = () => {
@@ -191,6 +288,10 @@ export function useWhaleAlerts(maxAlerts = 200) {
       if (retryTimer.current) clearTimeout(retryTimer.current);
       esRef.current?.close();
       esRef.current = null;
+      // Clean up the dedup map on unmount
+      if (typeof window !== 'undefined') {
+        delete window._processedTxMap;
+      }
     };
   }, [maxAlerts]);
 

@@ -260,11 +260,30 @@ setInterval(() => {
 }, 6 * 60 * 60_000);
 
 function broadcast(entry: CacheEntry) {
+
+  if (entry.type === "whale") {
+    console.log(`🐋 BROADCASTING whale: ${entry.raw.txHash?.slice(0,10)}... amount: ${entry.raw.amount}`);
+  }
+  
   const payload = entry.type === "block_tx"
     ? { ...entry, totalBlockTxsSeen, networkLargestSTT }
     : entry;
+    
   const msg = encoder.encode(`data: ${JSON.stringify(payload)}\n\n`);
-  controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
+  
+  let sent = 0;
+  controllers.forEach(c => { 
+    try { 
+      c.enqueue(msg); 
+      sent++;
+    } catch (e) {
+      controllers.delete(c);
+    }
+  });
+  
+  if (entry.type === "whale" && sent === 0) {
+    console.warn("⚠️ Whale event broadcast but no connected clients!");
+  }
 }
 
 function push(entry: CacheEntry) {
