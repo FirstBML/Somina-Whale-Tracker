@@ -190,6 +190,7 @@ let momentumSub:  { unsubscribe: () => Promise<any> } | null = null;
 let blockWatcher: (() => void) | null = null;
 const encoder     = new TextEncoder();
 const controllers = new Set<ReadableStreamDefaultController>();
+let nonBlockTxCount = 0; // O(1) counter — avoids O(n) filter on every push()
 
 export type ExplorerStats = {
   txCount24h:   number;
@@ -294,10 +295,11 @@ function push(entry: CacheEntry) {
       );
     } catch {} // IGNORE = duplicate tx_hash, silently skip
   } else {
-    if (alertCache.filter(e => e.type !== "block_tx").length >= MAX_CACHE) {
+    if (nonBlockTxCount >= MAX_CACHE) {
       const idx = alertCache.findIndex(e => e.type !== "block_tx");
-      if (idx !== -1) alertCache.splice(idx, 1);
+      if (idx !== -1) { alertCache.splice(idx, 1); nonBlockTxCount--; }
     }
+    nonBlockTxCount++;
   }
   alertCache.push(entry);
   broadcast(entry);
@@ -619,8 +621,10 @@ async function ensureSubscriptions() {
   if (trackerSub && handlerSub && momentumSub && blockWatcher) return;
   loadBlockTxFromDb();              // sync — reads all 72h of block_tx from SQLite
   evictExpiredEntries();            // sync — purge anything older than 72h from cache
-  seedWhaleEventsFromDb();          // FIX 2: sync — seed whale history from SQLite on startup
-  loadRecentBlockTxs().catch(() => {}); // async — backfills any block_tx not yet in SQLite
+  seedWhaleEventsFromDb();          // sync — seed whale history from SQLite on startup
+  nonBlockTxCount = alertCache.filter(e => e.type !== "block_tx").length; // init O(1) counter
+  cacheReadyResolve?.();            // unblock GET handlers — cache is seeded, init can fire
+  setTimeout(() => loadRecentBlockTxs().catch(() => {}), 10_000); // 10s stagger // async — backfills any block_tx not yet in SQLite
   fetchExplorerStats().catch(() => {}); // async — pull 24h aggregate stats from explorer
 
   const CONTRACT = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS  as `0x${string}`;
@@ -669,11 +673,10 @@ async function ensureSubscriptions() {
             },
           };
 
-          if (txHash && !markSeen(txHash)) {
-            updateLeaderMap(a.from, a.to, amount, ts);
-          } else {
+          // markSeen: true = first time seen → push. false = dupe (blockWatcher saw it first) → skip push.
+          updateLeaderMap(a.from, a.to, amount, ts);
+          if (!txHash || markSeen(txHash)) {
             push(entry);
-            updateLeaderMap(a.from, a.to, amount, ts);
           }
 
           for (const wallet of [a.from as string, a.to as string]) {
@@ -822,11 +825,16 @@ async function ensureSubscriptions() {
 }
 
 let initStarted = false;
+let cacheReady: Promise<void> | null = null;
+let cacheReadyResolve: (() => void) | null = null;
+
 (function kickstart() {
   if (initStarted) return;
   initStarted = true;
+  cacheReady = new Promise<void>(resolve => { cacheReadyResolve = resolve; });
   ensureSubscriptions().catch(e => {
     initStarted = false;
+    cacheReadyResolve?.(); // resolve on error so GET doesn't hang
     console.error("Subscription init error:", e.message);
   });
 })();
@@ -835,8 +843,12 @@ let initStarted = false;
 export async function GET(req: NextRequest) {
   if (!initStarted) {
     initStarted = true;
-    ensureSubscriptions().catch(e => { initStarted = false; });
+    cacheReady = new Promise<void>(resolve => { cacheReadyResolve = resolve; });
+    ensureSubscriptions().catch(e => { initStarted = false; cacheReadyResolve?.(); });
   }
+
+  // Wait until cache is seeded before sending init — ensures 499 whale history events are included
+  if (cacheReady) await cacheReady;
 
   const stream = new ReadableStream({
     start(controller) {

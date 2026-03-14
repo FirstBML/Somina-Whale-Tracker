@@ -41,7 +41,7 @@ const MAX_QUEUE     = 50;       // max pending transfers to report at once
 const LOG_INTERVAL  = 60_000;   // print stats every 60s
 // FIX 3 — gap backfill: max blocks to scan on restart (3h at 10 blocks/s)
 // Covers typical overnight RPC outages without taking too long to catch up.
-const MAX_BACKFILL  = 108_000n; // ~3 hours of blocks
+const MAX_BACKFILL = 36_000n;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let lastBlock      = 0n;

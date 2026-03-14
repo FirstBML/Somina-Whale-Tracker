@@ -8,8 +8,8 @@ import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContai
 
 type Theme = "dark" | "light";
 const T = {
-  dark:  { pageBg:"#050d1a",headerBg:"#070f1eee",card:"#0a1628",border:"rgba(6,182,212,0.2)",text:"#e2f8ff",subtext:"#67b8cc",muted:"rgba(103,184,204,0.4)",accent:"#06b6d4",accentBg:"rgba(6,182,212,0.12)",input:"#05111f",chartGrid:"#0e2a3a",chartAxis:"#2a7a90",tooltipBg:"#060e1c",tooltipBorder:"#0e4f5e",rowHover:"rgba(6,182,212,0.06)",errBg:"rgba(127,29,29,0.3)",errBorder:"rgba(185,28,28,0.4)",errText:"#f87171",statVal:"#67e8f9",tableHead:"#071322",tableRow:"#0a1628",tableAlt:"#0c1a30",badgeBg:"rgba(6,182,212,0.15)",badgeText:"#67e8f9",reactionRow:"rgba(168,85,247,0.08)",alertRow:"rgba(251,146,60,0.08)",myTxRow:"rgba(74,222,128,0.08)" },
-  light: { pageBg:"#f0f9ff",headerBg:"#dbeafedd",card:"#ffffff",border:"rgba(3,105,161,0.2)",text:"#0a2540",subtext:"#0369a1",muted:"rgba(3,105,161,0.5)",accent:"#0284c7",accentBg:"rgba(2,132,199,0.1)",input:"#e0f2fe",chartGrid:"#bae6fd",chartAxis:"#0369a1",tooltipBg:"#ffffff",tooltipBorder:"#7dd3fc",rowHover:"rgba(2,132,199,0.06)",errBg:"rgba(254,226,226,0.9)",errBorder:"rgba(239,68,68,0.4)",errText:"#b91c1c",statVal:"#0c4a6e",tableHead:"#e0f2fe",tableRow:"#ffffff",tableAlt:"#f0f9ff",badgeBg:"rgba(2,132,199,0.12)",badgeText:"#0369a1",reactionRow:"rgba(168,85,247,0.06)",alertRow:"rgba(234,88,12,0.06)",myTxRow:"rgba(22,163,74,0.06)" },
+  dark:  { pageBg:"#050d1a",headerBg:"#070f1eee",card:"#0a1628",border:"rgba(6,182,212,0.2)",text:"#e2f8ff",subtext:"#7ecde0",muted:"rgba(103,184,204,0.75)",accent:"#06b6d4",accentBg:"rgba(6,182,212,0.12)",input:"#05111f",chartGrid:"#0e2a3a",chartAxis:"#3d8fa6",tooltipBg:"#060e1c",tooltipBorder:"#0e4f5e",rowHover:"rgba(6,182,212,0.06)",errBg:"rgba(127,29,29,0.3)",errBorder:"rgba(185,28,28,0.4)",errText:"#f87171",statVal:"#67e8f9",tableHead:"#071322",tableRow:"#0a1628",tableAlt:"#0c1a30",badgeBg:"rgba(6,182,212,0.15)",badgeText:"#67e8f9",reactionRow:"rgba(168,85,247,0.08)",alertRow:"rgba(251,146,60,0.08)",myTxRow:"rgba(74,222,128,0.08)" },
+  light: { pageBg:"#f0f9ff",headerBg:"#dbeafedd",card:"#ffffff",border:"rgba(3,105,161,0.2)",text:"#0a2540",subtext:"#0258a0",muted:"rgba(3,105,161,0.75)",accent:"#0284c7",accentBg:"rgba(2,132,199,0.1)",input:"#e0f2fe",chartGrid:"#bae6fd",chartAxis:"#0369a1",tooltipBg:"#ffffff",tooltipBorder:"#7dd3fc",rowHover:"rgba(2,132,199,0.06)",errBg:"rgba(254,226,226,0.9)",errBorder:"rgba(239,68,68,0.4)",errText:"#b91c1c",statVal:"#0c4a6e",tableHead:"#e0f2fe",tableRow:"#ffffff",tableAlt:"#f0f9ff",badgeBg:"rgba(2,132,199,0.12)",badgeText:"#0369a1",reactionRow:"rgba(168,85,247,0.06)",alertRow:"rgba(234,88,12,0.06)",myTxRow:"rgba(22,163,74,0.06)" },
 };
 
 const TOKEN_COLORS: Record<string,string> = {STT:"#06b6d4",USDC:"#2775CA",WETH:"#627EEA",WBTC:"#F7931A",USDT:"#26A17B",LINK:"#2A5ADA",UNI:"#FF007A",AAVE:"#B6509E"};
@@ -84,10 +84,10 @@ function downloadCSV(alerts:WhaleAlert[]){const rows=["type,timestamp,from,to,am
 // ── Shared UI ─────────────────────────────────────────────────────────────────
 function Badge({text,color,t}:{text:string;color?:string;t:typeof T.dark}){return<span style={{fontSize:10,fontFamily:"monospace",fontWeight:700,padding:"2px 8px",borderRadius:4,background:color?`${color}22`:t.badgeBg,color:color??t.badgeText,border:`1px solid ${color?`${color}44`:t.border}`}}>{text}</span>;}
 function TypeBadge({type,t}:{type:string;t:typeof T.dark}){const map:Record<string,{label:string;color:string}>={whale:{label:"🐋 WHALE",color:"#06b6d4"},reaction:{label:"⚡ REACTION",color:"#a855f7"},alert:{label:"🚨 ALERT",color:"#f97316"},momentum:{label:"🔥 MOMENTUM",color:"#ef4444"}};const m=map[type]??map.whale;return<span style={{fontSize:9,fontFamily:"monospace",fontWeight:700,padding:"2px 8px",borderRadius:4,background:`${m.color}22`,color:m.color,border:`1px solid ${m.color}44`,whiteSpace:"nowrap"}}>{m.label}</span>;}
-function Th({children,t}:{children:string;t:typeof T.dark}){return<th style={{padding:"9px 12px",textAlign:"left",color:t.muted,fontSize:9,textTransform:"uppercase",letterSpacing:"0.12em",fontFamily:"monospace",borderBottom:`1px solid ${t.border}`,background:t.tableHead,whiteSpace:"nowrap"}}>{children}</th>;}
+function Th({children,t}:{children:string;t:typeof T.dark}){return<th style={{padding:"9px 12px",textAlign:"left",color:t.subtext,fontSize:10,textTransform:"uppercase",letterSpacing:"0.1em",fontFamily:"monospace",borderBottom:`1px solid ${t.border}`,background:t.tableHead,whiteSpace:"nowrap"}}>{children}</th>;}
 function Td({children,t,bold,accent,color}:{children:React.ReactNode;t:typeof T.dark;bold?:boolean;accent?:boolean;color?:string}){return<td style={{padding:"10px 12px",color:color??(accent?t.accent:t.text),fontFamily:"monospace",fontSize:11,fontWeight:bold?700:400,borderBottom:`1px solid ${t.border}`,whiteSpace:"nowrap"}}>{children}</td>;}
 function ExLink({href,label,t}:{href:string;label:string;t:typeof T.dark}){if(!href)return<span style={{color:t.muted,fontFamily:"monospace",fontSize:11}}>—</span>;return(<a href={href} target="_blank" rel="noreferrer" style={{color:t.subtext,textDecoration:"none",fontFamily:"monospace",fontSize:11,display:"inline-flex",alignItems:"center",gap:3}} onMouseEnter={e=>(e.currentTarget.style.color=t.accent)} onMouseLeave={e=>(e.currentTarget.style.color=t.subtext)}>{label}<span style={{fontSize:9,opacity:0.6}}>↗</span></a>);}
-function KpiCard({label,value,sub,color,t}:{label:string;value:string|number;sub?:string;color?:string;t:typeof T.dark}){return(<div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:10,padding:"12px 16px"}}><p style={{color:t.muted,fontSize:9,textTransform:"uppercase",letterSpacing:"0.15em",fontFamily:"monospace",margin:"0 0 4px"}}>{label}</p><p style={{color:color??t.statVal,fontSize:18,fontWeight:700,fontFamily:"monospace",margin:0}}>{value}</p>{sub&&<p style={{color:t.muted,fontSize:9,margin:"2px 0 0",fontFamily:"monospace"}}>{sub}</p>}</div>);}
+function KpiCard({label,value,sub,color,t}:{label:string;value:string|number;sub?:string;color?:string;t:typeof T.dark}){return(<div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:10,padding:"12px 16px"}}><p style={{color:t.subtext,fontSize:10,textTransform:"uppercase",letterSpacing:"0.12em",fontFamily:"monospace",margin:"0 0 4px"}}>{label}</p><p style={{color:color??t.statVal,fontSize:18,fontWeight:700,fontFamily:"monospace",margin:0}}>{value}</p>{sub&&<p style={{color:t.muted,fontSize:10,margin:"2px 0 0",fontFamily:"monospace"}}>{sub}</p>}</div>);}
 
 // ── Price Ticker ──────────────────────────────────────────────────────────────
 const TICKER_SYMBOLS = ["ETH","BTC","USDC","USDT","SOL"] as const;
@@ -155,7 +155,7 @@ function BurstBanner({burst,t}:{burst:Burst;t:typeof T.dark}){
 // ── Filter Bar ────────────────────────────────────────────────────────────────
 function FilterBar({t,search,setSearch,minAmt,setMinAmt,maxAmt,setMaxAmt,token,setToken,timePreset,setTimePreset,showTypes,setShowTypes,tokenList}:{t:typeof T.dark;search:string;setSearch:(v:string)=>void;minAmt:string;setMinAmt:(v:string)=>void;maxAmt:string;setMaxAmt:(v:string)=>void;token:string;setToken:(v:string)=>void;timePreset:number;setTimePreset:(v:number)=>void;showTypes:string[];setShowTypes:(v:string[])=>void;tokenList:string[];}){
   const inp:React.CSSProperties={background:t.input,border:`1px solid ${t.border}`,borderRadius:7,padding:"7px 10px",fontSize:11,fontFamily:"monospace",color:t.text,outline:"none",width:"100%",boxSizing:"border-box"};
-  const lbl:React.CSSProperties={color:t.subtext,fontSize:9,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",display:"block",marginBottom:4};
+  const lbl:React.CSSProperties={color:t.subtext,fontSize:10,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.08em",display:"block",marginBottom:4};
   const toggleType=(type:string)=>setShowTypes(showTypes.includes(type)?showTypes.filter(x=>x!==type):[...showTypes,type]);
   return(<div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:12,padding:16,marginBottom:14}}>
     <p style={{color:t.muted,fontSize:9,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.15em",margin:"0 0 12px"}}>Filters</p>
@@ -171,7 +171,7 @@ function FilterBar({t,search,setSearch,minAmt,setMinAmt,maxAmt,setMaxAmt,token,s
       {[{key:"whale",label:"🐋 Whale",color:"#06b6d4"},{key:"reaction",label:"⚡ Reaction",color:"#a855f7"},{key:"alert",label:"🚨 Alert",color:"#f97316"}].map(({key,label,color})=>(
         <button key={key} onClick={()=>toggleType(key)} style={{fontSize:10,fontFamily:"monospace",padding:"3px 10px",borderRadius:6,cursor:"pointer",background:showTypes.includes(key)?`${color}22`:"transparent",color:showTypes.includes(key)?color:t.muted,border:`1px solid ${showTypes.includes(key)?`${color}66`:"transparent"}`}}>{label}</button>
       ))}
-      <button onClick={()=>{setSearch("");setMinAmt("");setMaxAmt("");setToken("All");setTimePreset(24*60*60_000);setShowTypes(["whale","reaction","alert","momentum"]);}} style={{fontSize:10,fontFamily:"monospace",padding:"3px 10px",borderRadius:6,cursor:"pointer",color:t.errText,background:"transparent",border:"1px solid transparent",marginLeft:"auto"}}>✕ Clear</button>
+      <button onClick={()=>{setSearch("");setMinAmt("");setMaxAmt("");setToken("All");setTimePreset(72*60*60_000);setShowTypes(["whale","reaction","alert","momentum"]);}} style={{fontSize:10,fontFamily:"monospace",padding:"3px 10px",borderRadius:6,cursor:"pointer",color:t.errText,background:"transparent",border:"1px solid transparent",marginLeft:"auto"}}>✕ Clear</button>
     </div>
   </div>);
 }
@@ -210,6 +210,9 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
   const NET_PAGE=10;
   const netPages=Math.max(1,Math.ceil(filteredNetTxs.length/NET_PAGE));
   const netSlice=filteredNetTxs.slice(netPage*NET_PAGE,(netPage+1)*NET_PAGE);
+  // Reset to page 0 when new network txs arrive
+  const prevNetCount=useRef(filteredNetTxs.length);
+  useEffect(()=>{if(filteredNetTxs.length!==prevNetCount.current){setNetPage(0);prevNetCount.current=filteredNetTxs.length;}},[filteredNetTxs.length]);
   return(<div style={{padding:"14px 14px 0"}}>
     <BurstBanner burst={burst} t={t}/>
     
@@ -732,12 +735,12 @@ function LeaderboardTab({alerts,t,persistedEntries}:{alerts:WhaleAlert[];t:typeo
       let behaviorColor: string;
       if(d.burstCount>=6){
         behaviorType="MARKET MOVER"; behaviorColor="#ef4444";
-      } else if(ratio>=2){
+      } else if(ratio>=1.2){
+        // Inflow meaningfully exceeds outflow — net accumulation
         behaviorType="ACCUMULATOR";  behaviorColor="#4ade80";
-      } else if(ratio<=0.5){
-        behaviorType="DISTRIBUTOR";  behaviorColor="#f87171";
       } else {
-        behaviorType="ROUTER";       behaviorColor="#a855f7";
+        // Outflow dominant or balanced — net distribution
+        behaviorType="DISTRIBUTOR";  behaviorColor="#f87171";
       }
 
       return {address,totalVol,inVol:d.inVol,outVol:d.outVol,txCount:d.txCount,
@@ -762,10 +765,9 @@ function LeaderboardTab({alerts,t,persistedEntries}:{alerts:WhaleAlert[];t:typeo
   const maxVol=liveTop[0]?.[1].volume||1;
 
   const BEHAVIOR_META:Record<string,{icon:string;desc:string}>={
-    "MARKET MOVER": {icon:"🔥",desc:"Appears in 6+ burst clusters — drives momentum"},
-    "ACCUMULATOR":  {icon:"📥",desc:"Inflow > 2× outflow — building position"},
-    "DISTRIBUTOR":  {icon:"📤",desc:"Outflow > 2× inflow — exiting position"},
-    "ROUTER":       {icon:"🔀",desc:"Balanced inflow/outflow — routing funds"},
+    "MARKET MOVER": {icon:"🔥",desc:"6+ burst clusters — drives momentum events"},
+    "ACCUMULATOR":  {icon:"📥",desc:"Net inflow dominant — building position"},
+    "DISTRIBUTOR":  {icon:"📤",desc:"Net outflow dominant — exiting or distributing"},
   };
 
   return(<div style={{padding:24}}>
@@ -867,12 +869,25 @@ export default function WhaleDashboard(){
   const{prices:oraclePrices,loading:pricesLoading,lastFetchedAt}=useOraclePrices(10_000);
   const[simulating,setSimulating]=useState(false);
   const[soundEnabled,setSoundEnabled]=useState(true);
+  const[pulse,setPulse]=useState(false);
+  const prevAlertsLen=useRef(0);
+  const prevBlockTxsLen=useRef(0);
+  useEffect(()=>{
+    const newAlert=alerts.length!==prevAlertsLen.current;
+    const newTx=blockTxs.length!==prevBlockTxsLen.current;
+    if(newAlert||newTx){ setPulse(true); setTimeout(()=>setPulse(false),400); }
+    prevAlertsLen.current=alerts.length;
+    prevBlockTxsLen.current=blockTxs.length;
+  },[alerts.length,blockTxs.length]);
+  
+  // Derive latest block number from live blockTxs (index 0 = newest from live watcher)
+  const latestBlock=blockTxs.length?blockTxs[0].blockNumber:null;
   const[theme,setTheme]=useState<Theme>("dark");
   const[tab,setTab]=useState<"feed"|"analytics"|"charts"|"leaderboard"|"flow"|"howto"|"mywallet">("feed");
   const[feedSubTab,setFeedSubTab]=useState<"alerts"|"network-activity">("alerts");
   const[filters,setFilters]=useState({
   search:"", minAmt:"", maxAmt:"",
-  token:"All", timePreset:24*60*60_000,
+  token:"All", timePreset:72*60*60_000,
   dateFrom:"", dateTo:"",
   showTypes:["whale","reaction","alert","momentum"] as string[],
   netMinAmt:"", netMaxAmt:"",  
@@ -997,11 +1012,11 @@ export default function WhaleDashboard(){
   ] as const;
 
   const btn:React.CSSProperties={fontSize:11,fontFamily:"monospace",padding:"7px 13px",borderRadius:8,cursor:"pointer",transition:"all 0.15s",fontWeight:600,whiteSpace:"nowrap"};
-  const showFilters=tab==="feed"||tab==="flow"||tab==="leaderboard";
-
+  
   return(<div style={{height:"100vh",display:"flex",flexDirection:"column",background:t.pageBg,color:t.text,overflow:"hidden"}}>
     <style>{`
       @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+      @keyframes eventPulse{0%{transform:scale(1);opacity:1}40%{transform:scale(2.2);opacity:0.9}100%{transform:scale(1);opacity:1}}
       @keyframes burstPulse{0%,100%{box-shadow:0 0 0 0 rgba(249,115,22,0.15)}50%{box-shadow:0 0 0 10px rgba(249,115,22,0)}}
       @keyframes tickerScroll{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
       input,select{color-scheme:${theme==="dark"?"dark":"light"}}
@@ -1026,10 +1041,25 @@ export default function WhaleDashboard(){
             <button onClick={()=>{ resumeAudio(); setSoundEnabled(v=>!v); }} style={{...btn,background:soundEnabled?t.accentBg:"transparent",color:soundEnabled?t.accent:t.muted,border:`1px solid ${soundEnabled?t.accent:t.border}`}}>{soundEnabled?"🔊":"🔇"}</button>
             <button onClick={()=>downloadCSV(filtered)} disabled={filtered.length===0} style={{...btn,background:"transparent",color:t.muted,border:`1px solid ${t.border}`,opacity:filtered.length===0?0.4:1}}>↓ CSV</button>
             <button onClick={simulateWhale} disabled={simulating} style={{...btn,background:t.accentBg,color:t.accent,border:`1px solid ${t.accent}`,opacity:simulating?0.6:1}}>{simulating?"⏳":"⚡ SIMULATE"}</button>
-            <div style={{display:"flex",alignItems:"center",gap:7,padding:"7px 12px",borderRadius:8,background:t.card,border:`1px solid ${t.border}`}}>
-              <div style={{width:7,height:7,borderRadius:"50%",background:connected?"#4ade80":"#f87171",animation:connected?"pulse 2s infinite":"none"}}/>
-              <span style={{fontSize:10,fontFamily:"monospace",color:t.subtext}}>{connected?"LIVE":"CONNECTING"}</span>
-            </div>
+            <div style={{display:"flex",alignItems:"center",gap:7,padding:"7px 12px",borderRadius:8,background:t.card,border:`1px solid ${pulse?"#4ade80":t.border}`,transition:"border-color 0.3s"}}>
+            {/* Pulse dot — animates on every new event */}
+            <div style={{
+              width:8,height:8,borderRadius:"50%",
+              background:connected?"#4ade80":"#f87171",
+              animation:pulse?"eventPulse 0.4s ease-out":connected?"pulse 2s infinite":"none",
+              boxShadow:pulse?"0 0 8px #4ade80":"none",
+              transition:"box-shadow 0.3s",
+            }}/>
+            <span style={{fontSize:10,fontFamily:"monospace",color:connected?t.accent:t.muted,fontWeight:pulse?700:400,transition:"font-weight 0.2s"}}>
+              {connected?"LIVE":"CONNECTING"}
+            </span>
+            {/* Block height display */}
+            {latestBlock&&(
+              <span style={{fontSize:9,fontFamily:"monospace",color:t.muted,borderLeft:`1px solid ${t.border}`,paddingLeft:7,marginLeft:2}}>
+                #{latestBlock} <span style={{color:t.muted,opacity:0.6}}>~100ms</span>
+              </span>
+            )}
+          </div>
           </div>
         </div>
 
@@ -1076,10 +1106,16 @@ export default function WhaleDashboard(){
     </div>
 
     {/* Content */}
+     <div style={{background:t.pageBg,borderBottom:`1px solid ${t.border}`,flexShrink:0,zIndex:5}}>
+      <div style={{maxWidth:1400,margin:"0 auto",padding:"10px 20px 0"}}>
+        <FilterBar t={t} search={search} setSearch={setSearch} minAmt={minAmt} setMinAmt={setMinAmt} maxAmt={maxAmt} setMaxAmt={setMaxAmt} token={tokenFilter} setToken={setTokenFilter} timePreset={timePreset} setTimePreset={setTimePreset} showTypes={showTypes} setShowTypes={setShowTypes} tokenList={tokenList}/>
+      </div>
+    </div>
+ 
+    {/* Content — scrollable, FilterBar no longer lives here */}
     <div style={{flex:1,overflowY:"auto"}}>
       {error&&<div style={{background:t.errBg,border:`1px solid ${t.errBorder}`,margin:"12px 20px 0",borderRadius:10,padding:12,color:t.errText,fontSize:12,fontFamily:"monospace"}}>⚠ {error}</div>}
       <div style={{maxWidth:1400,margin:"0 auto",padding:"16px 20px"}}>
-        <FilterBar t={t} search={search} setSearch={setSearch} minAmt={minAmt} setMinAmt={setMinAmt} maxAmt={maxAmt} setMaxAmt={setMaxAmt} token={tokenFilter} setToken={setTokenFilter} timePreset={timePreset} setTimePreset={setTimePreset} showTypes={showTypes} setShowTypes={setShowTypes} tokenList={tokenList}/>
         <div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:16,overflow:"hidden"}}>
           {tab==="feed"        && <LiveFeedTab    alerts={filtered} t={t} connectedAddr={walletAddr} burst={burst} oraclePrices={oraclePrices} blockTxs={windowedBlockTxs} totalBlockTxsSeen={totalBlockTxsSeen} timePreset={timePreset} feedSubTab={feedSubTab} setFeedSubTab={setFeedSubTab} netMinAmt={netMinAmt} setNetMinAmt={setNetMinAmt} netMaxAmt={netMaxAmt} setNetMaxAmt={setNetMaxAmt}/>}
           {tab==="analytics" && <AnalyticsTab alerts={filtered} t={t} oraclePrices={oraclePrices} blockTxs={blockTxs}/>}
