@@ -188,9 +188,10 @@ let trackerSub:   { unsubscribe: () => Promise<any> } | null = null;
 let handlerSub:   { unsubscribe: () => Promise<any> } | null = null;
 let momentumSub:  { unsubscribe: () => Promise<any> } | null = null;
 let blockWatcher: (() => void) | null = null;
+let backfillRunning = false; // prevents concurrent backfill scans
 const encoder     = new TextEncoder();
 const controllers = new Set<ReadableStreamDefaultController>();
-let nonBlockTxCount = 0; // O(1) counter — avoids O(n) filter on every push()
+let nonBlockTxCount = 0;
 
 export type ExplorerStats = {
   txCount24h:   number;
@@ -440,12 +441,17 @@ function broadcastExplorerStats() {
 }
 
 async function loadRecentBlockTxs() {
+  if (backfillRunning) {
+    console.log("⏭ Backfill already running — skipping duplicate start");
+    return;
+  }
+  backfillRunning = true;
   const pub = createPublicClient({ chain: somniaTestnet, transport: http("https://dream-rpc.somnia.network") });
   try {
     const latest  = await pub.getBlockNumber();
     const LOOKBACK = 36_000n;
     const oldest   = latest > LOOKBACK ? latest - LOOKBACK : 0n;
-    const BATCH    = 50;
+    const BATCH    = 10;  // reduced from 50 — cuts concurrent RPC calls 5× to prevent timeouts
     const DELAY    = 200;
 
     const cachedHashes = new Set(
@@ -508,9 +514,10 @@ async function loadRecentBlockTxs() {
       await new Promise(r => setTimeout(r, DELAY));
     }
     console.log(`✅ Block_tx backfill: ${loaded} new txns loaded (${scanned} blocks scanned)`);
-    // SQLite writes happen inside push() — no separate save step needed
   } catch (e: any) {
     console.warn("⚠ Block_tx backfill failed (non-critical):", e.message?.split("\n")[0]);
+  } finally {
+    backfillRunning = false;
   }
 }
 
@@ -607,14 +614,23 @@ async function startBlockWatcher(
 }
 
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectAttempts = 0;
 function scheduleReconnect() {
   if (reconnectTimer) return;
-  console.warn("⚠ WebSocket closed — reconnecting in 3s...");
+  const delay = Math.min(3000 * Math.pow(2, reconnectAttempts), 30_000); // 3s→6s→12s→30s cap
+  reconnectAttempts++;
+  console.warn(`⚠ WebSocket closed — reconnecting in ${Math.round(delay/1000)}s (attempt ${reconnectAttempts})...`);
   reconnectTimer = setTimeout(async () => {
     reconnectTimer = null;
-    try { await ensureSubscriptions(); console.log("✅ Reconnected."); }
-    catch(e: any) { console.error("Reconnect failed:", e.message); scheduleReconnect(); }
-  }, 3000);
+    try {
+      await ensureSubscriptions();
+      reconnectAttempts = 0; // reset on success
+      console.log("✅ Reconnected.");
+    } catch(e: any) {
+      console.error("Reconnect failed:", e.message);
+      scheduleReconnect();
+    }
+  }, delay);
 }
 
 async function ensureSubscriptions() {
@@ -854,10 +870,23 @@ export async function GET(req: NextRequest) {
     start(controller) {
       controllers.add(controller);
 
+      // Only send data within the 24h default window — matches frontend default filter
+      // Server stores 72h but client only needs 24h on load; live events fill in the rest
+      const INIT_WINDOW_MS = 24 * 60 * 60 * 1000;
+      const initCutoff = Date.now() - INIT_WINDOW_MS;
+
+      const whaleAlerts = alertCache
+        .filter(e => e.type !== "block_tx" && e.receivedAt >= initCutoff)
+        .sort((a, b) => b.receivedAt - a.receivedAt)
+        .slice(0, 500);
+      const blockTxAlerts = alertCache
+        .filter(e => e.type === "block_tx" && e.receivedAt >= initCutoff)
+        .sort((a, b) => b.receivedAt - a.receivedAt);
+
       controller.enqueue(encoder.encode(`data: ${JSON.stringify({
         type: "init",
-        alerts: alertCache,
-        totalBlockTxsSeen,
+        alerts: [...whaleAlerts, ...blockTxAlerts],
+        totalBlockTxsSeen: blockTxAlerts.length, // accurate 24h count
         networkLargestSTT,
         explorerStats,
       })}\n\n`));

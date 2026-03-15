@@ -139,11 +139,11 @@ export function useWhaleAlerts(maxAlerts = 200) {
             const all = msg.alerts as any[];
             setAlerts(
               all.filter(a => a.type !== "block_tx")
-                .map(parseEntry).filter(Boolean).reverse().slice(0, maxAlerts) as WhaleAlert[]
+                .map(parseEntry).filter(Boolean).reverse() as WhaleAlert[]
             );
             setBlockTxs(
               all.filter(a => a.type === "block_tx")
-                .map(parseBlockTx).filter(Boolean).reverse().slice(0, 50_000) as BlockTx[]
+                .map(parseBlockTx).filter(Boolean).reverse() as BlockTx[]
             );
             if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
             if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
@@ -153,15 +153,12 @@ export function useWhaleAlerts(maxAlerts = 200) {
           if (msg.type === "error") setError(msg.message);
           if (["whale","reaction","alert","momentum"].includes(msg.type)) {
             const a = parseEntry(msg);
-            if (a) setAlerts(prev => [a, ...prev].slice(0, maxAlerts));
+            if (a) setAlerts(prev => [a, ...prev]);
           }
           if (msg.type === "block_tx") {
             const tx = parseBlockTx(msg);
-            if (tx) {
-              setBlockTxs(prev => [tx, ...prev].slice(0, 50_000));
-              // ✅ FIX 1: Increment the counter when new block_tx arrives
-              setTotalBlockTxsSeen(prev => prev + 1);
-            }
+            if (tx) setBlockTxs(prev => [tx, ...prev]);
+            if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
             if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
           }
           // Receipt fee resolved — patch the txFee on the matching whale alert
