@@ -1,6 +1,12 @@
 "use client";
 import { useEffect, useRef, useState, useMemo } from "react";
 
+declare global {
+  interface Window {
+    _processedTxHashes?: Set<string>;
+  }
+}
+
 export type AlertType = "whale" | "reaction" | "alert" | "momentum";
 
 export type WhaleAlert = {
@@ -156,11 +162,34 @@ export function useWhaleAlerts(maxAlerts = 200) {
             if (a) setAlerts(prev => [a, ...prev]);
           }
           if (msg.type === "block_tx") {
-            const tx = parseBlockTx(msg);
-            if (tx) setBlockTxs(prev => [tx, ...prev]);
-            if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
-            if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
+          // Add deduplication
+          const txHash = msg.raw?.txHash;
+          
+          // Check for duplicates using a Set
+          if (!window._processedTxHashes) {
+            window._processedTxHashes = new Set();
           }
+          
+          if (txHash && window._processedTxHashes.has(txHash)) {
+            console.log(`⏭️ Skipping duplicate tx: ${txHash.slice(0,10)}`);
+            return; // Skip duplicate
+          }
+          
+          if (txHash) {
+            window._processedTxHashes.add(txHash);
+          }
+          
+          const tx = parseBlockTx(msg);
+          if (tx) {
+            setBlockTxs(prev => {
+              // Also check array to be safe
+              if (prev.some(t => t.txHash === tx.txHash)) return prev;
+              return [tx, ...prev];
+            });
+          }
+          if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
+          if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
+        }
           // Receipt fee resolved — patch the txFee on the matching whale alert
           if (msg.type === "whale_fee_update" && msg.txHash && msg.txFee) {
             setAlerts(prev => prev.map(a =>

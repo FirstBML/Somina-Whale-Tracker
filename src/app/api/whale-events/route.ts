@@ -183,7 +183,7 @@ const MAX_CACHE = 5000;
 const alertCache: CacheEntry[] = [];
 let totalBlockTxsSeen = 0;
 let networkLargestSTT = 0;
-const BLOCK_TX_WINDOW_MS = 24 * 60 * 60 * 1000;
+const BLOCK_TX_WINDOW_MS = 3 * 24 * 60 * 60 * 1000; // 3 days — covers all time-window filters
 let trackerSub:   { unsubscribe: () => Promise<any> } | null = null;
 let handlerSub:   { unsubscribe: () => Promise<any> } | null = null;
 let momentumSub:  { unsubscribe: () => Promise<any> } | null = null;
@@ -202,7 +202,7 @@ export type ExplorerStats = {
 let explorerStats: ExplorerStats | null = null;
 
 const seenWhaleTxHashes = new Set<string>();
-const MAX_SEEN_HASHES = 500;
+const MAX_SEEN_HASHES = 10_000; // covers 7d of whale history without premature eviction
 const seenHashQueue: string[] = [];
 function markSeen(hash: string): boolean {
   if (seenWhaleTxHashes.has(hash)) return false;
@@ -250,12 +250,12 @@ function loadBlockTxFromDb() {
     });
   }
   totalBlockTxsSeen = rows.length;
-  console.log(`📂 Loaded ${rows.length} block_tx from SQLite (last 72h)`);
+  console.log(`📂 Loaded ${rows.length} block_tx from SQLite (last 24h)`);
 }
 
 // Evict block_tx rows older than 24h — runs every 6h
 setInterval(() => {
-  const cutoff = Date.now() - BLOCK_TX_WINDOW_MS; // This will now be 24h
+  const cutoff = Date.now() - BLOCK_TX_WINDOW_MS; 
   const { changes } = db.prepare(`DELETE FROM block_tx_events WHERE received_at < ?`).run(cutoff);
   if (changes > 0) console.log(`🗑 Evicted ${changes} expired block_tx rows from SQLite`);
 }, 6 * 60 * 60_000);
@@ -355,15 +355,19 @@ function getHistoricalEvents(timeRangeMs: number): CacheEntry[] {
 // Fast synchronous DB read — no chain scan. Ensures Whale Alerts tab has
 // historical data immediately on every restart.
 function seedWhaleEventsFromDb() {
-  const ONE_DAY = 24 * 60 * 60_000; 
-  const dbWhales   = getHistoricalEvents(ONE_DAY);
+  const SEVEN_DAYS = 7 * 24 * 60 * 60_000;
+  const dbWhales   = getHistoricalEvents(SEVEN_DAYS);
   if (!dbWhales.length) return;
   const seenHashes = new Set(alertCache.map(e => e.raw.txHash).filter(Boolean));
   let seeded = 0;
   for (const entry of dbWhales) {
     if (entry.raw.txHash && seenHashes.has(entry.raw.txHash)) continue;
     alertCache.push(entry);
-    if (entry.raw.txHash) seenHashes.add(entry.raw.txHash);
+    if (entry.raw.txHash) {
+      seenHashes.add(entry.raw.txHash);
+      // Critical: register in live dedup set so blockWatcher/backfill won't re-push
+      markSeen(entry.raw.txHash);
+    }
     seeded++;
   }
   if (seeded > 0) console.log(`📂 Seeded ${seeded} whale events from SQLite`);
@@ -381,13 +385,16 @@ async function fetchActualFee(
 }
 
 function evictExpiredEntries() {
+  // Only evict block_tx entries — whale/reaction/alert/momentum are small and precious
   const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
   const before = alertCache.length;
   for (let i = alertCache.length - 1; i >= 0; i--) {
-    if (alertCache[i].receivedAt < cutoff) alertCache.splice(i, 1);
+    if (alertCache[i].type === "block_tx" && alertCache[i].receivedAt < cutoff) {
+      alertCache.splice(i, 1);
+    }
   }
   const removed = before - alertCache.length;
-  if (removed > 0) console.log(`🗑 Evicted ${removed} entries older than 30d on startup`);
+  if (removed > 0) console.log(`🗑 Evicted ${removed} expired block_tx entries from cache`);
 }
 
 const EXPLORER_BASE = "https://shannon-explorer.somnia.network";
@@ -489,9 +496,10 @@ async function loadRecentBlockTxs() {
 
           cachedHashes.add(tx.hash);
 
-          // push() handles SQLite insert + in-memory append + counters
+          // Use Date.now() as receivedAt — client filters (30m/1h/24h) work on receivedAt.
+          // blockTs is preserved in raw.timestamp for display only.
           push({
-            type: "block_tx", receivedAt: blockTs,
+            type: "block_tx", receivedAt: Date.now(),
             raw: {
               from:        (tx.from ?? "") as string,
               to:          (tx.to  ?? "0x0000000000000000000000000000000000000000") as string,
@@ -558,7 +566,8 @@ async function startBlockWatcher(
         const sttAmount = Number(val) / 1e18;
         const txHash = tx.hash ?? "";
         const blockNum = block.number?.toString() ?? "";
-        const ts = `0x${Math.floor(Date.now() / 1000).toString(16)}`;
+        const blockTs = block.timestamp ? Number(block.timestamp) * 1000 : Date.now();
+        const ts = `0x${Math.floor(blockTs / 1000).toString(16)}`; // on-chain block time
         const gasP = (tx as any).gasPrice ?? (tx as any).maxFeePerGas ?? 0n;
         const gasL = (tx as any).gas ?? 21000n;
         const estFeeSTT = (typeof gasP === "bigint" ? Number(gasP * gasL) : 0) / 1e18;
@@ -576,13 +585,14 @@ async function startBlockWatcher(
           });
         }
 
+        // Skip whale entries with no tx_hash — they have no identity and can't be deduped
         if (val > WHALE_DISPLAY_THRESHOLD && txHash && markSeen(txHash)) {
           const entry: CacheEntry = {
             type: "whale", receivedAt: Date.now(),
             raw: {
               from, to,
               amount: `0x${val.toString(16)}`,
-              timestamp: `0x${Math.floor(Date.now()/1000).toString(16)}`,
+              timestamp: ts, // on-chain block time — whale alerts table sorts by actual tx time
               token: "STT", txHash, blockNumber: blockNum, blockHash: block.hash ?? "",
               txFee: estFeeSTT > 0 ? `~${estFeeSTT.toFixed(8)}` : "0",
             },
@@ -635,8 +645,8 @@ function scheduleReconnect() {
 
 async function ensureSubscriptions() {
   if (trackerSub && handlerSub && momentumSub && blockWatcher) return;
-  loadBlockTxFromDb();              // sync — reads all 72h of block_tx from SQLite
-  evictExpiredEntries();            // sync — purge anything older than 72h from cache
+  loadBlockTxFromDb();              // sync — reads all 24h of block_tx from SQLite
+  evictExpiredEntries();            // sync — purge anything older than 24h from cache
   seedWhaleEventsFromDb();          // sync — seed whale history from SQLite on startup
   nonBlockTxCount = alertCache.filter(e => e.type !== "block_tx").length; // init O(1) counter
   cacheReadyResolve?.();            // unblock GET handlers — cache is seeded, init can fire
@@ -870,23 +880,21 @@ export async function GET(req: NextRequest) {
     start(controller) {
       controllers.add(controller);
 
-      // Only send data within the 24h default window — matches frontend default filter
-      // Server stores 72h but client only needs 24h on load; live events fill in the rest
-      const INIT_WINDOW_MS = 24 * 60 * 60 * 1000;
-      const initCutoff = Date.now() - INIT_WINDOW_MS;
-
+      // Send all whale events (newest first, max 500) — client filters by its selected window
       const whaleAlerts = alertCache
-        .filter(e => e.type !== "block_tx" && e.receivedAt >= initCutoff)
+        .filter(e => e.type !== "block_tx")
         .sort((a, b) => b.receivedAt - a.receivedAt)
         .slice(0, 500);
+
+      // Send full 3-day block_tx window so 30m/1h/24h client filters all work accurately
       const blockTxAlerts = alertCache
-        .filter(e => e.type === "block_tx" && e.receivedAt >= initCutoff)
+        .filter(e => e.type === "block_tx")
         .sort((a, b) => b.receivedAt - a.receivedAt);
 
       controller.enqueue(encoder.encode(`data: ${JSON.stringify({
         type: "init",
         alerts: [...whaleAlerts, ...blockTxAlerts],
-        totalBlockTxsSeen: blockTxAlerts.length, // accurate 24h count
+        totalBlockTxsSeen, // server's running 3-day counter
         networkLargestSTT,
         explorerStats,
       })}\n\n`));

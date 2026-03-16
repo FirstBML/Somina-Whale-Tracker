@@ -166,149 +166,100 @@ function Speedometer({value,t}:{value:number|null;t:typeof T.dark}){
   );
 }
 
-// ── SpeedometerLarge — for sidebar ───────────────────────────────────
-function SpeedometerLarge({ value, t }: { value: number | null; t: typeof T.dark }) {
-  const pct = Math.min(100, (value ?? 0) * 10);
-  
-  // Color based on value
-  const getColor = () => {
-    if (pct >= 50) return "#ef4444"; // red - high
-    if (pct >= 20) return "#f97316"; // orange - elevated
-    if (pct >= 5) return "#f59e0b";  // amber - moderate
-    return "#4ade80"; // green - low
+// ── SpeedometerLarge — full SVG arc gauge for sidebar ────────────────────────
+function SpeedometerLarge({value,t}:{value:number|null;t:typeof T.dark}){
+  const pct = Math.min(100,(value??0)*10);
+  const color = pct>=50?"#ef4444":pct>=20?"#f97316":pct>=5?"#f59e0b":"#4ade80";
+  const label = pct>=50?"HIGH":pct>=20?"ELEVATED":pct>=5?"MODERATE":"LOW";
+  const displayVal = value!=null?`${value.toFixed(2)}%`:"—";
+  // cy=100 gives enough room below hub for value text + label badge within height=165
+  const cx=130,cy=100,r=88;
+  const startDeg=210,sweep=240;
+  const toRad=(d:number)=>(d*Math.PI)/180;
+  const pt=(radius:number,deg:number)=>[cx+radius*Math.cos(toRad(deg)),cy-radius*Math.sin(toRad(deg))];
+  const arcPath=(inner:number,outer:number,fill:number)=>{
+    const endDeg=startDeg-(sweep*(fill/100));
+    const [x1s,y1s]=pt(outer,startDeg);
+    const [x1e,y1e]=pt(outer,endDeg);
+    const [x2s,y2s]=pt(inner,endDeg);
+    const [x2e,y2e]=pt(inner,startDeg);
+    const large=fill>50?1:0;
+    return `M${x1s},${y1s} A${outer},${outer} 0 ${large},0 ${x1e},${y1e} L${x2s},${y2s} A${inner},${inner} 0 ${large},1 ${x2e},${y2e} Z`;
   };
-  
-  const color = getColor();
-  const displayVal = value != null ? `${value.toFixed(2)}%` : "—";
-  
-  // Labels for the gauge
-  const labels = ["LOW", "MOD", "ELEV", "HIGH"];
-  
-  return (
-    <div style={{ 
-      display: "flex", 
-      flexDirection: "column", 
-      alignItems: "center",
-      padding: "8px 0"
-    }}>
-      {/* Main gauge */}
-      <div style={{ position: "relative", width: 200, height: 100 }}>
-        {/* Background track */}
-        <svg width={200} height={100} viewBox="0 0 200 100">
-          {/* Background arc */}
-          <path
-            d="M30,80 A70,70 0 0,1 170,80"
-            fill="none"
-            stroke="rgba(255,255,255,0.1)"
-            strokeWidth="12"
-            strokeLinecap="round"
-          />
-          
-          {/* Colored fill arc */}
-          <path
-            d="M30,80 A70,70 0 0,1 170,80"
-            fill="none"
-            stroke={color}
-            strokeWidth="12"
-            strokeLinecap="round"
-            strokeDasharray={`${(pct / 100) * 219.9} 219.9`} // 219.9 is arc length
-            strokeDashoffset="0"
-            style={{ transition: "stroke-dasharray 0.5s ease" }}
-          />
-          
-          {/* Tick marks */}
-          {[0, 25, 50, 75, 100].map((mark, i) => {
-            const angle = 180 - (mark / 100) * 180;
-            const rad = (angle * Math.PI) / 180;
-            const x1 = 100 + 60 * Math.cos(rad);
-            const y1 = 80 - 60 * Math.sin(rad);
-            const x2 = 100 + 70 * Math.cos(rad);
-            const y2 = 80 - 70 * Math.sin(rad);
-            return (
-              <line
-                key={i}
-                x1={x1}
-                y1={y1}
-                x2={x2}
-                y2={y2}
-                stroke="rgba(255,255,255,0.3)"
-                strokeWidth={mark % 50 === 0 ? 2 : 1}
-              />
-            );
-          })}
-          
-          {/* Needle base */}
-          <circle cx="100" cy="80" r="8" fill={color} />
-          <circle cx="100" cy="80" r="4" fill="#0F2340" />
-          
-          {/* Needle - calculated based on value */}
-          <line
-            x1="100"
-            y1="80"
-            x2={100 + 45 * Math.cos((180 - (pct / 100) * 180) * Math.PI / 180)}
-            y2={80 - 45 * Math.sin((180 - (pct / 100) * 180) * Math.PI / 180)}
-            stroke={color}
-            strokeWidth="2.5"
-            strokeLinecap="round"
-          />
-        </svg>
-        
-        {/* Center value */}
-        <div style={{
-          position: "absolute",
-          bottom: 0,
-          left: 0,
-          right: 0,
-          textAlign: "center",
-          color,
-          fontSize: 18,
-          fontWeight: 700,
-          fontFamily: "monospace",
-        }}>
-          {displayVal}
-        </div>
-      </div>
-      
-      {/* Labels */}
-      <div style={{
-        display: "flex",
-        justifyContent: "space-between",
-        width: "100%",
-        marginTop: 8,
-        padding: "0 10px",
-      }}>
-        {labels.map((label, i) => (
-          <span
-            key={i}
-            style={{
-              fontSize: 9,
-              fontFamily: "monospace",
-              color: i === 0 && pct < 5 ? "#4ade80" :
-                     i === 1 && pct >= 5 && pct < 20 ? "#f59e0b" :
-                     i === 2 && pct >= 20 && pct < 50 ? "#f97316" :
-                     i === 3 && pct >= 50 ? "#ef4444" : t.muted,
-              fontWeight: 600,
-            }}
-          >
-            {label}
-          </span>
+  const bands=[
+    {from:0, to:30,  color:"#4ade80"},
+    {from:30,to:55,  color:"#facc15"},
+    {from:55,to:75,  color:"#f97316"},
+    {from:75,to:100, color:"#ef4444"},
+  ];
+  const bandPath=(from:number,to:number)=>{
+    const endDeg=startDeg-(sweep*(from/100));
+    const startD=startDeg-(sweep*(to/100));
+    const [x1s,y1s]=pt(72,startD);
+    const [x1e,y1e]=pt(72,endDeg);
+    const [x2s,y2s]=pt(88,endDeg);
+    const [x2e,y2e]=pt(88,startD);
+    const large=(to-from)>50?1:0;
+    return `M${x1s},${y1s} A72,72 0 ${large},1 ${x1e},${y1e} L${x2s},${y2s} A88,88 0 ${large},0 ${x2e},${y2e} Z`;
+  };
+  const needleAngle=startDeg-(sweep*(pct/100));
+  const [nx,ny]=pt(62,needleAngle); // r=62: short enough to clear value text below hub
+  const ticks=[0,25,50,75,100];
+  return(
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
+      <svg width={260} height={165} viewBox="0 0 260 165">
+        <defs>
+          <filter id="lgGlow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          <filter id="needleGlow"><feGaussianBlur stdDeviation="2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          <radialGradient id="dialBg" cx="50%" cy="70%" r="60%">
+            <stop offset="0%" stopColor="rgba(6,182,212,0.08)"/>
+            <stop offset="100%" stopColor="rgba(6,182,212,0)"/>
+          </radialGradient>
+        </defs>
+        {/* Dial background glow */}
+        <path d={arcPath(58,96,100)} fill="url(#dialBg)"/>
+        {/* Track */}
+        <path d={arcPath(68,92,100)} fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.05)" strokeWidth="0.5"/>
+        {/* Colored bands */}
+        {bands.map((b,i)=>(
+          <path key={i} d={bandPath(b.from,b.to)} fill={b.color} opacity="0.75"/>
         ))}
-      </div>
-      
-      {/* Subtext */}
-      <div style={{
-        fontSize: 8,
-        color: t.muted,
-        fontFamily: "monospace",
-        marginTop: 6,
-        textTransform: "uppercase",
-        letterSpacing: "0.05em",
-      }}>
-        Whale transactions / Total network
-      </div>
+        {/* Active fill overlay */}
+        {pct>0&&<path d={arcPath(70,88,pct)} fill={color} opacity="0.35" filter="url(#lgGlow)"/>}
+        {pct>0&&<path d={arcPath(86,90,pct)} fill={color} opacity="0.9" filter="url(#lgGlow)"/>}
+        {/* Major tick marks with labels */}
+        {ticks.map((p,i)=>{
+          const a=startDeg-(sweep*(p/100));
+          const [ox,oy]=pt(96,a); const [ix,iy]=pt(88,a);
+          const [lx,ly]=pt(104,a);
+          const tickLabels=["0","2.5","5","7.5","10%"];
+          return(<g key={i}>
+            <line x1={ox} y1={oy} x2={ix} y2={iy} stroke="rgba(255,255,255,0.5)" strokeWidth="1.5"/>
+            <text x={lx} y={ly} textAnchor="middle" dominantBaseline="middle" fill="rgba(103,184,204,0.6)" fontSize="7" fontFamily="monospace">{tickLabels[i]}</text>
+          </g>);
+        })}
+        {/* Minor ticks */}
+        {Array.from({length:21},(_,i)=>{
+          if([0,5,10,15,20].includes(i)) return null;
+          const a=startDeg-(sweep*(i/20));
+          const [ox,oy]=pt(93,a); const [ix,iy]=pt(88,a);
+          return <line key={i} x1={ox} y1={oy} x2={ix} y2={iy} stroke="rgba(255,255,255,0.2)" strokeWidth="0.8"/>;
+        })}
+        {/* Needle — r=62 clears the value text zone below hub */}
+        <line x1={cx} y1={cy} x2={nx} y2={ny} stroke={color} strokeWidth="2.5" strokeLinecap="round" filter="url(#needleGlow)"/>
+        <line x1={cx} y1={cy} x2={nx} y2={ny} stroke="rgba(255,255,255,0.6)" strokeWidth="1" strokeLinecap="round"/>
+        {/* Hub */}
+        <circle cx={cx} cy={cy} r={7} fill="#0a1628" stroke={color} strokeWidth="2"/>
+        <circle cx={cx} cy={cy} r={3} fill={color} filter="url(#needleGlow)"/>
+        {/* Value — cy+32 gives clear gap below hub */}
+        <text x={cx} y={cy+32} textAnchor="middle" fill={color} fontSize="20" fontWeight="800" fontFamily="monospace" filter="url(#needleGlow)">{displayVal}</text>
+        {/* Label badge */}
+        <rect x={cx-22} y={cy+46} width={44} height={14} rx={4} fill={`${color}22`} stroke={`${color}44`} strokeWidth="1"/>
+        <text x={cx} y={cy+57} textAnchor="middle" fill={color} fontSize="8" fontWeight="700" fontFamily="monospace" letterSpacing="0.1em">{label}</text>
+      </svg>
     </div>
   );
-} 
+}
 
 // ── Price Ticker ──────────────────────────────────────────────────────────────
 const TICKER_SYMBOLS = ["ETH","BTC","USDC","USDT","SOL"] as const;
@@ -389,7 +340,7 @@ function FilterBar({t,search,setSearch,minAmt,setMinAmt,maxAmt,setMaxAmt,token,s
     </div>
     <div style={{display:"flex",gap:6,marginTop:12,alignItems:"center",flexWrap:"wrap"}}>
       <span style={{color:t.muted,fontSize:9,fontFamily:"monospace"}}>TYPE:</span>
-      {[{key:"whale",label:"🐋 Whale",color:"#06b6d4"},{key:"reaction",label:"⚡ Reaction",color:"#a855f7"},{key:"alert",label:"🚨 Alert",color:"#f97316"}].map(({key,label,color})=>(
+      {[{key:"whale",label:"🐋 Whale",color:"#06b6d4"},{key:"reaction",label:"⚡ Reaction",color:"#a855f7"},{key:"alert",label:"🚨 Alert",color:"#f97316"},{key:"momentum",label:"🔥 Momentum",color:"#ef4444"}].map(({key,label,color})=>(
         <button key={key} onClick={()=>toggleType(key)} style={{fontSize:10,fontFamily:"monospace",padding:"3px 10px",borderRadius:6,cursor:"pointer",background:showTypes.includes(key)?`${color}22`:"transparent",color:showTypes.includes(key)?color:t.muted,border:`1px solid ${showTypes.includes(key)?`${color}66`:"transparent"}`}}>{label}</button>
       ))}
       <button onClick={()=>{setSearch("");setMinAmt("");setMaxAmt("");setToken("All");setTimePreset(24*60*60_000);setShowTypes(["whale","reaction","alert","momentum"]);}} style={{fontSize:10,fontFamily:"monospace",padding:"3px 10px",borderRadius:6,cursor:"pointer",color:t.errText,background:"transparent",border:"1px solid transparent",marginLeft:"auto"}}>✕ Clear</button>
@@ -1664,4 +1615,3 @@ export default function WhaleDashboard(){
       </div>
     </div>
   </div>);}
-

@@ -51,7 +51,8 @@ let totalSkipped   = 0;
 let totalErrors    = 0;
 let nonce          = -1;
 let reporting      = false;
-const reportQueue: { from: `0x${string}`; to: `0x${string}`; val: bigint; stt: number }[] = [];
+const reportQueue: { from: `0x${string}`; to: `0x${string}`; val: bigint; stt: number; key: string }[] = [];
+const queuedKeys = new Set<string>(); // dedup: prevents same transfer being queued twice on nonce retry
 
 // ── FIX 1 — lastBlock persistence ────────────────────────────────────────────
 // Saves lastBlock to disk every 30s and on SIGINT/SIGTERM.
@@ -117,6 +118,7 @@ async function processQueue(
 
   while (reportQueue.length > 0) {
     const item = reportQueue.shift()!;
+    queuedKeys.delete(item.key); // release dedup slot — processing begins
     try {
       const txNonce = await getNextNonce(pub, address);
       const hash = await wal.writeContract({
@@ -140,6 +142,7 @@ async function processQueue(
 
       if (msg.includes("nonce") || msg.includes("replacement")) {
         console.warn(`⚠ Nonce error — resetting and requeueing`);
+        queuedKeys.add(item.key); // re-register: retry is not a new transfer
         reportQueue.unshift(item);
         await resetNonce(pub, address);
         await new Promise(r => setTimeout(r, 500));
@@ -179,19 +182,24 @@ async function processBlock(
     if (val < threshold) continue;
     if (tx.from?.toLowerCase() === address.toLowerCase()) continue;
 
+    // Dedup: same from:to:val can only exist once in the queue at a time
+    const key = `${tx.from?.toLowerCase()}:${(tx.to ?? "0x0")?.toLowerCase()}:${val.toString()}`;
+    if (queuedKeys.has(key)) continue;
+
     const stt = Number(val) / 1e18;
     totalSeen++;
 
     if (reportQueue.length >= MAX_QUEUE) {
       console.warn(`⚠ Report queue full (${MAX_QUEUE}) — dropping oldest`);
-      reportQueue.shift();
+      const dropped = reportQueue.shift()!;
+      queuedKeys.delete(dropped.key);
     }
 
+    queuedKeys.add(key);
     reportQueue.push({
       from: tx.from as `0x${string}`,
       to:   (tx.to ?? "0x0000000000000000000000000000000000000000") as `0x${string}`,
-      val,
-      stt,
+      val, stt, key,
     });
   }
 
@@ -351,5 +359,5 @@ async function main() {
 
 main().catch(e => {
   console.error("Fatal:", e?.message ?? e);
-  process.exit(1);
+  process.exit(1)
 });
