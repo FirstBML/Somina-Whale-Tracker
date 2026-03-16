@@ -183,7 +183,7 @@ const MAX_CACHE = 5000;
 const alertCache: CacheEntry[] = [];
 let totalBlockTxsSeen = 0;
 let networkLargestSTT = 0;
-const BLOCK_TX_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+const BLOCK_TX_WINDOW_MS = 24 * 60 * 60 * 1000;
 let trackerSub:   { unsubscribe: () => Promise<any> } | null = null;
 let handlerSub:   { unsubscribe: () => Promise<any> } | null = null;
 let momentumSub:  { unsubscribe: () => Promise<any> } | null = null;
@@ -225,7 +225,7 @@ const insertBlockTx = db.prepare(`
 `);
 
 function loadBlockTxFromDb() {
-  const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
+  const cutoff = Date.now() - BLOCK_TX_WINDOW_MS; 
   const rows = db.prepare(
     `SELECT * FROM block_tx_events WHERE received_at >= ? ORDER BY received_at ASC`
   ).all(cutoff) as any[];
@@ -253,9 +253,9 @@ function loadBlockTxFromDb() {
   console.log(`📂 Loaded ${rows.length} block_tx from SQLite (last 72h)`);
 }
 
-// Evict block_tx rows older than 72h — runs every 6h
+// Evict block_tx rows older than 24h — runs every 6h
 setInterval(() => {
-  const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
+  const cutoff = Date.now() - BLOCK_TX_WINDOW_MS; // This will now be 24h
   const { changes } = db.prepare(`DELETE FROM block_tx_events WHERE received_at < ?`).run(cutoff);
   if (changes > 0) console.log(`🗑 Evicted ${changes} expired block_tx rows from SQLite`);
 }, 6 * 60 * 60_000);
@@ -351,12 +351,12 @@ function getHistoricalEvents(timeRangeMs: number): CacheEntry[] {
   })) as CacheEntry[];
 }
 
-// ── FIX 2: Seed whale history from SQLite at startup ─────────────────────────
+// ──  Seed whale history from SQLite at startup ─────────────────────────
 // Fast synchronous DB read — no chain scan. Ensures Whale Alerts tab has
 // historical data immediately on every restart.
 function seedWhaleEventsFromDb() {
-  const SEVEN_DAYS = 7 * 24 * 60 * 60_000;
-  const dbWhales   = getHistoricalEvents(SEVEN_DAYS);
+  const ONE_DAY = 24 * 60 * 60_000; 
+  const dbWhales   = getHistoricalEvents(ONE_DAY);
   if (!dbWhales.length) return;
   const seenHashes = new Set(alertCache.map(e => e.raw.txHash).filter(Boolean));
   let seeded = 0;

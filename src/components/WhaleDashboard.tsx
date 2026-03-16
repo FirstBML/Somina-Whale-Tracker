@@ -4,12 +4,11 @@ import { useAccount } from "wagmi";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { useWhaleAlerts, WhaleAlert, BlockTx } from "../lib/useWhaleAlerts";
 import { useOraclePrices, formatUsd, OraclePrice } from "../lib/useOraclePrices";
-import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell } from "recharts";
+import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell, RadialBarChart, RadialBar, PolarAngleAxis } from "recharts";
 
-type Theme = "dark" | "light";
+type Theme = "dark";
 const T = {
-  dark:  { pageBg:"#050d1a",headerBg:"#070f1eee",card:"#0a1628",border:"rgba(6,182,212,0.2)",text:"#e2f8ff",subtext:"#7ecde0",muted:"rgba(103,184,204,0.75)",accent:"#06b6d4",accentBg:"rgba(6,182,212,0.12)",input:"#05111f",chartGrid:"#0e2a3a",chartAxis:"#3d8fa6",tooltipBg:"#060e1c",tooltipBorder:"#0e4f5e",rowHover:"rgba(6,182,212,0.06)",errBg:"rgba(127,29,29,0.3)",errBorder:"rgba(185,28,28,0.4)",errText:"#f87171",statVal:"#67e8f9",tableHead:"#071322",tableRow:"#0a1628",tableAlt:"#0c1a30",badgeBg:"rgba(6,182,212,0.15)",badgeText:"#67e8f9",reactionRow:"rgba(168,85,247,0.08)",alertRow:"rgba(251,146,60,0.08)",myTxRow:"rgba(74,222,128,0.08)" },
-  light: { pageBg:"#f0f9ff",headerBg:"#dbeafedd",card:"#ffffff",border:"rgba(3,105,161,0.2)",text:"#0a2540",subtext:"#0258a0",muted:"rgba(3,105,161,0.75)",accent:"#0284c7",accentBg:"rgba(2,132,199,0.1)",input:"#e0f2fe",chartGrid:"#bae6fd",chartAxis:"#0369a1",tooltipBg:"#ffffff",tooltipBorder:"#7dd3fc",rowHover:"rgba(2,132,199,0.06)",errBg:"rgba(254,226,226,0.9)",errBorder:"rgba(239,68,68,0.4)",errText:"#b91c1c",statVal:"#0c4a6e",tableHead:"#e0f2fe",tableRow:"#ffffff",tableAlt:"#f0f9ff",badgeBg:"rgba(2,132,199,0.12)",badgeText:"#0369a1",reactionRow:"rgba(168,85,247,0.06)",alertRow:"rgba(234,88,12,0.06)",myTxRow:"rgba(22,163,74,0.06)" },
+  dark: { pageBg:"#050d1a",headerBg:"#070f1eee",card:"#0a1628",border:"rgba(6,182,212,0.2)",text:"#e2f8ff",subtext:"#7ecde0",muted:"rgba(103,184,204,0.75)",accent:"#06b6d4",accentBg:"rgba(6,182,212,0.12)",input:"#05111f",chartGrid:"#0e2a3a",chartAxis:"#3d8fa6",tooltipBg:"#060e1c",tooltipBorder:"#0e4f5e",rowHover:"rgba(6,182,212,0.06)",errBg:"rgba(127,29,29,0.3)",errBorder:"rgba(185,28,28,0.4)",errText:"#f87171",statVal:"#67e8f9",tableHead:"#071322",tableRow:"#0a1628",tableAlt:"#0c1a30",badgeBg:"rgba(6,182,212,0.15)",badgeText:"#67e8f9",reactionRow:"rgba(168,85,247,0.08)",alertRow:"rgba(251,146,60,0.08)",myTxRow:"rgba(74,222,128,0.08)" },
 };
 
 const TOKEN_COLORS: Record<string,string> = {STT:"#06b6d4",USDC:"#2775CA",WETH:"#627EEA",WBTC:"#F7931A",USDT:"#26A17B",LINK:"#2A5ADA",UNI:"#FF007A",AAVE:"#B6509E"};
@@ -89,6 +88,227 @@ function SortTh({children,t,active,dir,onClick}:{children:string;t:typeof T.dark
 function Td({children,t,bold,accent,color}:{children:React.ReactNode;t:typeof T.dark;bold?:boolean;accent?:boolean;color?:string}){return<td style={{padding:"10px 12px",color:color??(accent?t.accent:t.text),fontFamily:"monospace",fontSize:11,fontWeight:bold?700:400,borderBottom:`1px solid ${t.border}`,whiteSpace:"nowrap"}}>{children}</td>;}
 function ExLink({href,label,t}:{href:string;label:string;t:typeof T.dark}){if(!href)return<span style={{color:t.muted,fontFamily:"monospace",fontSize:11}}>—</span>;return(<a href={href} target="_blank" rel="noreferrer" style={{color:t.subtext,textDecoration:"none",fontFamily:"monospace",fontSize:11,display:"inline-flex",alignItems:"center",gap:3}} onMouseEnter={e=>(e.currentTarget.style.color=t.accent)} onMouseLeave={e=>(e.currentTarget.style.color=t.subtext)}>{label}<span style={{fontSize:9,opacity:0.6}}>↗</span></a>);}
 function KpiCard({label,value,sub,color,t}:{label:string;value:string|number;sub?:string;color?:string;t:typeof T.dark}){return(<div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:10,padding:"12px 16px"}}><p style={{color:t.subtext,fontSize:10,textTransform:"uppercase",letterSpacing:"0.12em",fontFamily:"monospace",margin:"0 0 4px"}}>{label}</p><p style={{color:color??t.statVal,fontSize:18,fontWeight:700,fontFamily:"monospace",margin:0}}>{value}</p>{sub&&<p style={{color:t.muted,fontSize:10,margin:"2px 0 0",fontFamily:"monospace"}}>{sub}</p>}</div>);}
+
+function Speedometer({value,t}:{value:number|null;t:typeof T.dark}){
+  const pct = Math.min(100, (value??0) * 10); // 10% rate = full scale
+  const color = pct>=50?"#ef4444":pct>=20?"#f97316":pct>=5?"#f59e0b":"#4ade80";
+  const label = pct>=50?"HIGH":pct>=20?"ELEVATED":pct>=5?"MODERATE":"LOW";
+  const displayVal = value!=null ? `${value.toFixed(2)}%` : "—";
+
+  // SVG arc gauge — 220° sweep, centre cx=80 cy=75, r=55
+  const cx=80, cy=75, r=55;
+  const startDeg=200, endDeg=-20, sweep=220;
+  const toRad=(d:number)=>(d*Math.PI)/180;
+  const arcPath=(inner:number,outer:number,pctFill:number)=>{
+    const angle = startDeg - (sweep*(pctFill/100));
+    const x1s=cx+outer*Math.cos(toRad(startDeg)), y1s=cy-outer*Math.sin(toRad(startDeg));
+    const x1e=cx+outer*Math.cos(toRad(angle)),    y1e=cy-outer*Math.sin(toRad(angle));
+    const x2s=cx+inner*Math.cos(toRad(angle)),    y2s=cy-inner*Math.sin(toRad(angle));
+    const x2e=cx+inner*Math.cos(toRad(startDeg)), y2e=cy-inner*Math.sin(toRad(startDeg));
+    const large = pctFill>50?1:0;
+    return `M${x1s},${y1s} A${outer},${outer} 0 ${large},0 ${x1e},${y1e} L${x2s},${y2s} A${inner},${inner} 0 ${large},1 ${x2e},${y2e} Z`;
+  };
+  const bgPath=arcPath(43,55,100);
+  const fillPath=arcPath(43,55,pct);
+  // needle
+  const needleAngle = startDeg - (sweep*(pct/100));
+  const nx=cx+38*Math.cos(toRad(needleAngle)), ny=cy-38*Math.sin(toRad(needleAngle));
+  // tick marks
+  const ticks=[0,25,50,75,100].map(p=>{
+    const a=startDeg-(sweep*(p/100));
+    const ox=cx+58*Math.cos(toRad(a)), oy=cy-58*Math.sin(toRad(a));
+    const ix=cx+50*Math.cos(toRad(a)), iy=cy-50*Math.sin(toRad(a));
+    return {ox,oy,ix,iy,major:p%50===0};
+  });
+
+  return(
+    <div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:10,padding:"8px 14px",display:"flex",alignItems:"center",gap:10,minWidth:0}}>
+      <div style={{flexShrink:0}}>
+        <svg width={160} height={90} viewBox="0 0 160 90">
+          <defs>
+            <linearGradient id="gaugeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%" stopColor="#4ade80"/>
+              <stop offset="40%" stopColor="#f59e0b"/>
+              <stop offset="70%" stopColor="#f97316"/>
+              <stop offset="100%" stopColor="#ef4444"/>
+            </linearGradient>
+            <filter id="glow">
+              <feGaussianBlur stdDeviation="2" result="blur"/>
+              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+          </defs>
+          {/* Track */}
+          <path d={bgPath} fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.06)" strokeWidth="0.5"/>
+          {/* Colored fill */}
+          {pct>0&&<path d={fillPath} fill="url(#gaugeGrad)" opacity="0.9" filter="url(#glow)"/>}
+          {/* Tick marks */}
+          {ticks.map((tk,i)=>(
+            <line key={i} x1={tk.ox} y1={tk.oy} x2={tk.ix} y2={tk.iy}
+              stroke={tk.major?"rgba(255,255,255,0.4)":"rgba(255,255,255,0.15)"} strokeWidth={tk.major?1.5:1}/>
+          ))}
+          {/* Needle */}
+          <line x1={cx} y1={cy} x2={nx} y2={ny} stroke={color} strokeWidth="2" strokeLinecap="round" filter="url(#glow)"/>
+          <circle cx={cx} cy={cy} r={4} fill={color} filter="url(#glow)"/>
+          <circle cx={cx} cy={cy} r={2} fill="#050d1a"/>
+          {/* Center value */}
+          <text x={cx} y={cy+18} textAnchor="middle" fill={color} fontSize="13" fontWeight="700" fontFamily="monospace">{displayVal}</text>
+          {/* Labels */}
+          <text x={cx-50} y={cy+4} textAnchor="middle" fill="rgba(103,184,204,0.5)" fontSize="7" fontFamily="monospace">0%</text>
+          <text x={cx+50} y={cy+4} textAnchor="middle" fill="rgba(103,184,204,0.5)" fontSize="7" fontFamily="monospace">10%</text>
+        </svg>
+      </div>
+      <div style={{minWidth:0}}>
+        <p style={{color:t.subtext,fontSize:9,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",margin:"0 0 3px",whiteSpace:"nowrap"}}>🦈 Whale Tx Rate</p>
+        <p style={{color,fontSize:13,fontWeight:700,fontFamily:"monospace",margin:"0 0 2px"}}>{label}</p>
+        <p style={{color:t.muted,fontSize:8,fontFamily:"monospace",margin:0,whiteSpace:"nowrap"}}>of all network txns</p>
+      </div>
+    </div>
+  );
+}
+
+// ── SpeedometerLarge — for sidebar ───────────────────────────────────
+function SpeedometerLarge({ value, t }: { value: number | null; t: typeof T.dark }) {
+  const pct = Math.min(100, (value ?? 0) * 10);
+  
+  // Color based on value
+  const getColor = () => {
+    if (pct >= 50) return "#ef4444"; // red - high
+    if (pct >= 20) return "#f97316"; // orange - elevated
+    if (pct >= 5) return "#f59e0b";  // amber - moderate
+    return "#4ade80"; // green - low
+  };
+  
+  const color = getColor();
+  const displayVal = value != null ? `${value.toFixed(2)}%` : "—";
+  
+  // Labels for the gauge
+  const labels = ["LOW", "MOD", "ELEV", "HIGH"];
+  
+  return (
+    <div style={{ 
+      display: "flex", 
+      flexDirection: "column", 
+      alignItems: "center",
+      padding: "8px 0"
+    }}>
+      {/* Main gauge */}
+      <div style={{ position: "relative", width: 200, height: 100 }}>
+        {/* Background track */}
+        <svg width={200} height={100} viewBox="0 0 200 100">
+          {/* Background arc */}
+          <path
+            d="M30,80 A70,70 0 0,1 170,80"
+            fill="none"
+            stroke="rgba(255,255,255,0.1)"
+            strokeWidth="12"
+            strokeLinecap="round"
+          />
+          
+          {/* Colored fill arc */}
+          <path
+            d="M30,80 A70,70 0 0,1 170,80"
+            fill="none"
+            stroke={color}
+            strokeWidth="12"
+            strokeLinecap="round"
+            strokeDasharray={`${(pct / 100) * 219.9} 219.9`} // 219.9 is arc length
+            strokeDashoffset="0"
+            style={{ transition: "stroke-dasharray 0.5s ease" }}
+          />
+          
+          {/* Tick marks */}
+          {[0, 25, 50, 75, 100].map((mark, i) => {
+            const angle = 180 - (mark / 100) * 180;
+            const rad = (angle * Math.PI) / 180;
+            const x1 = 100 + 60 * Math.cos(rad);
+            const y1 = 80 - 60 * Math.sin(rad);
+            const x2 = 100 + 70 * Math.cos(rad);
+            const y2 = 80 - 70 * Math.sin(rad);
+            return (
+              <line
+                key={i}
+                x1={x1}
+                y1={y1}
+                x2={x2}
+                y2={y2}
+                stroke="rgba(255,255,255,0.3)"
+                strokeWidth={mark % 50 === 0 ? 2 : 1}
+              />
+            );
+          })}
+          
+          {/* Needle base */}
+          <circle cx="100" cy="80" r="8" fill={color} />
+          <circle cx="100" cy="80" r="4" fill="#0F2340" />
+          
+          {/* Needle - calculated based on value */}
+          <line
+            x1="100"
+            y1="80"
+            x2={100 + 45 * Math.cos((180 - (pct / 100) * 180) * Math.PI / 180)}
+            y2={80 - 45 * Math.sin((180 - (pct / 100) * 180) * Math.PI / 180)}
+            stroke={color}
+            strokeWidth="2.5"
+            strokeLinecap="round"
+          />
+        </svg>
+        
+        {/* Center value */}
+        <div style={{
+          position: "absolute",
+          bottom: 0,
+          left: 0,
+          right: 0,
+          textAlign: "center",
+          color,
+          fontSize: 18,
+          fontWeight: 700,
+          fontFamily: "monospace",
+        }}>
+          {displayVal}
+        </div>
+      </div>
+      
+      {/* Labels */}
+      <div style={{
+        display: "flex",
+        justifyContent: "space-between",
+        width: "100%",
+        marginTop: 8,
+        padding: "0 10px",
+      }}>
+        {labels.map((label, i) => (
+          <span
+            key={i}
+            style={{
+              fontSize: 9,
+              fontFamily: "monospace",
+              color: i === 0 && pct < 5 ? "#4ade80" :
+                     i === 1 && pct >= 5 && pct < 20 ? "#f59e0b" :
+                     i === 2 && pct >= 20 && pct < 50 ? "#f97316" :
+                     i === 3 && pct >= 50 ? "#ef4444" : t.muted,
+              fontWeight: 600,
+            }}
+          >
+            {label}
+          </span>
+        ))}
+      </div>
+      
+      {/* Subtext */}
+      <div style={{
+        fontSize: 8,
+        color: t.muted,
+        fontFamily: "monospace",
+        marginTop: 6,
+        textTransform: "uppercase",
+        letterSpacing: "0.05em",
+      }}>
+        Whale transactions / Total network
+      </div>
+    </div>
+  );
+} 
 
 // ── Price Ticker ──────────────────────────────────────────────────────────────
 const TICKER_SYMBOLS = ["ETH","BTC","USDC","USDT","SOL"] as const;
@@ -702,19 +922,36 @@ function AnalyticsTab({alerts,t,oraclePrices,blockTxs}:{alerts:WhaleAlert[];t:ty
 // ── Charts Tab ────────────────────────────────────────────────────────────────
 function ChartsTab({alerts,t}:{alerts:WhaleAlert[];t:typeof T.dark}){
   const whaleOnly=useMemo(()=>alerts.filter(a=>a.type==="whale"),[alerts]);
-  const volData=useMemo(()=>{const b:Record<string,number>={};whaleOnly.forEach(a=>{const k=new Date(a.timestamp).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});b[k]=(b[k]||0)+num(a.amount);});return Object.entries(b).slice(-20).map(([time,volume])=>({time,volume:Math.round(volume)}));},[whaleOnly]);
+  const volData=useMemo(()=>{const b:Record<string,number>={};whaleOnly.forEach(a=>{const k=new Date(a.timestamp).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});b[k]=(b[k]||0)+num(a.amount);});return Object.entries(b).slice(-30).map(([time,volume])=>({time,volume:Math.round(volume)}));},[whaleOnly]);
   const heatData=useMemo(()=>{const h=Array.from({length:24},(_,i)=>({hour:`${i}h`,count:0}));whaleOnly.forEach(a=>{h[new Date(a.timestamp).getHours()].count++;});return h;},[whaleOnly]);
-  const reactionData=useMemo(()=>{const b:Record<string,number>={};alerts.filter(a=>a.type==="reaction").forEach(a=>{const k=new Date(a.timestamp).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});b[k]=(b[k]||0)+1;});return Object.entries(b).slice(-20).map(([time,count])=>({time,count}));},[alerts]);
+  const reactionData=useMemo(()=>{const b:Record<string,number>={};alerts.filter(a=>a.type==="reaction").forEach(a=>{const k=new Date(a.timestamp).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"});b[k]=(b[k]||0)+1;});return Object.entries(b).slice(-30).map(([time,count])=>({time,count}));},[alerts]);
+  const typeBreakdown=useMemo(()=>{const counts:Record<string,number>={whale:0,reaction:0,alert:0,momentum:0};alerts.forEach(a=>{if(counts[a.type]!==undefined)counts[a.type]++;});return Object.entries(counts).map(([type,count])=>({type,count})).filter(d=>d.count>0);},[alerts]);
   const tt={contentStyle:{background:t.tooltipBg,border:`1px solid ${t.tooltipBorder}`,borderRadius:8,fontFamily:"monospace",fontSize:11},labelStyle:{color:t.accent},itemStyle:{color:t.text}};
-  return(<div style={{padding:24,display:"flex",flexDirection:"column",gap:32}}>
-    <div><p style={{color:t.muted,fontSize:9,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.15em",marginBottom:16}}>Whale Transfer Volume Over Time</p>
-      {!volData.length?<div style={{height:160,display:"flex",alignItems:"center",justifyContent:"center",color:t.muted,fontFamily:"monospace",fontSize:12}}>No data</div>:<ResponsiveContainer width="100%" height={200}><AreaChart data={volData}><defs><linearGradient id="vg" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={t.accent} stopOpacity={0.3}/><stop offset="95%" stopColor={t.accent} stopOpacity={0}/></linearGradient></defs><CartesianGrid strokeDasharray="3 3" stroke={t.chartGrid}/><XAxis dataKey="time" tick={{fill:t.chartAxis,fontSize:10,fontFamily:"monospace"}}/><YAxis tick={{fill:t.chartAxis,fontSize:10,fontFamily:"monospace"}}/><Tooltip {...tt}/><Area type="monotone" dataKey="volume" stroke={t.accent} strokeWidth={2} fill="url(#vg)"/></AreaChart></ResponsiveContainer>}
+  const typeColors:Record<string,string>={whale:"#06b6d4",reaction:"#a855f7",alert:"#f97316",momentum:"#ef4444"};
+  const lbl=(text:string,color?:string)=><p style={{color:color??t.muted,fontSize:9,fontFamily:"monospace",textTransform:"uppercase" as const,letterSpacing:"0.15em",marginBottom:10,margin:"0 0 10px"}}>{text}</p>;
+  return(<div style={{padding:20}}>
+    {/* Row 1 — Volume over time (full width) */}
+    <div style={{marginBottom:20}}>
+      {lbl("🐋 Whale Transfer Volume Over Time")}
+      {!volData.length?<div style={{height:140,display:"flex",alignItems:"center",justifyContent:"center",color:t.muted,fontFamily:"monospace",fontSize:12}}>No data</div>
+        :<ResponsiveContainer width="100%" height={140}><AreaChart data={volData}><defs><linearGradient id="vg" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={t.accent} stopOpacity={0.3}/><stop offset="95%" stopColor={t.accent} stopOpacity={0}/></linearGradient></defs><CartesianGrid strokeDasharray="3 3" stroke={t.chartGrid}/><XAxis dataKey="time" tick={{fill:t.chartAxis,fontSize:9,fontFamily:"monospace"}} interval={4}/><YAxis tick={{fill:t.chartAxis,fontSize:9,fontFamily:"monospace"}}/><Tooltip {...tt}/><Area type="monotone" dataKey="volume" stroke={t.accent} strokeWidth={2} fill="url(#vg)"/></AreaChart></ResponsiveContainer>}
     </div>
-    <div><p style={{color:t.muted,fontSize:9,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.15em",marginBottom:16}}>Activity Heatmap by Hour</p>
-      <ResponsiveContainer width="100%" height={160}><BarChart data={heatData} barSize={10}><CartesianGrid strokeDasharray="3 3" stroke={t.chartGrid} vertical={false}/><XAxis dataKey="hour" tick={{fill:t.chartAxis,fontSize:9,fontFamily:"monospace"}} interval={3}/><YAxis tick={{fill:t.chartAxis,fontSize:10,fontFamily:"monospace"}}/><Tooltip {...tt}/><Bar dataKey="count" radius={[3,3,0,0]}>{heatData.map((_,i)=><Cell key={i} fill={t.accent}/>)}</Bar></BarChart></ResponsiveContainer>
+    {/* Row 2 — 2 column: heatmap + type breakdown */}
+    <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:16,marginBottom:20}}>
+      <div>
+        {lbl("📅 Activity Heatmap by Hour")}
+        <ResponsiveContainer width="100%" height={130}><BarChart data={heatData} barSize={8}><CartesianGrid strokeDasharray="3 3" stroke={t.chartGrid} vertical={false}/><XAxis dataKey="hour" tick={{fill:t.chartAxis,fontSize:8,fontFamily:"monospace"}} interval={2}/><YAxis tick={{fill:t.chartAxis,fontSize:9,fontFamily:"monospace"}}/><Tooltip {...tt}/><Bar dataKey="count" radius={[3,3,0,0]}>{heatData.map((d,i)=><Cell key={i} fill={d.count>0?t.accent:t.border}/>)}</Bar></BarChart></ResponsiveContainer>
+      </div>
+      <div>
+        {lbl("📊 Event Type Breakdown")}
+        {!typeBreakdown.length?<div style={{height:130,display:"flex",alignItems:"center",justifyContent:"center",color:t.muted,fontSize:11,fontFamily:"monospace"}}>No data</div>
+          :<ResponsiveContainer width="100%" height={130}><BarChart data={typeBreakdown} layout="vertical" barSize={14}><XAxis type="number" tick={{fill:t.chartAxis,fontSize:9,fontFamily:"monospace"}}/><YAxis type="category" dataKey="type" tick={{fill:t.chartAxis,fontSize:9,fontFamily:"monospace"}} width={56}/><Tooltip {...tt}/><Bar dataKey="count" radius={[0,4,4,0]}>{typeBreakdown.map(d=><Cell key={d.type} fill={typeColors[d.type]??t.accent}/>)}</Bar></BarChart></ResponsiveContainer>}
+      </div>
     </div>
-    {reactionData.length>0&&<div><p style={{color:"#a855f7",fontSize:9,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.15em",marginBottom:16}}>⚡ Handler Reactions Over Time</p>
-      <ResponsiveContainer width="100%" height={160}><AreaChart data={reactionData}><defs><linearGradient id="rg" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#a855f7" stopOpacity={0.3}/><stop offset="95%" stopColor="#a855f7" stopOpacity={0}/></linearGradient></defs><CartesianGrid strokeDasharray="3 3" stroke={t.chartGrid}/><XAxis dataKey="time" tick={{fill:t.chartAxis,fontSize:10,fontFamily:"monospace"}}/><YAxis tick={{fill:t.chartAxis,fontSize:10,fontFamily:"monospace"}}/><Tooltip {...tt}/><Area type="monotone" dataKey="count" stroke="#a855f7" strokeWidth={2} fill="url(#rg)"/></AreaChart></ResponsiveContainer>
+    {/* Row 3 — Reactions over time */}
+    {reactionData.length>0&&<div>
+      {lbl("⚡ Handler Reactions Over Time","#a855f7")}
+      <ResponsiveContainer width="100%" height={120}><AreaChart data={reactionData}><defs><linearGradient id="rg" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#a855f7" stopOpacity={0.3}/><stop offset="95%" stopColor="#a855f7" stopOpacity={0}/></linearGradient></defs><CartesianGrid strokeDasharray="3 3" stroke={t.chartGrid}/><XAxis dataKey="time" tick={{fill:t.chartAxis,fontSize:9,fontFamily:"monospace"}} interval={4}/><YAxis tick={{fill:t.chartAxis,fontSize:9,fontFamily:"monospace"}}/><Tooltip {...tt}/><Area type="monotone" dataKey="count" stroke="#a855f7" strokeWidth={2} fill="url(#rg)"/></AreaChart></ResponsiveContainer>
     </div>}
   </div>);}
 
@@ -942,7 +1179,7 @@ export default function WhaleDashboard(){
   
   // Derive latest block number from live blockTxs (index 0 = newest from live watcher)
   const latestBlock=blockTxs.length?blockTxs[0].blockNumber:null;
-  const[theme,setTheme]=useState<Theme>("dark");
+  const theme="dark" as const;
   const[tab,setTab]=useState<"feed"|"analytics"|"charts"|"leaderboard"|"flow"|"howto"|"mywallet">("feed");
   const[feedSubTab,setFeedSubTab]=useState<"alerts"|"network-activity">("alerts");
   const[filters,setFilters]=useState({
@@ -1079,153 +1316,352 @@ export default function WhaleDashboard(){
 
   const btn:React.CSSProperties={fontSize:11,fontFamily:"monospace",padding:"7px 13px",borderRadius:8,cursor:"pointer",transition:"all 0.15s",fontWeight:600,whiteSpace:"nowrap"};
   
-  return(<div style={{height:"100vh",display:"flex",flexDirection:"column",background:t.pageBg,color:t.text,overflow:"hidden"}}>
+  return(<div style={{height:"100vh",display:"flex",flexDirection:"row",background:t.pageBg,color:t.text,overflow:"hidden"}}>
     <style>{`
       @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
       @keyframes eventPulse{0%{transform:scale(1);opacity:1}40%{transform:scale(2.2);opacity:0.9}100%{transform:scale(1);opacity:1}}
       @keyframes burstPulse{0%,100%{box-shadow:0 0 0 0 rgba(249,115,22,0.15)}50%{box-shadow:0 0 0 10px rgba(249,115,22,0)}}
       @keyframes tickerScroll{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
-      input,select{color-scheme:${theme==="dark"?"dark":"light"}}
-      ::-webkit-scrollbar{width:5px;height:5px}
+      @keyframes sidebarGlow{0%,100%{box-shadow:inset 0 0 30px rgba(6,182,212,0.03)}50%{box-shadow:inset 0 0 30px rgba(6,182,212,0.07)}}
+      input,select{color-scheme:dark}
+      ::-webkit-scrollbar{width:4px;height:4px}
       ::-webkit-scrollbar-thumb{background:rgba(6,182,212,0.25);border-radius:3px}
     `}</style>
 
-    {/* Header */}
-    <div style={{background:t.headerBg,borderBottom:`1px solid ${t.border}`,backdropFilter:"blur(12px)",flexShrink:0,zIndex:10}}>
-      <div style={{maxWidth:1600,margin:"0 auto",padding:"8px 16px"}}>
-        <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:12}}>
-          <div style={{display:"flex",alignItems:"center",gap:12}}>
-            <span style={{fontSize:26}}>🐋</span>
+    {/* ── LEFT SIDEBAR ────────────────────────────────────────────────── */}
+    <div style={{
+    width: 280, flexShrink: 0,
+    background: "linear-gradient(180deg, #0A1A2F 0%, #0D1E36 40%, #0F2340 100%)", // Lighter, more vibrant
+    borderRight: `1px solid ${t.border}`,
+    display: "flex", flexDirection: "column",
+    overflowY: "auto", overflowX: "hidden",
+    boxShadow: "4px 0 20px rgba(0,0,0,0.3)",
+  }}>
+      {/* Top accent line */}
+      <div style={{height:2,background:"linear-gradient(90deg,transparent,#06b6d4,transparent)",flexShrink:0}}/>
+
+      {/* Somnia logo + branding */}
+      <div style={{padding:"16px 16px 12px",borderBottom:`1px solid ${t.border}`,flexShrink:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+          <div style={{position:"relative"}}>
+            <svg width="48" height="48" viewBox="0 0 48 48">
+              <defs>
+                <radialGradient id="sbLogoGrad" cx="38%" cy="32%" r="70%">
+                  <stop offset="0%" stopColor="#67e8f9"/>
+                  <stop offset="50%" stopColor="#06b6d4"/>
+                  <stop offset="100%" stopColor="#0c3344"/>
+                </radialGradient>
+                <filter id="sbGlow"><feGaussianBlur stdDeviation="2.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+                <filter id="sbInnerGlow"><feGaussianBlur stdDeviation="1" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+              </defs>
+              {/* Outer glow ring */}
+              <circle cx="24" cy="24" r="23" fill="none" stroke="rgba(6,182,212,0.25)" strokeWidth="1.5"/>
+              {/* Main circle */}
+              <circle cx="24" cy="24" r="21" fill="url(#sbLogoGrad)" filter="url(#sbGlow)" opacity="0.95"/>
+              <circle cx="24" cy="24" r="21" fill="none" stroke="rgba(103,232,249,0.5)" strokeWidth="1"/>
+              {/* Whale tail */}
+              <path d="M12,28 Q17,20 24,24 Q31,20 36,28 Q31,33 24,30 Q17,33 12,28Z" fill="rgba(255,255,255,0.92)" filter="url(#sbInnerGlow)"/>
+              {/* Dorsal fin arc */}
+              <path d="M16,23 Q24,12 32,23" fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth="2.4" strokeLinecap="round"/>
+              {/* Eye */}
+              <circle cx="27" cy="24" r="1.4" fill="#06b6d4"/>
+              <circle cx="27.5" cy="23.5" r="0.5" fill="rgba(255,255,255,0.8)"/>
+              {/* Sonar rings */}
+              <circle cx="24" cy="24" r="10" fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="0.8" strokeDasharray="2,4"/>
+              <circle cx="24" cy="24" r="16" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="0.8" strokeDasharray="1,5"/>
+              {/* Water ripple at bottom */}
+              <path d="M16,36 Q20,34 24,36 Q28,34 32,36" fill="none" stroke="rgba(103,232,249,0.3)" strokeWidth="1" strokeLinecap="round"/>
+            </svg>
+          </div>
+          <div>
+            <div style={{fontSize:16,fontWeight:800,color:"#67e8f9",fontFamily:"monospace",letterSpacing:"0.12em",lineHeight:1,textShadow:"0 0 20px rgba(103,232,249,0.4)"}}>SOMNIA</div>
+            <div style={{fontSize:11,fontWeight:700,color:t.accent,fontFamily:"monospace",letterSpacing:"0.1em",lineHeight:1.3}}>WHALE TRACKER</div>
+            <div style={{fontSize:7,color:t.muted,fontFamily:"monospace",letterSpacing:"0.15em",textTransform:"uppercase",marginTop:2}}>Network Intelligence</div>
+          </div>
+        </div>
+        {/* Chain separator */}
+        <div style={{display:"flex",alignItems:"center",gap:6}}>
+          <div style={{flex:1,height:1,background:"linear-gradient(90deg,transparent,rgba(6,182,212,0.3))"}}/>
+          <span style={{fontSize:8,color:t.muted,fontFamily:"monospace"}}>⛓ TESTNET 50312</span>
+          <div style={{flex:1,height:1,background:"linear-gradient(90deg,rgba(6,182,212,0.3),transparent)"}}/>
+        </div>
+      </div>
+
+      {/* Speedometer — full width */}
+      <div style={{padding:"12px 10px 6px",borderBottom:`1px solid ${t.border}`,flexShrink:0}}>
+        <div style={{fontSize:8,fontFamily:"monospace",color:t.muted,textTransform:"uppercase",letterSpacing:"0.15em",marginBottom:4,textAlign:"center"}}>🦈 Whale Tx Rate</div>
+        <SpeedometerLarge value={whaleTxRate} t={t}/>
+      </div>
+
+      {/* Txn Count + STT Transfers */}
+      {/* Txn Count + STT Transfers - Redesigned */}
+<div style={{ padding: "12px 12px", borderBottom: `1px solid ${t.border}`, flexShrink: 0 }}>
+  <div style={{
+    fontSize: 9,
+    fontFamily: "monospace",
+    color: t.accent,
+    textTransform: "uppercase",
+    letterSpacing: "0.1em",
+    marginBottom: 10,
+    display: "flex",
+    alignItems: "center",
+    gap: 6
+  }}>
+    <span style={{ fontSize: 12 }}>🌐</span> Network Activity
+  </div>
+  
+  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+    {/* TXN COUNT Card */}
+    <div style={{
+      background: "linear-gradient(145deg, rgba(6,182,212,0.08) 0%, rgba(6,182,212,0.02) 100%)",
+      border: `1px solid ${t.border}`,
+      borderRadius: 12,
+      padding: "12px 8px",
+      textAlign: "center",
+      boxShadow: "0 4px 12px rgba(0,0,0,0.2)"
+    }}>
+      <div style={{
+        color: t.muted,
+        fontSize: 9,
+        fontFamily: "monospace",
+        textTransform: "uppercase",
+        letterSpacing: "0.08em",
+        marginBottom: 6,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 4
+      }}>
+        <span>📊</span> TXN COUNT
+      </div>
+      <div style={{
+        color: t.statVal,
+        fontSize: 22,
+        fontWeight: 700,
+        fontFamily: "monospace",
+        lineHeight: 1.2
+      }}>
+        {windowedBlockTxs.length.toLocaleString()}
+      </div>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 4,
+        marginTop: 4,
+        color: t.muted,
+        fontSize: 8,
+        fontFamily: "monospace"
+      }}>
+        <span>⏱️</span>
+        <span>
+          {timePreset < 3600_000 
+            ? `${Math.round(timePreset/60_000)}m` 
+            : timePreset < 86400_000 
+              ? `${Math.round(timePreset/3600_000)}h` 
+              : `${Math.ceil(timePreset/86400_000)}d`} window
+        </span>
+      </div>
+    </div>
+
+    {/* STT XFERS Card */}
+    <div style={{
+      background: "linear-gradient(145deg, rgba(6,182,212,0.08) 0%, rgba(6,182,212,0.02) 100%)",
+      border: `1px solid ${t.border}`,
+      borderRadius: 12,
+      padding: "12px 8px",
+      textAlign: "center",
+      boxShadow: "0 4px 12px rgba(0,0,0,0.2)"
+    }}>
+      <div style={{
+        color: t.muted,
+        fontSize: 9,
+        fontFamily: "monospace",
+        textTransform: "uppercase",
+        letterSpacing: "0.08em",
+        marginBottom: 6,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 4
+      }}>
+        <span>💸</span> STT XFERS
+      </div>
+      <div style={{
+        color: t.statVal,
+        fontSize: 22,
+        fontWeight: 700,
+        fontFamily: "monospace",
+        lineHeight: 1.2
+      }}>
+        {windowedBlockTxs.filter(tx => tx.isTransfer).length.toLocaleString()}
+      </div>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 4,
+        marginTop: 4,
+        color: t.muted,
+        fontSize: 8,
+        fontFamily: "monospace"
+      }}>
+        <span>⏳</span>
+        <span>
+          {(() => {
+            if (!blockTxs.length) return "live";
+            const a = now - blockTxs.reduce((m, tx) => Math.min(m, tx.timestamp), Date.now());
+            return a < 3600_000 
+              ? `${Math.round(a/60_000)}m buf` 
+              : a < 86400_000 
+                ? `${(a/3600_000).toFixed(1)}h buf` 
+                : `${(a/86400_000).toFixed(1)}d buf`;
+          })()}
+        </span>
+      </div>
+    </div>
+  </div>
+</div>
+      {/* Filters */}
+      <div style={{padding:"10px 12px",flex:1}}>
+        <div style={{fontSize:8,fontFamily:"monospace",color:t.muted,textTransform:"uppercase",letterSpacing:"0.15em",marginBottom:8}}>⚙ Filters</div>
+        <div style={{display:"flex",flexDirection:"column",gap:7}}>
+          <div>
+            <label style={{color:t.subtext,fontSize:8,fontFamily:"monospace",display:"block",marginBottom:3,letterSpacing:"0.08em"}}>WALLET</label>
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="0x..." style={{background:t.input,border:`1px solid ${t.border}`,borderRadius:6,padding:"5px 8px",fontSize:10,fontFamily:"monospace",color:t.text,outline:"none",width:"100%",boxSizing:"border-box"}}/>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
             <div>
-              <h1 style={{fontSize:18,fontWeight:700,color:t.accent,fontFamily:"monospace",letterSpacing:"0.1em",margin:0}}>WHALE TRACKER</h1>
-              <p style={{color:t.muted,fontSize:9,letterSpacing:"0.2em",textTransform:"uppercase",margin:0,fontFamily:"monospace"}}>Somnia Reactivity · Phase 1 + 2 + 3</p>
+              <label style={{color:t.subtext,fontSize:8,fontFamily:"monospace",display:"block",marginBottom:3,letterSpacing:"0.08em"}}>TOKEN</label>
+              <select value={tokenFilter} onChange={e=>setTokenFilter(e.target.value)} style={{background:t.input,border:`1px solid ${t.border}`,borderRadius:6,padding:"5px 6px",fontSize:10,fontFamily:"monospace",color:t.text,outline:"none",width:"100%"}}>
+                {tokenList.map(tk=><option key={tk}>{tk}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={{color:t.subtext,fontSize:8,fontFamily:"monospace",display:"block",marginBottom:3,letterSpacing:"0.08em"}}>WINDOW</label>
+              <select value={timePreset} onChange={e=>setTimePreset(parseInt(e.target.value))} style={{background:t.input,border:`1px solid ${t.border}`,borderRadius:6,padding:"5px 6px",fontSize:10,fontFamily:"monospace",color:t.text,outline:"none",width:"100%"}}>
+                {TIME_PRESETS.map(p=><option key={p.label} value={p.ms}>{p.label}</option>)}
+              </select>
             </div>
           </div>
-          <div style={{display:"flex",alignItems:"center",gap:7,flexWrap:"wrap"}}>
-            <ConnectButton showBalance={false} chainStatus="none" accountStatus="address"/>
-            <button onClick={()=>setTheme(v=>v==="dark"?"light":"dark")} style={{...btn,background:t.accentBg,color:t.accent,border:`1px solid ${t.border}`}}>{theme==="dark"?"☀":"🌙"}</button>
-            <button onClick={()=>{ resumeAudio(); setSoundEnabled(v=>!v); }} style={{...btn,background:soundEnabled?t.accentBg:"transparent",color:soundEnabled?t.accent:t.muted,border:`1px solid ${soundEnabled?t.accent:t.border}`}}>{soundEnabled?"🔊":"🔇"}</button>
-            <button onClick={()=>downloadCSV(filtered)} disabled={filtered.length===0} style={{...btn,background:"transparent",color:t.muted,border:`1px solid ${t.border}`,opacity:filtered.length===0?0.4:1}}>↓ CSV</button>
-            <button onClick={simulateWhale} disabled={simulating} style={{...btn,background:t.accentBg,color:t.accent,border:`1px solid ${t.accent}`,opacity:simulating?0.6:1}}>{simulating?"⏳":"⚡ SIMULATE"}</button>
-            <div style={{display:"flex",alignItems:"center",gap:7,padding:"7px 12px",borderRadius:8,background:t.card,border:`1px solid ${pulse?"#4ade80":t.border}`,transition:"border-color 0.3s"}}>
-            {/* Pulse dot — animates on every new event */}
-            <div style={{
-              width:8,height:8,borderRadius:"50%",
-              background:connected?"#4ade80":"#f87171",
-              animation:pulse?"eventPulse 0.4s ease-out":connected?"pulse 2s infinite":"none",
-              boxShadow:pulse?"0 0 8px #4ade80":"none",
-              transition:"box-shadow 0.3s",
-            }}/>
-            <span style={{fontSize:10,fontFamily:"monospace",color:connected?t.accent:t.muted,fontWeight:pulse?700:400,transition:"font-weight 0.2s"}}>
-              {connected?"LIVE":"CONNECTING"}
-            </span>
-            {/* Block height display */}
-            {latestBlock&&(
-              <span style={{fontSize:9,fontFamily:"monospace",color:t.muted,borderLeft:`1px solid ${t.border}`,paddingLeft:7,marginLeft:2}}>
-                #{latestBlock} <span style={{color:t.muted,opacity:0.6}}>~100ms</span>
-              </span>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+            <div>
+              <label style={{color:t.subtext,fontSize:8,fontFamily:"monospace",display:"block",marginBottom:3,letterSpacing:"0.08em"}}>MIN AMT</label>
+              <input type="number" value={minAmt} onChange={e=>setMinAmt(e.target.value)} placeholder="0" style={{background:t.input,border:`1px solid ${t.border}`,borderRadius:6,padding:"5px 8px",fontSize:10,fontFamily:"monospace",color:t.text,outline:"none",width:"100%",boxSizing:"border-box"}}/>
+            </div>
+            <div>
+              <label style={{color:t.subtext,fontSize:8,fontFamily:"monospace",display:"block",marginBottom:3,letterSpacing:"0.08em"}}>MAX AMT</label>
+              <input type="number" value={maxAmt} onChange={e=>setMaxAmt(e.target.value)} placeholder="∞" style={{background:t.input,border:`1px solid ${t.border}`,borderRadius:6,padding:"5px 8px",fontSize:10,fontFamily:"monospace",color:t.text,outline:"none",width:"100%",boxSizing:"border-box"}}/>
+            </div>
+          </div>
+          <div>
+            <label style={{color:t.subtext,fontSize:8,fontFamily:"monospace",display:"block",marginBottom:4,letterSpacing:"0.08em"}}>TYPE</label>
+            <div style={{display:"flex",gap:4}}>
+              {[{key:"whale",label:"🐋",color:"#06b6d4"},{key:"reaction",label:"⚡",color:"#a855f7"},{key:"alert",label:"🚨",color:"#f97316"},{key:"momentum",label:"🔥",color:"#ef4444"}].map(({key,label,color})=>(
+                <button key={key} onClick={()=>setShowTypes(showTypes.includes(key)?showTypes.filter(x=>x!==key):[...showTypes,key])} style={{flex:1,fontSize:13,padding:"4px 0",borderRadius:6,cursor:"pointer",background:showTypes.includes(key)?`${color}22`:"transparent",color:showTypes.includes(key)?color:t.muted,border:`1px solid ${showTypes.includes(key)?`${color}55`:t.border}`}}>{label}</button>
+              ))}
+            </div>
+          </div>
+          <button onClick={()=>{setSearch("");setMinAmt("");setMaxAmt("");setTokenFilter("All");setTimePreset(24*60*60_000);setShowTypes(["whale","reaction","alert","momentum"]);}} style={{fontSize:9,padding:"5px",borderRadius:6,cursor:"pointer",color:t.errText,background:"rgba(248,113,113,0.05)",border:`1px solid rgba(248,113,113,0.2)`,fontFamily:"monospace",letterSpacing:"0.05em"}}>✕ Clear Filters</button>
+        </div>
+      </div>
+
+      {/* Bottom accent line */}
+      <div style={{height:2,background:"linear-gradient(90deg,transparent,#06b6d4,transparent)",flexShrink:0}}/>
+    </div>
+
+    {/* ── RIGHT: Main content area ────────────────────────────────────── */}
+    <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
+
+      {/* Top header bar */}
+      <div style={{background:t.headerBg,borderBottom:`1px solid ${t.border}`,backdropFilter:"blur(12px)",flexShrink:0,zIndex:10}}>
+        <div style={{padding:"8px 14px"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:10}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <div style={{display:"flex",alignItems:"center",gap:5,padding:"3px 8px",borderRadius:6,background:"rgba(6,182,212,0.08)",border:"1px solid rgba(6,182,212,0.15)"}}>
+                <div style={{width:6,height:6,borderRadius:"50%",background:connected?"#4ade80":"#f87171",animation:pulse?"eventPulse 0.4s ease-out":connected?"pulse 2s infinite":"none",boxShadow:pulse?"0 0 8px #4ade80":"none"}}/>
+                <span style={{fontSize:9,fontFamily:"monospace",color:connected?t.accent:t.muted,fontWeight:pulse?700:400}}>{connected?"LIVE":"CONNECTING"}</span>
+                {latestBlock&&<span style={{fontSize:8,fontFamily:"monospace",color:t.muted,borderLeft:`1px solid ${t.border}`,paddingLeft:5,marginLeft:2}}>#{latestBlock} ~100ms</span>}
+              </div>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+              <ConnectButton showBalance={false} chainStatus="none" accountStatus="address"/>
+              <button onClick={()=>{ resumeAudio(); setSoundEnabled(v=>!v); }} style={{...btn,background:soundEnabled?t.accentBg:"transparent",color:soundEnabled?t.accent:t.muted,border:`1px solid ${soundEnabled?t.accent:t.border}`}}>{soundEnabled?"🔊":"🔇"}</button>
+              <button onClick={()=>downloadCSV(filtered)} disabled={filtered.length===0} style={{...btn,background:"transparent",color:t.muted,border:`1px solid ${t.border}`,opacity:filtered.length===0?0.4:1}}>↓ CSV</button>
+              <button onClick={simulateWhale} disabled={simulating} style={{...btn,background:t.accentBg,color:t.accent,border:`1px solid ${t.accent}`,opacity:simulating?0.6:1}}>{simulating?"⏳":"⚡ SIM"}</button>
+            </div>
+          </div>
+
+          {/* Whale Activity KPIs */}
+          <div style={{marginBottom:8}}>
+            <div style={{fontSize:7,fontFamily:"monospace",color:t.muted,textTransform:"uppercase",letterSpacing:"0.15em",marginBottom:4,paddingLeft:1}}>🐋 Whale Activity</div>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(120px, 1fr))",gap:5}}>
+              <KpiCard t={t} label="Whale Events"   value={windowedWhales.length}/>
+              <KpiCard t={t} label="Reactions"       value={windowedReactions.length}  sub="Phase 2"/>
+              <KpiCard t={t} label="Alerts"          value={windowedAlertCount}         sub="Phase 2"/>
+              <KpiCard t={t} label="🔥 Momentum"
+                value={windowedMomentumCount>0 ? windowedMomentumCount : burst?.count ?? 0}
+                color="#ef4444"
+                sub={windowedMomentumCount>0 ? "on-chain bursts" : burst ? burst.count+" in "+burst.windowSec+"s · live" : "on-chain bursts"}/>
+              <KpiCard t={t} label="🐋 Whale Volume"
+                value={totalVolUSD.sum>0 ? (totalVolUSD.sum>=1e9?`$${(totalVolUSD.sum/1e9).toFixed(2)}B`:totalVolUSD.sum>=1e6?`$${(totalVolUSD.sum/1e6).toFixed(2)}M`:`$${Math.round(totalVolUSD.sum).toLocaleString()}`) : Math.round(windowedVol).toLocaleString()}
+                sub={totalVolUSD.sum>0 ? (totalVolUSD.partial?"~USD partial":"~USD est.") : "tokens"}/>
+              <KpiCard t={t} label="🐋 Whale Largest"
+                value={largestUSD!=null ? (largestUSD>=1e9?`$${(largestUSD/1e9).toFixed(2)}B`:largestUSD>=1e6?`$${(largestUSD/1e6).toFixed(2)}M`:`$${Math.round(largestUSD).toLocaleString()}`) : windowedLargest>0?Math.round(windowedLargest).toLocaleString():"—"}
+                sub={largestUSD!=null?"~USD est.":"tokens"}/>
+              <KpiCard t={t} label="💸 Whale Fees"
+                value={whaleTotalFees>0 ? (whaleTotalFees>=1000?`${Math.round(whaleTotalFees).toLocaleString()} STT`:`${whaleTotalFees.toFixed(8)} STT`) : "—"}
+                color="#f59e0b"
+                sub={whaleTotalFees>0 ? (whaleFeeEstimated ? "~estimated" : "actual fees") : "no data"}/>
+            </div>
+          </div>
+
+          {/* Tabs */}
+          <div style={{display:"flex",gap:3,overflowX:"auto",paddingBottom:1}}>
+            {allTabs.map(tb=>(<button key={tb.key} onClick={()=>setTab(tb.key as any)} style={{...btn,padding:"4px 12px",fontSize:10,background:tab===tb.key?t.accentBg:"transparent",color:tab===tb.key?t.accent:t.muted,border:`1px solid ${tab===tb.key?t.accent:"transparent"}`}}>{tb.label}</button>))}
+          </div>
+
+          {/* Price Ticker */}
+          <PriceTicker prices={oraclePrices} loading={pricesLoading} t={t} lastFetchedAt={lastFetchedAt}/>
+        </div>
+      </div>
+
+      {/* Scrollable tab content */}
+      <div style={{flex:1,overflowY:"auto"}}>
+        {error&&<div style={{background:t.errBg,border:`1px solid ${t.errBorder}`,margin:"8px 12px 0",borderRadius:8,padding:10,color:t.errText,fontSize:11,fontFamily:"monospace"}}>⚠ {error}</div>}
+        <div style={{padding:"8px 12px"}}>
+          <div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:14,overflow:"hidden"}}>
+            {tab==="feed"        && <LiveFeedTab    alerts={filtered} t={t} connectedAddr={walletAddr} burst={burst} oraclePrices={oraclePrices} blockTxs={windowedBlockTxs} totalBlockTxsSeen={totalBlockTxsSeen} timePreset={timePreset} feedSubTab={feedSubTab} setFeedSubTab={setFeedSubTab} netMinAmt={netMinAmt} setNetMinAmt={setNetMinAmt} netMaxAmt={netMaxAmt} setNetMaxAmt={setNetMaxAmt}/>}
+            {tab==="analytics" && <AnalyticsTab alerts={filtered} t={t} oraclePrices={oraclePrices} blockTxs={blockTxs}/>}
+            {tab==="charts"      && <ChartsTab      alerts={filtered} t={t}/>}
+            {tab==="leaderboard" && <LeaderboardTab alerts={filtered} t={t} persistedEntries={persistedEntries}/>}
+            {tab==="flow"        && <TokenFlowTab   alerts={filtered} t={t}/>}
+            {tab==="howto"       && (
+              <div style={{padding:20}}>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(200px, 1fr))",gap:14,marginBottom:16}}>
+                  {[
+                    {icon:"⛓",  color:"#06b6d4",title:"On-Chain Event",    desc:"WhaleTracker.sol emits WhaleTransfer on each reportTransfer() call above threshold."},
+                    {icon:"⚡",  color:"#06b6d4",title:"Somnia Reactivity", desc:"Reactivity Engine pushes events natively — zero polling, zero indexers, zero latency."},
+                    {icon:"🔍",  color:"#a855f7",title:"Handler Contract",  desc:"WhaleHandler._onEvent() called by precompile 0x0100. Emits ReactedToWhaleTransfer on-chain."},
+                    {icon:"💾",  color:"#4ade80",title:"Data Streams",      desc:"Leaderboard persists to Somnia Data Streams on every whale event — survives server restarts."},
+                    {icon:"🚨",  color:"#f97316",title:"Burst Detection",   desc:"WhaleHandler emits WhaleMomentumDetected on-chain when ≥3 transfers occur within 10 blocks."},
+                    {icon:"💛",  color:"#4ade80",title:"Wallet Connect",    desc:"Connect wallet to see your personal transfers, net flow, and YOU badge in Live Feed."},
+                  ].map((s,i)=>(<div key={i} style={{background:t.pageBg,border:`1px solid ${t.border}`,borderRadius:10,padding:14}}><div style={{fontSize:22,marginBottom:8}}>{s.icon}</div><p style={{color:s.color,fontFamily:"monospace",fontSize:10,fontWeight:700,margin:"0 0 4px"}}>{s.title}</p><p style={{color:t.subtext,fontSize:10,lineHeight:1.6,margin:0}}>{s.desc}</p></div>))}
+                </div>
+                <div style={{background:t.pageBg,border:`1px solid ${t.border}`,borderRadius:10,padding:14}}>
+                  <pre style={{color:t.subtext,fontSize:10,fontFamily:"monospace",lineHeight:1.8,margin:0,whiteSpace:"pre-wrap"}}>{`WhaleTracker.sol       → emits WhaleTransfer\nSomnia Reactivity       → pushes to handler (precompile 0x0100)\nWhaleHandler._onEvent() → emits ReactedToWhaleTransfer\n                        → emits AlertThresholdCrossed (every N)\n                        → emits WhaleMomentumDetected (≥3 in 10 blocks)\nFrontend burst detector → ≥3 transfers/60s → 🚨 banner\nData Streams            → persists leaderboard across restarts\nSSE stream              → 🐋 whale  ⚡ reaction  🚨 alert  🔥 momentum`}</pre>
+                </div>
+              </div>
             )}
+            {tab==="mywallet"&&isConnected&&walletAddr&&<MyWalletTab alerts={alerts} connectedAddr={walletAddr} t={t}/>}
+            {tab==="mywallet"&&!isConnected&&<div style={{padding:40,textAlign:"center",color:t.muted,fontFamily:"monospace",fontSize:12}}>Connect your wallet to view your transactions.</div>}
           </div>
+          <div style={{marginTop:10,display:"flex",justifyContent:"space-between",color:t.muted,fontSize:9,fontFamily:"monospace"}}>
+            <span>Contract: <a href={addrUrl(process.env.NEXT_PUBLIC_CONTRACT_ADDRESS||"")} target="_blank" rel="noreferrer" style={{color:t.accent,textDecoration:"none"}}>{short(process.env.NEXT_PUBLIC_CONTRACT_ADDRESS||"0x0000000000000000000000000000000000000000")}</a></span>
+            <span>Somnia Testnet · Chain ID 50312</span>
           </div>
-        </div>
-
-        {/* KPIs — Row 1: Whale Activity */}
-        <div style={{marginBottom:6}}>
-          <div style={{fontSize:8,fontFamily:"monospace",color:t.muted,textTransform:"uppercase",letterSpacing:"0.15em",marginBottom:5,paddingLeft:2}}>🐋 Whale Activity</div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(150px, 1fr))",gap:6}}>
-            <KpiCard t={t} label="Whale Events"   value={windowedWhales.length}/>
-            <KpiCard t={t} label="Reactions"       value={windowedReactions.length}  sub="Phase 2"/>
-            <KpiCard t={t} label="Alerts"          value={windowedAlertCount}         sub="Phase 2"/>
-            <KpiCard t={t} label="🔥 Momentum"
-              value={windowedMomentumCount>0 ? windowedMomentumCount : burst?.count ?? 0}
-              color="#ef4444"
-              sub={windowedMomentumCount>0 ? "on-chain bursts" : burst ? burst.count+" in "+burst.windowSec+"s · live" : "on-chain bursts"}/>
-            <KpiCard t={t} label="🐋 Whale Volume"
-              value={totalVolUSD.sum>0 ? (totalVolUSD.sum>=1e9?`$${(totalVolUSD.sum/1e9).toFixed(2)}B`:totalVolUSD.sum>=1e6?`$${(totalVolUSD.sum/1e6).toFixed(2)}M`:`$${Math.round(totalVolUSD.sum).toLocaleString()}`) : Math.round(windowedVol).toLocaleString()}
-              sub={totalVolUSD.sum>0 ? (totalVolUSD.partial?"~USD partial":"~USD est.") : "tokens"}/>
-            <KpiCard t={t} label="🐋 Whale Largest"
-              value={largestUSD!=null ? (largestUSD>=1e9?`$${(largestUSD/1e9).toFixed(2)}B`:largestUSD>=1e6?`$${(largestUSD/1e6).toFixed(2)}M`:`$${Math.round(largestUSD).toLocaleString()}`) : windowedLargest>0?Math.round(windowedLargest).toLocaleString():"—"}
-              sub={largestUSD!=null?"~USD est.":"tokens"}/>
-            <KpiCard t={t} label="💸 Whale Fees"
-              value={whaleTotalFees>0 ? (whaleTotalFees>=1000?`${Math.round(whaleTotalFees).toLocaleString()} STT`:`${whaleTotalFees.toFixed(8)} STT`) : "—"}
-              color="#f59e0b"
-              sub={whaleTotalFees>0 ? (whaleFeeEstimated ? "~estimated" : "actual fees") : "no data"}/>
-          </div>
-        </div>
-
-        {/* KPIs — Row 2: Network Activity */}
-        <div style={{marginBottom:10}}>
-          <div style={{fontSize:8,fontFamily:"monospace",color:t.muted,textTransform:"uppercase",letterSpacing:"0.15em",marginBottom:5,paddingLeft:2}}>🌐 Network Activity</div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(150px, 1fr))",gap:6}}>
-            <KpiCard t={t} label="🌐 Txn Count"
-              value={windowedBlockTxs.length.toLocaleString()}
-              sub={timePreset<3600_000?`${Math.round(timePreset/60_000)}m window`:timePreset<86400_000?`${Math.round(timePreset/3600_000)}h window`:`${Math.ceil(timePreset/86400_000)}d window`}/>
-            <KpiCard t={t} label="🌐 STT Transfers"
-              value={windowedBlockTxs.filter(tx=>tx.isTransfer).length.toLocaleString()}
-              sub={(()=>{
-                if(!blockTxs.length) return "buffered";
-                const ageMs=now-blockTxs.reduce((min,tx)=>Math.min(min,tx.timestamp),Date.now());
-                return ageMs<3600_000?`${Math.round(ageMs/60_000)}m buffered`:ageMs<86400_000?`${(ageMs/3600_000).toFixed(1)}h buffered`:`${(ageMs/86400_000).toFixed(1)}d buffered`;
-              })()}/>
-            <KpiCard t={t} label="🦈 Whale Tx Rate"
-              value={whaleTxRate!=null ? `${whaleTxRate.toFixed(2)}%` : "—"}
-              color={whaleTxRate!=null?(whaleTxRate>=5?"#f87171":whaleTxRate>=1?"#f59e0b":"#4ade80"):undefined}
-              sub="of all network txns"/>
-          </div>
-        </div>
-
-        {/* Tabs */}
-        <div style={{display:"flex",gap:4,overflowX:"auto",paddingBottom:2}}>
-          {allTabs.map(tb=>(<button key={tb.key} onClick={()=>setTab(tb.key as any)} style={{...btn,padding:"5px 14px",background:tab===tb.key?t.accentBg:"transparent",color:tab===tb.key?t.accent:t.muted,border:`1px solid ${tab===tb.key?t.accent:"transparent"}`}}>{tb.label}</button>))}
-        </div>
-
-        {/* Live Price Ticker */}
-        <PriceTicker prices={oraclePrices} loading={pricesLoading} t={t} lastFetchedAt={lastFetchedAt}/>
-
-      </div>
-    </div>
-
-    {/* Content */}
-     <div style={{background:t.pageBg,borderBottom:`1px solid ${t.border}`,flexShrink:0,zIndex:5}}>
-      <div style={{maxWidth:1600,margin:"0 auto",padding:"8px 16px 0"}}>
-        <FilterBar t={t} search={search} setSearch={setSearch} minAmt={minAmt} setMinAmt={setMinAmt} maxAmt={maxAmt} setMaxAmt={setMaxAmt} token={tokenFilter} setToken={setTokenFilter} timePreset={timePreset} setTimePreset={setTimePreset} showTypes={showTypes} setShowTypes={setShowTypes} tokenList={tokenList}/>
-      </div>
-    </div>
- 
-    {/* Content — scrollable, FilterBar no longer lives here */}
-    <div style={{flex:1,overflowY:"auto"}}>
-      {error&&<div style={{background:t.errBg,border:`1px solid ${t.errBorder}`,margin:"12px 20px 0",borderRadius:10,padding:12,color:t.errText,fontSize:12,fontFamily:"monospace"}}>⚠ {error}</div>}
-      <div style={{maxWidth:1600,margin:"0 auto",padding:"12px 16px"}}>
-        <div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:16,overflow:"hidden"}}>
-          {tab==="feed"        && <LiveFeedTab    alerts={filtered} t={t} connectedAddr={walletAddr} burst={burst} oraclePrices={oraclePrices} blockTxs={windowedBlockTxs} totalBlockTxsSeen={totalBlockTxsSeen} timePreset={timePreset} feedSubTab={feedSubTab} setFeedSubTab={setFeedSubTab} netMinAmt={netMinAmt} setNetMinAmt={setNetMinAmt} netMaxAmt={netMaxAmt} setNetMaxAmt={setNetMaxAmt}/>}
-          {tab==="analytics" && <AnalyticsTab alerts={filtered} t={t} oraclePrices={oraclePrices} blockTxs={blockTxs}/>}
-          {tab==="charts"      && <ChartsTab      alerts={filtered} t={t}/>}
-          {tab==="leaderboard" && <LeaderboardTab alerts={filtered} t={t} persistedEntries={persistedEntries}/>}
-          {tab==="flow"        && <TokenFlowTab   alerts={filtered} t={t}/>}
-          {tab==="howto"       && (
-            <div style={{padding:24}}>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(200px, 1fr))",gap:16,marginBottom:20}}>
-                {[
-                  {icon:"⛓",  color:"#06b6d4",title:"On-Chain Event",    desc:"WhaleTracker.sol emits WhaleTransfer on each reportTransfer() call above threshold."},
-                  {icon:"⚡",  color:"#06b6d4",title:"Somnia Reactivity", desc:"Reactivity Engine pushes events natively — zero polling, zero indexers, zero latency."},
-                  {icon:"🔍",  color:"#a855f7",title:"Handler Contract",  desc:"WhaleHandler._onEvent() called by precompile 0x0100. Emits ReactedToWhaleTransfer on-chain."},
-                  {icon:"💾",  color:"#4ade80",title:"Data Streams",      desc:"Leaderboard persists to Somnia Data Streams on every whale event — survives server restarts."},
-                  {icon:"🚨",  color:"#f97316",title:"Burst Detection",   desc:"WhaleHandler emits WhaleMomentumDetected on-chain when ≥3 transfers occur within 10 blocks. Frontend also detects independently via SSE."},
-                  {icon:"💛",  color:"#4ade80",title:"Wallet Connect",    desc:"Connect wallet to see your personal transfers, net flow, and YOU badge in Live Feed."},
-                ].map((s,i)=>(<div key={i} style={{background:t.pageBg,border:`1px solid ${t.border}`,borderRadius:12,padding:16}}><div style={{fontSize:26,marginBottom:10}}>{s.icon}</div><p style={{color:s.color,fontFamily:"monospace",fontSize:11,fontWeight:700,margin:"0 0 6px"}}>{s.title}</p><p style={{color:t.subtext,fontSize:11,lineHeight:1.7,margin:0}}>{s.desc}</p></div>))}
-              </div>
-              <div style={{background:t.pageBg,border:`1px solid ${t.border}`,borderRadius:12,padding:16}}>
-                <pre style={{color:t.subtext,fontSize:11,fontFamily:"monospace",lineHeight:1.8,margin:0,whiteSpace:"pre-wrap"}}>{`WhaleTracker.sol       → emits WhaleTransfer\nSomnia Reactivity       → pushes to handler (precompile 0x0100)\nWhaleHandler._onEvent() → emits ReactedToWhaleTransfer\n                        → emits AlertThresholdCrossed (every N)\n                        → emits WhaleMomentumDetected (≥3 in 10 blocks)\nFrontend burst detector → ≥3 transfers/60s → 🚨 banner\nData Streams            → persists leaderboard across restarts\nSSE stream              → 🐋 whale  ⚡ reaction  🚨 alert  🔥 momentum`}</pre>
-              </div>
-            </div>
-          )}
-          {tab==="mywallet"&&isConnected&&walletAddr&&<MyWalletTab alerts={alerts} connectedAddr={walletAddr} t={t}/>}
-          {tab==="mywallet"&&!isConnected&&<div style={{padding:48,textAlign:"center",color:t.muted,fontFamily:"monospace",fontSize:13}}>Connect your wallet to view your transactions.</div>}
-        </div>
-        <div style={{marginTop:14,display:"flex",justifyContent:"space-between",color:t.muted,fontSize:10,fontFamily:"monospace"}}>
-          <span>Contract: <a href={addrUrl(process.env.NEXT_PUBLIC_CONTRACT_ADDRESS||"")} target="_blank" rel="noreferrer" style={{color:t.accent,textDecoration:"none"}}>{short(process.env.NEXT_PUBLIC_CONTRACT_ADDRESS||"0x0000000000000000000000000000000000000000")}</a></span>
-          <span>Somnia Testnet · Chain ID 50312</span>
         </div>
       </div>
     </div>
   </div>);}
+
