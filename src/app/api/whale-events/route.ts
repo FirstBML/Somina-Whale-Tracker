@@ -34,7 +34,7 @@ db.exec(`
     timestamp INTEGER,
     block_timestamp INTEGER,
     token TEXT,
-    tx_hash TEXT UNIQUE,
+    tx_hash TEXT,
     block_number INTEGER,
     block_hash TEXT
   );
@@ -59,6 +59,39 @@ db.exec(`
 // ── Migrations — safe to run on existing DB ───────────────────────────────────
 try { db.exec(`ALTER TABLE whale_events ADD COLUMN block_timestamp INTEGER`); } catch {}
 try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_whale_tx_hash ON whale_events(tx_hash) WHERE tx_hash IS NOT NULL AND tx_hash != ''`); } catch {}
+
+// Remove old table-level UNIQUE on tx_hash if it exists (SQLite requires table rebuild).
+// We detect the old schema by checking if the CREATE TABLE sql contains "tx_hash TEXT UNIQUE".
+try {
+  const schema = (db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='whale_events'`).get() as any)?.sql ?? "";
+  if (schema.includes("tx_hash TEXT UNIQUE")) {
+    console.log("🔧 Migrating whale_events: removing old tx_hash UNIQUE constraint...");
+    db.exec(`
+      BEGIN;
+      CREATE TABLE IF NOT EXISTS whale_events_new (
+        id TEXT PRIMARY KEY,
+        type TEXT,
+        from_addr TEXT,
+        to_addr TEXT,
+        amount TEXT,
+        timestamp INTEGER,
+        block_timestamp INTEGER,
+        token TEXT,
+        tx_hash TEXT,
+        block_number INTEGER,
+        block_hash TEXT
+      );
+      INSERT OR IGNORE INTO whale_events_new SELECT * FROM whale_events;
+      DROP TABLE whale_events;
+      ALTER TABLE whale_events_new RENAME TO whale_events;
+      CREATE INDEX IF NOT EXISTS idx_timestamp ON whale_events(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_block_timestamp ON whale_events(block_timestamp);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_whale_tx_hash ON whale_events(tx_hash) WHERE tx_hash IS NOT NULL AND tx_hash != '';
+      COMMIT;
+    `);
+    console.log("✅ Migration complete — whale_events tx_hash UNIQUE constraint removed");
+  }
+} catch (e: any) { console.error("⚠ Migration failed (non-critical):", e.message?.split("\n")[0]); }
 
 const WHALE_ABI = [{
   name: "WhaleTransfer", type: "event",
@@ -143,7 +176,8 @@ const AGGREGATOR_ABI = [{
 const WHALE_DISPLAY_THRESHOLD = parseEther("1"); // 1 STT minimum for whale
 
 export type CacheEntry = {
-  type: "whale" | "reaction" | "alert" | "momentum" | "block_tx" | "threshold_update" | "whale_pending";
+  // whale_pending removed — only confirmed on-chain data is accepted
+  type: "whale" | "reaction" | "alert" | "momentum" | "block_tx" | "threshold_update";
   receivedAt: number;
   raw: {
     from: string; to: string; amount: string; timestamp: string; token: string;
@@ -151,6 +185,9 @@ export type CacheEntry = {
     reactionCount?: string; handlerEmitter?: string;
     oldValue?: string; newValue?: string;
     txFee?: string;
+    // For derived signals: links back to the confirmed whale tx that triggered this
+    linkedTxHash?: string;
+    signalReason?: string; // human-readable explanation: "5 txns >1 STT in 30s from same wallet"
   };
 };
 
@@ -346,12 +383,17 @@ function push(entry: CacheEntry) {
 
 function getHistoricalEvents(timeRangeMs: number): CacheEntry[] {
   const cutoff = Date.now() - timeRangeMs;
+  // Use OR condition: include row if EITHER timestamp column is within range.
+  // This handles old rows (only have `timestamp`), new rows (have `block_timestamp`),
+  // and migrated rows (have both). Also covers NULL values safely.
   const rows = db.prepare(`
-    SELECT * FROM whale_events 
-    WHERE block_timestamp > ? 
-    ORDER BY block_timestamp DESC 
+    SELECT *,
+      COALESCE(block_timestamp, timestamp) AS display_ts
+    FROM whale_events 
+    WHERE (timestamp > ? OR block_timestamp > ?)
+    ORDER BY COALESCE(block_timestamp, timestamp) DESC
     LIMIT 1000
-  `).all(cutoff);
+  `).all(cutoff, cutoff);
   
   return rows.map((row: any) => ({
     type: row.type,
@@ -360,7 +402,7 @@ function getHistoricalEvents(timeRangeMs: number): CacheEntry[] {
       from:        row.from_addr ?? "",
       to:          row.to_addr ?? "",
       amount:      row.amount ?? "0x0",
-      timestamp:   `0x${Math.floor(row.block_timestamp / 1000).toString(16)}`,
+      timestamp:   `0x${Math.floor(((row.display_ts as number) ?? row.timestamp) / 1000).toString(16)}`,
       token:       row.token ?? "",
       txHash:      row.tx_hash ?? "",
       blockNumber: row.block_number?.toString() ?? "",
@@ -373,6 +415,11 @@ function getHistoricalEvents(timeRangeMs: number): CacheEntry[] {
 function seedWhaleEventsFromDb() {
   const SEVEN_DAYS = 7 * 24 * 60 * 60_000;
   const dbWhales   = getHistoricalEvents(SEVEN_DAYS);
+
+  // Diagnostic: count total rows in whale_events regardless of filter
+  const totalRows = (db.prepare(`SELECT COUNT(*) as n FROM whale_events`).get() as any)?.n ?? 0;
+  console.log(`📊 whale_events total rows: ${totalRows}, visible in 7d window: ${dbWhales.length}`);
+
   if (!dbWhales.length) {
     console.log("No historical whale events found in database");
     return;
@@ -389,6 +436,52 @@ function seedWhaleEventsFromDb() {
     seeded++;
   }
   if (seeded > 0) console.log(`📂 Seeded ${seeded} whale events from SQLite`);
+}
+
+// ── Promote qualifying block_tx_events → whale_events ────────────────────────
+// Historical block_tx rows that meet the whale threshold but were never promoted
+// (written before the blockWatcher derived-whale logic existed) get promoted here.
+// Runs once at startup. Safe to re-run — INSERT OR IGNORE skips existing rows.
+function promoteBlockTxToWhaleEvents() {
+  const threshold = Number(WHALE_DISPLAY_THRESHOLD) / 1e18; // e.g. 1.0 STT
+  const cutoff = Date.now() - (7 * 24 * 60 * 60_000); // 7 days back
+  const candidates = db.prepare(`
+    SELECT * FROM block_tx_events
+    WHERE is_transfer = 1
+      AND CAST(amount AS REAL) >= ?
+      AND tx_hash IS NOT NULL AND tx_hash != ''
+      AND received_at >= ?
+    ORDER BY received_at ASC
+  `).all(threshold, cutoff) as any[];
+
+  if (!candidates.length) return;
+
+  const insertWhale = db.prepare(`
+    INSERT OR IGNORE INTO whale_events
+    (id, type, from_addr, to_addr, amount, timestamp, block_timestamp, token, tx_hash, block_number, block_hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  let promoted = 0;
+  for (const row of candidates) {
+    const sttWei = `0x${Math.round(parseFloat(row.amount) * 1e18).toString(16)}`;
+    try {
+      insertWhale.run(
+        `promoted-${row.tx_hash}`,
+        "whale",
+        row.from_addr, row.to_addr,
+        sttWei,
+        row.received_at,      // timestamp (push time)
+        row.received_at,      // block_timestamp — received_at approximates block time for backfill
+        "STT",
+        row.tx_hash,
+        row.block_number || null,
+        row.block_hash || null,
+      );
+      promoted++;
+    } catch {} // IGNORE = already exists
+  }
+  if (promoted > 0) console.log(`🐋 Promoted ${promoted} historical block_tx → whale_events (threshold: ${threshold} STT)`);
 }
 
 async function fetchActualFee(
@@ -597,8 +690,10 @@ async function startBlockWatcher(
           });
         }
 
-        // ============= FIX: Only process whales with txHash and above threshold =============
-        if (val >= WHALE_DISPLAY_THRESHOLD && txHash && markBlockSeen(txHash)) {
+        // ── INTEGRITY GATE: whale must have txHash + blockNumber + blockTimestamp ──
+        if (val >= WHALE_DISPLAY_THRESHOLD && txHash && blockNum && blockTs) {
+          if (!markBlockSeen(txHash)) continue; // already processed
+
           const entry: CacheEntry = {
             type: "whale", receivedAt: Date.now(),
             raw: {
@@ -610,20 +705,69 @@ async function startBlockWatcher(
             },
           };
           push(entry);
+
           const usdEstimate = ethUsd > 0 ? sttAmount * ethUsd : 0;
           const label = usdEstimate > 0 ? `~$${Math.round(usdEstimate).toLocaleString()} USD` : `${sttAmount.toFixed(4)} STT`;
-          console.log(`🌊 Whale detected: ${label}  ${from.slice(0,8)}→${to.slice(0,8)}  tx:${txHash.slice(0,10)}`);
+          console.log(`🌊 Confirmed whale: ${label}  ${from.slice(0,8)}→${to.slice(0,8)}  block:${blockNum}  tx:${txHash.slice(0,10)}`);
 
-          if (txHash) {
-            fetchActualFee(httpPub, txHash as `0x${string}`).then(actualFee => {
-              if (!actualFee) return;
-              const idx = alertCache.findIndex(e => e.type === "whale" && e.raw.txHash === txHash);
-              if (idx !== -1) {
-                alertCache[idx].raw.txFee = actualFee;
-                const msg = encoder.encode(`data: ${JSON.stringify({ ...alertCache[idx], type: "whale_fee_update", txHash, txFee: actualFee })}\n\n`);
-                controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
-              }
-            }).catch(() => {});
+          // Resolve actual fee asynchronously
+          fetchActualFee(httpPub, txHash as `0x${string}`).then(actualFee => {
+            if (!actualFee) return;
+            const idx = alertCache.findIndex(e => e.type === "whale" && e.raw.txHash === txHash);
+            if (idx !== -1) {
+              alertCache[idx].raw.txFee = actualFee;
+              const msg = encoder.encode(`data: ${JSON.stringify({ ...alertCache[idx], type: "whale_fee_update", txHash, txFee: actualFee })}\n\n`);
+              controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
+            }
+          }).catch(() => {});
+
+          // ── DERIVED SIGNALS from confirmed whale ─────────────────────────────
+          // Momentum: ≥3 confirmed whale txns from same wallet within 60s
+          const MOMENTUM_WINDOW = 60_000;
+          const recentFromSame = alertCache.filter(e =>
+            e.type === "whale" &&
+            e.raw.from === from &&
+            Date.now() - e.receivedAt <= MOMENTUM_WINDOW
+          );
+          if (recentFromSame.length >= 2) { // this tx makes it 3+
+            const burstCount = recentFromSame.length + 1;
+            const reason = `${burstCount} confirmed txns ≥${Number(WHALE_DISPLAY_THRESHOLD)/1e18} STT from ${from.slice(0,10)} within ${MOMENTUM_WINDOW/1000}s`;
+            push({
+              type: "momentum", receivedAt: Date.now(),
+              raw: {
+                from, to, amount: "0x0",
+                timestamp: ts, token: "",
+                txHash, blockNumber: blockNum, blockHash: block.hash ?? "",
+                reactionCount: burstCount.toString(),
+                linkedTxHash: txHash,
+                signalReason: reason,
+              },
+            });
+            console.log(`🔥 Momentum derived: ${reason}`);
+          }
+
+          // Alert: single whale above high-value threshold (≥10 STT)
+          const ALERT_THRESHOLD = parseEther("10");
+          if (val >= ALERT_THRESHOLD) {
+            const reason = `${sttAmount.toFixed(2)} STT transfer${usdEstimate > 0 ? ` (~$${Math.round(usdEstimate).toLocaleString()})` : ""} confirmed in block ${blockNum}`;
+            push({
+              type: "alert", receivedAt: Date.now(),
+              raw: {
+                from, to, amount: "0x0",
+                timestamp: ts, token: "",
+                txHash, blockNumber: blockNum, blockHash: block.hash ?? "",
+                linkedTxHash: txHash,
+                signalReason: reason,
+              },
+            });
+            console.log(`🚨 Alert derived: ${reason}`);
+          }
+
+          // Update leaderboard
+          updateLeaderMap(from, to, val, blockTs);
+          for (const wallet of [from, to]) {
+            const le = leaderMap.get(wallet);
+            if (le) persistLeaderEntry(wallet, le);
           }
         }
       }
@@ -632,7 +776,7 @@ async function startBlockWatcher(
   });
 
   blockWatcher = unwatch;
-  console.log(`✅ Real-chain block watcher started (whale threshold: 1 STT | ETH/USD: $${ethUsd.toFixed(2)})`);
+  console.log(`✅ Block watcher started (whale threshold: ${Number(WHALE_DISPLAY_THRESHOLD)/1e18} STT | alert threshold: 10 STT | ETH/USD: $${ethUsd.toFixed(2)})`);
 }
 
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -661,7 +805,8 @@ async function ensureSubscriptions() {
   if (trackerSub && handlerSub && momentumSub && blockWatcher) return;
   loadBlockTxFromDb();
   evictExpiredEntries();
-  seedWhaleEventsFromDb();
+  promoteBlockTxToWhaleEvents(); // promote qualifying historical block_tx → whale_events first
+  seedWhaleEventsFromDb();       // then seed whale_events (including newly promoted rows) into cache
   nonBlockTxCount = alertCache.filter(e => e.type !== "block_tx").length;
   cacheReadyResolve?.();
   setTimeout(() => loadRecentBlockTxs().catch(() => {}), 10_000);
@@ -680,7 +825,10 @@ async function ensureSubscriptions() {
   const MOMENTUM_TOPIC  = keccak256(toBytes("WhaleMomentumDetected(uint256,uint256)"));
   const THRESHOLD_TOPIC = keccak256(toBytes("ThresholdUpdated(uint256,uint256)"));
 
-  // SDK but only for UI signals (no DB persistence) 
+  // ── SDK WhaleTransfer: leaderboard + dedup signal only ───────────────────
+  // Block watcher is the single source of truth for whale entries in the DB.
+  // SDK here is used ONLY to update leaderboard for wallets that the blockWatcher
+  // might have missed (e.g. cross-contract token transfers not carrying native STT value).
   if (!trackerSub) {
     const r1 = await sdk.subscribe({
       ethCalls: [],
@@ -697,65 +845,13 @@ async function ensureSubscriptions() {
           const a = decoded.args as any;
           const amount = BigInt(a.amount);
           const ts = Number(BigInt(a.timestamp)) * 1000;
-
-          const txHash = r?.transactionHash ?? "";
-          
-          // Create content key for deduplication
-          const contentKey = `sdk:${a.from}:${a.to}:${amount.toString()}:${a.timestamp}`;
-          
-          // Skip if we've already seen this SDK event
-          if (!markSDKSeen(contentKey)) return;
-
-          // ============= TEMPORARY: Save whales to database for testing =============
-          if (txHash) {
-            const testEntry: CacheEntry = {
-              type: "whale",
-              receivedAt: Date.now(),
-              raw: {
-                from: a.from,
-                to: a.to,
-                amount: `0x${amount.toString(16)}`,
-                timestamp: `0x${BigInt(a.timestamp).toString(16)}`,
-                token: a.token ?? "STT",
-                txHash,
-                blockNumber: r?.blockNumber ? BigInt(r.blockNumber).toString() : "",
-                blockHash: r?.blockHash ?? "",
-              },
-            };
-            push(testEntry); // This will save to DB
-            console.log(`📝 SAVED WHALE TO DB: ${txHash.slice(0,10)}`);
-          }
-
-          // Send pending alert for UI
-          const pendingAlert: CacheEntry = {
-            type: "whale_pending",
-            receivedAt: Date.now(),
-            raw: {
-              from: a.from,
-              to: a.to,
-              amount: `0x${amount.toString(16)}`,
-              timestamp: `0x${BigInt(a.timestamp).toString(16)}`,
-              token: a.token ?? "STT",
-              txHash: txHash || "pending",
-              blockNumber: "",
-              blockHash: "",
-            },
-          };
-          
-          // Broadcast pending alert immediately
-          const msg = encoder.encode(`data: ${JSON.stringify(pendingAlert)}\n\n`);
-          controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
-          
-          console.log(`⚡ Pending whale detected via SDK: ${a.from.slice(0,8)}→${a.to.slice(0,8)} ${txHash ? `tx:${txHash.slice(0,10)}` : '(pending)'}`);
-
-          // Update leaderboard (volume tracking)
+          // Leaderboard update only — block watcher owns DB writes
           updateLeaderMap(a.from, a.to, amount, ts);
-
           for (const wallet of [a.from as string, a.to as string]) {
             const le = leaderMap.get(wallet);
             if (le) persistLeaderEntry(wallet, le);
           }
-        } catch (e) { console.error("SDK parse error:", e); }
+        } catch (e) { console.error("SDK leaderboard update error:", e); }
       },
       onError: (e: Error) => {
         console.error("Tracker SDK error:", (e as any).shortMessage ?? e.message);
@@ -764,31 +860,43 @@ async function ensureSubscriptions() {
     });
     if (r1 instanceof Error) throw r1;
     trackerSub = r1;
-    console.log("✅ WhaleTracker SDK subscription (UI signals only):", r1.subscriptionId);
+    console.log("✅ SDK WhaleTransfer subscription (leaderboard only):", r1.subscriptionId);
   }
 
-  // Keep handler subscriptions (these are for reaction/alert/momentum events)
+  // ── SDK Reaction: on-chain event from WhaleHandler.sol ───────────────────
+  // ReactedToWhaleTransfer is emitted by WhaleHandler._onEvent() — it IS a real
+  // on-chain transaction. We keep it but enforce integrity: must have txHash + blockNumber.
+  // We attach the most recent confirmed whale as linkedTxHash for traceability.
   if (!handlerSub && HANDLER) {
     const r2 = await sdk.subscribe({
       ethCalls: [], eventContractSources: [HANDLER], topicOverrides: [REACTED_TOPIC],
       onData: (data: any) => {
         try {
           const r = data?.result ?? data;
+          // Integrity gate: reaction must have on-chain tx identity
+          const txHash = r?.transactionHash ?? "";
+          const blockNumber = r?.blockNumber ? BigInt(r.blockNumber).toString() : "";
+          if (!txHash || !blockNumber) {
+            console.log(`⚠ Reaction dropped — missing txHash or blockNumber`);
+            return;
+          }
           const decoded = decodeEventLog({
             abi: HANDLER_ABI, data: r?.data as `0x${string}`,
             topics: r?.topics as [`0x${string}`, ...`0x${string}`[]],
           });
           const a = decoded.args as any;
+          // Find most recent confirmed whale to link this reaction to
+          const latestWhale = [...alertCache].reverse().find(e => e.type === "whale");
           push({
             type: "reaction", receivedAt: Date.now(),
             raw: {
               from: a.from, to: a.to, amount: "0x0",
               timestamp: `0x${Math.floor(Date.now() / 1000).toString(16)}`,
-              token: "", txHash: r?.transactionHash ?? "",
-              blockNumber: r?.blockNumber ? BigInt(r.blockNumber).toString() : "",
-              blockHash: r?.blockHash ?? "",
+              token: "", txHash, blockNumber, blockHash: r?.blockHash ?? "",
               reactionCount: a.count?.toString() ?? "",
               handlerEmitter: a.emitter ?? "",
+              linkedTxHash: latestWhale?.raw.txHash ?? "",
+              signalReason: `WhaleHandler reacted to whale transfer (reaction #${a.count})`,
             },
           });
         } catch (e) { console.error("Reaction parse error:", e); }
@@ -799,73 +907,18 @@ async function ensureSubscriptions() {
       },
     });
 
-    const r3 = await sdk.subscribe({
-      ethCalls: [], eventContractSources: [HANDLER], topicOverrides: [ALERT_TOPIC],
-      onData: (data: any) => {
-        try {
-          const r = data?.result ?? data;
-          const decoded = decodeEventLog({
-            abi: HANDLER_ABI, data: r?.data as `0x${string}`,
-            topics: r?.topics as [`0x${string}`, ...`0x${string}`[]],
-          });
-          const a = decoded.args as any;
-          push({
-            type: "alert", receivedAt: Date.now(),
-            raw: {
-              from: "", to: "", amount: "0x0",
-              timestamp: `0x${Math.floor(Date.now() / 1000).toString(16)}`,
-              token: "", txHash: r?.transactionHash ?? "",
-              blockNumber: r?.blockNumber ? BigInt(r.blockNumber).toString() : "",
-              blockHash: "", reactionCount: a.reactionCount?.toString() ?? "",
-            },
-          });
-        } catch (e) { console.error("Alert parse error:", e); }
-      },
-      onError: (e: Error) => {
-        console.error("Alert SDK error:", (e as any).shortMessage ?? e.message);
-        if (e.message?.includes("socket") || e.message?.includes("closed")) { trackerSub = null; handlerSub = null; momentumSub = null; scheduleReconnect(); }
-      },
-    });
-
     if (r2 instanceof Error) {
       console.warn("⚠ Handler subscription failed:", r2.message);
     } else {
       handlerSub = r2;
-      console.log("✅ WhaleHandler reaction subscription:", r2.subscriptionId);
+      console.log("✅ SDK Reaction subscription (on-chain, integrity-gated):", r2.subscriptionId);
     }
-    if (!(r3 instanceof Error)) console.log("✅ WhaleHandler alert subscription:", r3.subscriptionId);
 
-    const r4 = await sdk.subscribe({
-      ethCalls: [], eventContractSources: [HANDLER], topicOverrides: [MOMENTUM_TOPIC],
-      onData: (data: any) => {
-        try {
-          const r = data?.result ?? data;
-          const decoded = decodeEventLog({
-            abi: MOMENTUM_ABI, data: r?.data as `0x${string}`,
-            topics: r?.topics as [`0x${string}`, ...`0x${string}`[]],
-          });
-          const a = decoded.args as any;
-          push({
-            type: "momentum", receivedAt: Date.now(),
-            raw: {
-              from: "", to: "", amount: "0x0",
-              timestamp: `0x${Math.floor(Date.now() / 1000).toString(16)}`,
-              token: "", txHash: r?.transactionHash ?? "",
-              blockNumber: r?.blockNumber ? BigInt(r.blockNumber).toString() : "",
-              blockHash: "", reactionCount: a.burstCount?.toString() ?? "",
-            },
-          });
-        } catch (e) { console.error("Momentum parse error:", e); }
-      },
-      onError: (e: Error) => {
-        console.error("Momentum SDK error:", (e as any).shortMessage ?? e.message);
-        if (e.message?.includes("socket") || e.message?.includes("closed")) { trackerSub = null; handlerSub = null; momentumSub = null; scheduleReconnect(); }
-      },
-    });
-    if (!(r4 instanceof Error)) {
-      momentumSub = r4;
-      console.log("✅ WhaleMomentumDetected subscription:", r4.subscriptionId);
-    }
+    // ── SDK Alert/Momentum subscriptions: REMOVED ────────────────────────
+    // Alert and Momentum are now derived locally from confirmed block_watcher whales.
+    // This eliminates the "Reactions: 46, Whales: 1" credibility problem entirely.
+    // The SDK versions are unreliable (no txHash, disconnects from confirmed data).
+    momentumSub = { unsubscribe: async () => {} }; // satisfy the guard check
 
     await sdk.subscribe({
       ethCalls: [], eventContractSources: [CONTRACT], topicOverrides: [THRESHOLD_TOPIC],
@@ -927,7 +980,7 @@ export async function GET(req: NextRequest) {
 
       // Send all whale events (newest first, max 500)
       const whaleAlerts = alertCache
-        .filter(e => e.type !== "block_tx" && e.type !== "whale_pending")
+        .filter(e => e.type !== "block_tx")
         .sort((a, b) => b.receivedAt - a.receivedAt)
         .slice(0, 500);
 

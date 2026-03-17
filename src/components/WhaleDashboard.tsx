@@ -1,3 +1,4 @@
+
 "use client";
 import { useState, useMemo, useRef, useEffect } from "react";
 import { useAccount } from "wagmi";
@@ -84,11 +85,10 @@ function downloadCSV(alerts:WhaleAlert[]){const rows=["type,timestamp,from,to,am
 function Badge({text,color,t}:{text:string;color?:string;t:typeof T.dark}){return<span style={{fontSize:10,fontFamily:"monospace",fontWeight:700,padding:"2px 8px",borderRadius:4,background:color?`${color}22`:t.badgeBg,color:color??t.badgeText,border:`1px solid ${color?`${color}44`:t.border}`}}>{text}</span>;}
 function TypeBadge({type,t}:{type:string;t:typeof T.dark}){
   const map:Record<string,{label:string;color:string}>={
-    whale:{label:"🐋 WHALE",color:"#06b6d4"},
-    reaction:{label:"⚡ REACTION",color:"#a855f7"},
-    alert:{label:"🚨 ALERT",color:"#f97316"},
-    momentum:{label:"🔥 MOMENTUM",color:"#ef4444"},
-    whale_pending:{label:"⏳ PENDING",color:"#f59e0b"}, // Add this
+    whale:    {label:"🐋 WHALE",    color:"#06b6d4"},
+    reaction: {label:"⚡ REACTION", color:"#a855f7"},
+    alert:    {label:"🚨 ALERT",    color:"#f97316"},
+    momentum: {label:"🔥 MOMENTUM", color:"#ef4444"},
   };
   const m=map[type]??map.whale;
   return<span style={{fontSize:9,fontFamily:"monospace",fontWeight:700,padding:"2px 8px",borderRadius:4,background:`${m.color}22`,color:m.color,border:`1px solid ${m.color}44`,whiteSpace:"nowrap"}}>{m.label}</span>;
@@ -452,11 +452,11 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
                 <SortTh t={t} active={whaleSort.col==="type"}  dir={whaleSort.dir} onClick={()=>toggleWhaleSort("type")}>Type</SortTh>
                 <Th t={t}>Token</Th>
                 <SortTh t={t} active={whaleSort.col==="amount"} dir={whaleSort.dir} onClick={()=>toggleWhaleSort("amount")}>Amount</SortTh>
-                <Th t={t}>USD Value</Th>
+                <Th t={t}>USD Value / Reason</Th>
                 <Th t={t}>Tx Fee (STT)</Th>
                 <SortTh t={t} active={whaleSort.col==="from"} dir={whaleSort.dir} onClick={()=>toggleWhaleSort("from")}>From</SortTh>
                 <SortTh t={t} active={whaleSort.col==="to"}   dir={whaleSort.dir} onClick={()=>toggleWhaleSort("to")}>To</SortTh>
-                <Th t={t}>TX Hash</Th>
+                <Th t={t}>TX Hash / Linked TX</Th>
                 <SortTh t={t} active={whaleSort.col==="block"} dir={whaleSort.dir} onClick={()=>toggleWhaleSort("block")}>Block</SortTh>
                 <SortTh t={t} active={whaleSort.col==="time"}  dir={whaleSort.dir} onClick={()=>toggleWhaleSort("time")}>Time</SortTh>
                 <Th t={t}></Th>
@@ -464,26 +464,53 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
               <tbody>{pageAlerts.map((a,i)=>{
                 const isMyTx=connectedAddr&&(a.from.toLowerCase()===connectedAddr.toLowerCase()||a.to.toLowerCase()===connectedAddr.toLowerCase());
                 const usd=a.type==="whale"?usdVal(num(a.amount),a.token,oraclePrices):null;
+                const isSignal = a.type==="momentum"||a.type==="alert"||a.type==="reaction";
+                const sigColor = a.type==="momentum"?"#ef4444":a.type==="alert"?"#f97316":"#a855f7";
                 return(<>
                   <tr key={a.id} style={{background:rowBg(a,i),cursor:"pointer",transition:"background 0.15s"}} onMouseEnter={e=>(e.currentTarget.style.background=t.rowHover)} onMouseLeave={e=>(e.currentTarget.style.background=rowBg(a,i))}>
                     <Td t={t}><div style={{display:"flex",gap:4,alignItems:"center"}}><TypeBadge type={a.type} t={t}/>{isMyTx&&<span style={{fontSize:8,background:"rgba(74,222,128,0.2)",color:"#4ade80",border:"1px solid rgba(74,222,128,0.4)",borderRadius:3,padding:"1px 5px",fontFamily:"monospace"}}>YOU</span>}</div></Td>
                     <Td t={t}>{a.token?<Badge text={a.token} color={TOKEN_COLORS[a.token]} t={t}/>:<span style={{color:t.muted,fontSize:11}}>—</span>}</Td>
                     <Td t={t} accent bold>{a.type==="whale"?parseFloat(a.amount).toFixed(8):<span style={{color:t.muted}}>—</span>}</Td>
-                    <Td t={t}>{usd?<span style={{color:"#4ade80",fontFamily:"monospace",fontSize:11,fontWeight:700}}>{usd}</span>:a.type==="whale"&&a.token?<span style={{color:t.muted,fontSize:10}}>{parseFloat(a.amount).toFixed(8)} {a.token}</span>:<span style={{color:t.muted,fontSize:10}}>—</span>}</Td>
+                    {/* USD Value for whales; inline reason preview for signals */}
+                    <Td t={t}>{
+                      usd?<span style={{color:"#4ade80",fontFamily:"monospace",fontSize:11,fontWeight:700}}>{usd}</span>
+                      :isSignal&&a.signalReason?<span style={{color:sigColor,fontSize:9,fontFamily:"monospace",maxWidth:180,display:"inline-block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={a.signalReason}>{a.signalReason}</span>
+                      :<span style={{color:t.muted,fontSize:10}}>—</span>
+                    }</Td>
                     <Td t={t}><span style={{color:a.txFee?.startsWith("~")?t.muted:"#f59e0b",fontSize:10,fontFamily:"monospace"}}>{a.txFee&&parseFloat(a.txFee.replace("~",""))>0?(a.txFee.startsWith("~")?"~":"")+parseFloat(a.txFee.replace("~","")).toFixed(8):"—"}</span></Td>
                     <Td t={t}><ExLink href={a.from?addrUrl(a.from):""} label={a.from?short(a.from):"—"} t={t}/></Td>
                     <Td t={t}><ExLink href={a.to?addrUrl(a.to):""} label={a.to?short(a.to):"—"} t={t}/></Td>
-                    <Td t={t}><ExLink href={a.txHash?txUrl(a.txHash):""} label={shortHash(a.txHash)} t={t}/></Td>
+                    {/* TX Hash for whales; linked whale tx for signals */}
+                    <Td t={t}>{
+                      a.txHash?<ExLink href={txUrl(a.txHash)} label={shortHash(a.txHash)} t={t}/>
+                      :isSignal&&a.linkedTxHash?<span style={{display:"flex",alignItems:"center",gap:3}}><span style={{color:t.muted,fontSize:8}}>→</span><ExLink href={txUrl(a.linkedTxHash)} label={shortHash(a.linkedTxHash)} t={t}/></span>
+                      :<span style={{color:t.muted,fontSize:10}}>—</span>
+                    }</Td>
                     <Td t={t}><span style={{color:t.subtext,fontSize:11}}>{a.blockNumber||"—"}</span></Td>
                     <Td t={t}><span style={{color:t.muted,fontSize:10}}>{timeAgo(a.timestamp)}</span></Td>
                     <td style={{padding:"10px 12px",borderBottom:`1px solid ${t.border}`}}><button onClick={()=>setExpanded(expanded===a.id?null:a.id)} style={{fontSize:9,fontFamily:"monospace",padding:"2px 8px",borderRadius:4,cursor:"pointer",background:t.accentBg,color:t.accent,border:`1px solid ${t.border}`}}>{expanded===a.id?"▲":"▼"}</button></td>
                   </tr>
                   {expanded===a.id&&(<tr key={`${a.id}-exp`} style={{background:t.accentBg}}><td colSpan={11} style={{padding:"12px 16px",borderBottom:`1px solid ${t.border}`}}>
                     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(260px, 1fr))",gap:12,fontFamily:"monospace",fontSize:11}}>
-                      <div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Full TX Hash</span><div style={{marginTop:4}}><ExLink href={txUrl(a.txHash)} label={a.txHash||"—"} t={t}/></div></div>
-                      {a.type==="whale"&&<><div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>From</span><div style={{marginTop:4}}><ExLink href={addrUrl(a.from)} label={a.from} t={t}/></div></div><div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>To</span><div style={{marginTop:4}}><ExLink href={addrUrl(a.to)} label={a.to} t={t}/></div></div><div><span style={{color:t.accent,fontWeight:700,marginTop:4,fontSize:9,textTransform:"uppercase"}}>Amount</span><div style={{color:t.accent,fontWeight:700,marginTop:4}}>{num(a.amount).toLocaleString()} <span style={{color:t.muted}}>{a.token}</span>{usd&&<span style={{color:"#4ade80",marginLeft:8}}>{usd}</span>}</div></div></>}
-                      {a.type==="reaction"&&<><div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Reaction #</span><div style={{color:"#a855f7",fontWeight:700,marginTop:4}}>{a.reactionCount}</div></div><div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Handler Emitter</span><div style={{marginTop:4}}><ExLink href={addrUrl(a.handlerEmitter??"")} label={short(a.handlerEmitter??"")} t={t}/></div></div></>}
-                      {a.type==="alert"&&<div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Alert At Reaction</span><div style={{color:"#f97316",fontWeight:700,marginTop:4}}>#{a.reactionCount}</div></div>}
+                      {/* Confirmed whale details */}
+                      {a.type==="whale"&&<>
+                        <div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>TX Hash</span><div style={{marginTop:4}}><ExLink href={txUrl(a.txHash)} label={a.txHash||"—"} t={t}/></div></div>
+                        <div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>From</span><div style={{marginTop:4}}><ExLink href={addrUrl(a.from)} label={a.from} t={t}/></div></div>
+                        <div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>To</span><div style={{marginTop:4}}><ExLink href={addrUrl(a.to)} label={a.to} t={t}/></div></div>
+                        <div><span style={{color:t.accent,fontSize:9,textTransform:"uppercase"}}>Amount</span><div style={{color:t.accent,fontWeight:700,marginTop:4}}>{num(a.amount).toLocaleString()} <span style={{color:t.muted}}>{a.token}</span>{usd&&<span style={{color:"#4ade80",marginLeft:8}}>{usd}</span>}</div></div>
+                      </>}
+                      {/* Derived signal details — show why it fired */}
+                      {(a.type==="momentum"||a.type==="alert"||a.type==="reaction")&&<>
+                        <div style={{gridColumn:"1/-1",background:`rgba(${a.type==="momentum"?"239,68,68":a.type==="alert"?"249,115,22":"168,85,247"},0.08)`,border:`1px solid rgba(${a.type==="momentum"?"239,68,68":a.type==="alert"?"249,115,22":"168,85,247"},0.25)`,borderRadius:8,padding:"10px 14px"}}>
+                          <div style={{color:t.muted,fontSize:9,textTransform:"uppercase",marginBottom:6}}>
+                            {a.type==="momentum"?"🔥 Why This Momentum":a.type==="alert"?"🚨 Why This Alert":"⚡ Why This Reaction"}
+                          </div>
+                          <div style={{color:t.text,fontSize:11,lineHeight:1.6}}>{a.signalReason||"On-chain signal — see linked transaction for context."}</div>
+                        </div>
+                        {a.linkedTxHash&&<div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Linked Whale TX</span><div style={{marginTop:4}}><ExLink href={txUrl(a.linkedTxHash)} label={shortHash(a.linkedTxHash)} t={t}/></div></div>}
+                        {a.txHash&&<div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Signal TX Hash</span><div style={{marginTop:4}}><ExLink href={txUrl(a.txHash)} label={shortHash(a.txHash)} t={t}/></div></div>}
+                        {a.type==="reaction"&&a.handlerEmitter&&<div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Handler Emitter</span><div style={{marginTop:4}}><ExLink href={addrUrl(a.handlerEmitter)} label={short(a.handlerEmitter)} t={t}/></div></div>}
+                      </>}
                       <div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Block</span><div style={{color:t.text,marginTop:4}}>{a.blockNumber||"—"}</div></div>
                       <div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Timestamp</span><div style={{color:t.text,marginTop:4}}>{fmtTime(a.timestamp)}</div></div>
                     </div>
