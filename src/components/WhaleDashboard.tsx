@@ -82,7 +82,17 @@ function downloadCSV(alerts:WhaleAlert[]){const rows=["type,timestamp,from,to,am
 
 // ── Shared UI ─────────────────────────────────────────────────────────────────
 function Badge({text,color,t}:{text:string;color?:string;t:typeof T.dark}){return<span style={{fontSize:10,fontFamily:"monospace",fontWeight:700,padding:"2px 8px",borderRadius:4,background:color?`${color}22`:t.badgeBg,color:color??t.badgeText,border:`1px solid ${color?`${color}44`:t.border}`}}>{text}</span>;}
-function TypeBadge({type,t}:{type:string;t:typeof T.dark}){const map:Record<string,{label:string;color:string}>={whale:{label:"🐋 WHALE",color:"#06b6d4"},reaction:{label:"⚡ REACTION",color:"#a855f7"},alert:{label:"🚨 ALERT",color:"#f97316"},momentum:{label:"🔥 MOMENTUM",color:"#ef4444"}};const m=map[type]??map.whale;return<span style={{fontSize:9,fontFamily:"monospace",fontWeight:700,padding:"2px 8px",borderRadius:4,background:`${m.color}22`,color:m.color,border:`1px solid ${m.color}44`,whiteSpace:"nowrap"}}>{m.label}</span>;}
+function TypeBadge({type,t}:{type:string;t:typeof T.dark}){
+  const map:Record<string,{label:string;color:string}>={
+    whale:{label:"🐋 WHALE",color:"#06b6d4"},
+    reaction:{label:"⚡ REACTION",color:"#a855f7"},
+    alert:{label:"🚨 ALERT",color:"#f97316"},
+    momentum:{label:"🔥 MOMENTUM",color:"#ef4444"},
+    whale_pending:{label:"⏳ PENDING",color:"#f59e0b"}, // Add this
+  };
+  const m=map[type]??map.whale;
+  return<span style={{fontSize:9,fontFamily:"monospace",fontWeight:700,padding:"2px 8px",borderRadius:4,background:`${m.color}22`,color:m.color,border:`1px solid ${m.color}44`,whiteSpace:"nowrap"}}>{m.label}</span>;
+}
 function Th({children,t}:{children?:string;t:typeof T.dark}){return<th style={{padding:"9px 12px",textAlign:"left",color:t.subtext,fontSize:10,textTransform:"uppercase",letterSpacing:"0.1em",fontFamily:"monospace",borderBottom:`1px solid ${t.border}`,background:t.tableHead,whiteSpace:"nowrap"}}>{children}</th>;}
 function SortTh({children,t,active,dir,onClick}:{children:string;t:typeof T.dark;active:boolean;dir:"asc"|"desc";onClick:()=>void}){return<th onClick={onClick} style={{padding:"9px 12px",textAlign:"left",color:active?t.accent:t.subtext,fontSize:10,textTransform:"uppercase",letterSpacing:"0.1em",fontFamily:"monospace",borderBottom:`1px solid ${t.border}`,background:t.tableHead,whiteSpace:"nowrap",cursor:"pointer",userSelect:"none"}}>{children}{active?<span style={{marginLeft:4,fontSize:9}}>{dir==="desc"?"▼":"▲"}</span>:<span style={{marginLeft:4,fontSize:9,opacity:0.3}}>⇅</span>}</th>;}
 function Td({children,t,bold,accent,color}:{children:React.ReactNode;t:typeof T.dark;bold?:boolean;accent?:boolean;color?:string}){return<td style={{padding:"10px 12px",color:color??(accent?t.accent:t.text),fontFamily:"monospace",fontSize:11,fontWeight:bold?700:400,borderBottom:`1px solid ${t.border}`,whiteSpace:"nowrap"}}>{children}</td>;}

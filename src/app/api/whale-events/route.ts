@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { SDK } from "@somnia-chain/reactivity";
 import {
   createPublicClient, createWalletClient, webSocket, http,
-  keccak256, toBytes, defineChain, parseAbiItem, decodeEventLog, parseEther,
+  keccak256, toBytes, defineChain, decodeEventLog, parseEther,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { enqueue as enqueueLeaderboard } from "../streams-leaderboard/route";
@@ -32,12 +32,14 @@ db.exec(`
     to_addr TEXT,
     amount TEXT,
     timestamp INTEGER,
+    block_timestamp INTEGER,
     token TEXT,
     tx_hash TEXT UNIQUE,
     block_number INTEGER,
     block_hash TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_timestamp ON whale_events(timestamp);
+  CREATE INDEX IF NOT EXISTS idx_block_timestamp ON whale_events(block_timestamp);
 
   CREATE TABLE IF NOT EXISTS block_tx_events (
     id TEXT PRIMARY KEY,
@@ -53,6 +55,10 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_block_tx_received_at ON block_tx_events(received_at);
 `);
+
+// ── Migrations — safe to run on existing DB ───────────────────────────────────
+try { db.exec(`ALTER TABLE whale_events ADD COLUMN block_timestamp INTEGER`); } catch {}
+try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_whale_tx_hash ON whale_events(tx_hash) WHERE tx_hash IS NOT NULL AND tx_hash != ''`); } catch {}
 
 const WHALE_ABI = [{
   name: "WhaleTransfer", type: "event",
@@ -90,7 +96,6 @@ const MOMENTUM_ABI = [{
   ],
 }] as const;
 
-// ABI matching deployed WhaleTracker.sol
 const TRACKER_ABI = [
   {
     name: "reportTransfer", type: "function", stateMutability: "nonpayable",
@@ -119,7 +124,6 @@ const TRACKER_ABI = [
   },
 ] as const;
 
-// Protofire ETH/USD feed on Somnia testnet
 const ETH_USD_FEED = "0xd9132c1d762D432672493F640a63B758891B449e" as const;
 const AGGREGATOR_ABI = [{
   name: "latestRoundData", type: "function", stateMutability: "view",
@@ -135,11 +139,11 @@ const AGGREGATOR_ABI = [{
   inputs: [], outputs: [{ type: "uint8" }],
 }] as const;
 
-// Whale detection threshold for the dashboard block watcher.
-const WHALE_DISPLAY_THRESHOLD = 0n;
+// ============= FIX 1: Set proper whale threshold (1 STT) =============
+const WHALE_DISPLAY_THRESHOLD = parseEther("1"); // 1 STT minimum for whale
 
 export type CacheEntry = {
-  type: "whale" | "reaction" | "alert" | "momentum" | "block_tx" | "threshold_update";
+  type: "whale" | "reaction" | "alert" | "momentum" | "block_tx" | "threshold_update" | "whale_pending";
   receivedAt: number;
   raw: {
     from: string; to: string; amount: string; timestamp: string; token: string;
@@ -150,7 +154,7 @@ export type CacheEntry = {
   };
 };
 
-// ── In-memory leaderboard (written to Data Streams asynchronously) ────────────
+// ── In-memory leaderboard ───────────────────────────────────────────────────
 type LeaderEntry = { totalVolume: bigint; txCount: number; lastSeen: number };
 const leaderMap = new Map<string, LeaderEntry>();
 
@@ -183,12 +187,12 @@ const MAX_CACHE = 5000;
 const alertCache: CacheEntry[] = [];
 let totalBlockTxsSeen = 0;
 let networkLargestSTT = 0;
-const BLOCK_TX_WINDOW_MS = 3 * 24 * 60 * 60 * 1000; // 3 days — covers all time-window filters
+const BLOCK_TX_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 let trackerSub:   { unsubscribe: () => Promise<any> } | null = null;
 let handlerSub:   { unsubscribe: () => Promise<any> } | null = null;
 let momentumSub:  { unsubscribe: () => Promise<any> } | null = null;
 let blockWatcher: (() => void) | null = null;
-let backfillRunning = false; // prevents concurrent backfill scans
+let backfillRunning = false;
 const encoder     = new TextEncoder();
 const controllers = new Set<ReadableStreamDefaultController>();
 let nonBlockTxCount = 0;
@@ -201,23 +205,34 @@ export type ExplorerStats = {
 };
 let explorerStats: ExplorerStats | null = null;
 
-const seenWhaleTxHashes = new Set<string>();
-const MAX_SEEN_HASHES = 10_000; // covers 7d of whale history without premature eviction
-const seenHashQueue: string[] = [];
-function markSeen(hash: string): boolean {
-  if (seenWhaleTxHashes.has(hash)) return false;
-  if (seenHashQueue.length >= MAX_SEEN_HASHES) {
-    seenWhaleTxHashes.delete(seenHashQueue.shift()!);
+// ============= FIX 2: Separate dedup sets for SDK vs block watcher =============
+const seenBlockTxHashes = new Set<string>();
+const seenSDKContentKeys = new Set<string>();
+const MAX_SEEN_HASHES = 10_000;
+const blockHashQueue: string[] = [];
+const sdkKeyQueue: string[] = [];
+
+function markBlockSeen(hash: string): boolean {
+  if (seenBlockTxHashes.has(hash)) return false;
+  if (blockHashQueue.length >= MAX_SEEN_HASHES) {
+    seenBlockTxHashes.delete(blockHashQueue.shift()!);
   }
-  seenWhaleTxHashes.add(hash);
-  seenHashQueue.push(hash);
+  seenBlockTxHashes.add(hash);
+  blockHashQueue.push(hash);
+  return true;
+}
+
+function markSDKSeen(key: string): boolean {
+  if (seenSDKContentKeys.has(key)) return false;
+  if (sdkKeyQueue.length >= MAX_SEEN_HASHES) {
+    seenSDKContentKeys.delete(sdkKeyQueue.shift()!);
+  }
+  seenSDKContentKeys.add(key);
+  sdkKeyQueue.push(key);
   return true;
 }
 
 // ── SQLite-backed block_tx persistence ───────────────────────────────────────
-// Replaces the old JSON file cache. block_tx rows are written on every push()
-// and loaded back on startup — survives restarts and deployments with no count cap.
-
 const insertBlockTx = db.prepare(`
   INSERT OR IGNORE INTO block_tx_events
   (id, from_addr, to_addr, amount, is_transfer, tx_hash, block_number, block_hash, tx_fee, received_at)
@@ -225,7 +240,7 @@ const insertBlockTx = db.prepare(`
 `);
 
 function loadBlockTxFromDb() {
-  const cutoff = Date.now() - BLOCK_TX_WINDOW_MS; 
+  const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
   const rows = db.prepare(
     `SELECT * FROM block_tx_events WHERE received_at >= ? ORDER BY received_at ASC`
   ).all(cutoff) as any[];
@@ -253,9 +268,8 @@ function loadBlockTxFromDb() {
   console.log(`📂 Loaded ${rows.length} block_tx from SQLite (last 24h)`);
 }
 
-// Evict block_tx rows older than 24h — runs every 6h
 setInterval(() => {
-  const cutoff = Date.now() - BLOCK_TX_WINDOW_MS; 
+  const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
   const { changes } = db.prepare(`DELETE FROM block_tx_events WHERE received_at < ?`).run(cutoff);
   if (changes > 0) console.log(`🗑 Evicted ${changes} expired block_tx rows from SQLite`);
 }, 6 * 60 * 60_000);
@@ -274,13 +288,11 @@ function push(entry: CacheEntry) {
     const amt = parseFloat((entry.raw as any)?.amount ?? "0");
     if (amt > networkLargestSTT) networkLargestSTT = amt;
 
-    // Time-based eviction only — no count cap
     const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
     let i = 0;
     while (i < alertCache.length && alertCache[i].type === "block_tx" && alertCache[i].receivedAt < cutoff) i++;
     if (i > 0) alertCache.splice(0, i);
 
-    // Persist to SQLite so data survives restarts/deployments
     try {
       insertBlockTx.run(
         `btx-${entry.receivedAt}-${Math.random()}`,
@@ -294,7 +306,7 @@ function push(entry: CacheEntry) {
         entry.raw.txFee ?? "0",
         entry.receivedAt,
       );
-    } catch {} // IGNORE = duplicate tx_hash, silently skip
+    } catch {} // IGNORE duplicate tx_hash
   } else {
     if (nonBlockTxCount >= MAX_CACHE) {
       const idx = alertCache.findIndex(e => e.type !== "block_tx");
@@ -305,11 +317,17 @@ function push(entry: CacheEntry) {
   alertCache.push(entry);
   broadcast(entry);
 
-  if (entry.type !== "block_tx") {
+  // Only persist confirmed whales (with txHash) to database
+  if (entry.type === "whale" && entry.raw.txHash) {
+    const blockTs = (() => {
+      try { const t = Number(BigInt(entry.raw.timestamp ?? "0x0")) * 1000; return t > 0 ? t : entry.receivedAt; }
+      catch { return entry.receivedAt; }
+    })();
+    
     db.prepare(`
       INSERT OR IGNORE INTO whale_events
-      (id, type, from_addr, to_addr, amount, timestamp, token, tx_hash, block_number, block_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, type, from_addr, to_addr, amount, timestamp, block_timestamp, token, tx_hash, block_number, block_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       `${entry.receivedAt}-${Math.random()}`,
       entry.type,
@@ -317,10 +335,11 @@ function push(entry: CacheEntry) {
       entry.raw.to,
       entry.raw.amount,
       entry.receivedAt,
+      blockTs,
       entry.raw.token,
       entry.raw.txHash,
-      entry.raw.blockNumber,
-      entry.raw.blockHash,
+      entry.raw.blockNumber || null,
+      entry.raw.blockHash || null,
     );
   }
 }
@@ -329,8 +348,8 @@ function getHistoricalEvents(timeRangeMs: number): CacheEntry[] {
   const cutoff = Date.now() - timeRangeMs;
   const rows = db.prepare(`
     SELECT * FROM whale_events 
-    WHERE timestamp > ? 
-    ORDER BY timestamp DESC 
+    WHERE block_timestamp > ? 
+    ORDER BY block_timestamp DESC 
     LIMIT 1000
   `).all(cutoff);
   
@@ -338,26 +357,26 @@ function getHistoricalEvents(timeRangeMs: number): CacheEntry[] {
     type: row.type,
     receivedAt: row.timestamp,
     raw: {
-      from: row.from_addr,
-      to: row.to_addr,
-      amount: row.amount,
-      timestamp: `0x${Math.floor(row.timestamp/1000).toString(16)}`,
-      token: row.token,
-      txHash: row.tx_hash,
-      blockNumber: row.block_number.toString(),
-      blockHash: row.block_hash,
-      txFee: "0",
+      from:        row.from_addr ?? "",
+      to:          row.to_addr ?? "",
+      amount:      row.amount ?? "0x0",
+      timestamp:   `0x${Math.floor(row.block_timestamp / 1000).toString(16)}`,
+      token:       row.token ?? "",
+      txHash:      row.tx_hash ?? "",
+      blockNumber: row.block_number?.toString() ?? "",
+      blockHash:   row.block_hash ?? "",
+      txFee:       "0",
     }
   })) as CacheEntry[];
 }
 
-// ──  Seed whale history from SQLite at startup ─────────────────────────
-// Fast synchronous DB read — no chain scan. Ensures Whale Alerts tab has
-// historical data immediately on every restart.
 function seedWhaleEventsFromDb() {
   const SEVEN_DAYS = 7 * 24 * 60 * 60_000;
   const dbWhales   = getHistoricalEvents(SEVEN_DAYS);
-  if (!dbWhales.length) return;
+  if (!dbWhales.length) {
+    console.log("No historical whale events found in database");
+    return;
+  }
   const seenHashes = new Set(alertCache.map(e => e.raw.txHash).filter(Boolean));
   let seeded = 0;
   for (const entry of dbWhales) {
@@ -365,8 +384,7 @@ function seedWhaleEventsFromDb() {
     alertCache.push(entry);
     if (entry.raw.txHash) {
       seenHashes.add(entry.raw.txHash);
-      // Critical: register in live dedup set so blockWatcher/backfill won't re-push
-      markSeen(entry.raw.txHash);
+      markBlockSeen(entry.raw.txHash);
     }
     seeded++;
   }
@@ -385,7 +403,6 @@ async function fetchActualFee(
 }
 
 function evictExpiredEntries() {
-  // Only evict block_tx entries — whale/reaction/alert/momentum are small and precious
   const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
   const before = alertCache.length;
   for (let i = alertCache.length - 1; i >= 0; i--) {
@@ -458,7 +475,7 @@ async function loadRecentBlockTxs() {
     const latest  = await pub.getBlockNumber();
     const LOOKBACK = 36_000n;
     const oldest   = latest > LOOKBACK ? latest - LOOKBACK : 0n;
-    const BATCH    = 10;  // reduced from 50 — cuts concurrent RPC calls 5× to prevent timeouts
+    const BATCH    = 10;
     const DELAY    = 200;
 
     const cachedHashes = new Set(
@@ -496,8 +513,6 @@ async function loadRecentBlockTxs() {
 
           cachedHashes.add(tx.hash);
 
-          // Use Date.now() as receivedAt — client filters (30m/1h/24h) work on receivedAt.
-          // blockTs is preserved in raw.timestamp for display only.
           push({
             type: "block_tx", receivedAt: Date.now(),
             raw: {
@@ -512,9 +527,6 @@ async function loadRecentBlockTxs() {
             },
           });
           loaded++;
-
-          // Whale history is owned by seedWhaleEventsFromDb() (SQLite read).
-          // Generating whale entries here created duplicates — removed.
         }
       }
 
@@ -567,7 +579,7 @@ async function startBlockWatcher(
         const txHash = tx.hash ?? "";
         const blockNum = block.number?.toString() ?? "";
         const blockTs = block.timestamp ? Number(block.timestamp) * 1000 : Date.now();
-        const ts = `0x${Math.floor(blockTs / 1000).toString(16)}`; // on-chain block time
+        const ts = `0x${Math.floor(blockTs / 1000).toString(16)}`;
         const gasP = (tx as any).gasPrice ?? (tx as any).maxFeePerGas ?? 0n;
         const gasL = (tx as any).gas ?? 21000n;
         const estFeeSTT = (typeof gasP === "bigint" ? Number(gasP * gasL) : 0) / 1e18;
@@ -585,14 +597,14 @@ async function startBlockWatcher(
           });
         }
 
-        // Skip whale entries with no tx_hash — they have no identity and can't be deduped
-        if (val > WHALE_DISPLAY_THRESHOLD && txHash && markSeen(txHash)) {
+        // ============= FIX: Only process whales with txHash and above threshold =============
+        if (val >= WHALE_DISPLAY_THRESHOLD && txHash && markBlockSeen(txHash)) {
           const entry: CacheEntry = {
             type: "whale", receivedAt: Date.now(),
             raw: {
               from, to,
               amount: `0x${val.toString(16)}`,
-              timestamp: ts, // on-chain block time — whale alerts table sorts by actual tx time
+              timestamp: ts,
               token: "STT", txHash, blockNumber: blockNum, blockHash: block.hash ?? "",
               txFee: estFeeSTT > 0 ? `~${estFeeSTT.toFixed(8)}` : "0",
             },
@@ -620,21 +632,23 @@ async function startBlockWatcher(
   });
 
   blockWatcher = unwatch;
-  console.log(`✅ Real-chain block watcher started (whale threshold: any STT value > 0 | ETH/USD: $${ethUsd.toFixed(2)})`);
+  console.log(`✅ Real-chain block watcher started (whale threshold: 1 STT | ETH/USD: $${ethUsd.toFixed(2)})`);
 }
 
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempts = 0;
-function scheduleReconnect() {
+
+// ============= FIX 3: Add 'async' keyword here =============
+async function scheduleReconnect() {
   if (reconnectTimer) return;
-  const delay = Math.min(3000 * Math.pow(2, reconnectAttempts), 30_000); // 3s→6s→12s→30s cap
+  const delay = Math.min(3000 * Math.pow(2, reconnectAttempts), 30_000);
   reconnectAttempts++;
   console.warn(`⚠ WebSocket closed — reconnecting in ${Math.round(delay/1000)}s (attempt ${reconnectAttempts})...`);
   reconnectTimer = setTimeout(async () => {
     reconnectTimer = null;
     try {
       await ensureSubscriptions();
-      reconnectAttempts = 0; // reset on success
+      reconnectAttempts = 0;
       console.log("✅ Reconnected.");
     } catch(e: any) {
       console.error("Reconnect failed:", e.message);
@@ -645,13 +659,13 @@ function scheduleReconnect() {
 
 async function ensureSubscriptions() {
   if (trackerSub && handlerSub && momentumSub && blockWatcher) return;
-  loadBlockTxFromDb();              // sync — reads all 24h of block_tx from SQLite
-  evictExpiredEntries();            // sync — purge anything older than 24h from cache
-  seedWhaleEventsFromDb();          // sync — seed whale history from SQLite on startup
-  nonBlockTxCount = alertCache.filter(e => e.type !== "block_tx").length; // init O(1) counter
-  cacheReadyResolve?.();            // unblock GET handlers — cache is seeded, init can fire
-  setTimeout(() => loadRecentBlockTxs().catch(() => {}), 10_000); // 10s stagger // async — backfills any block_tx not yet in SQLite
-  fetchExplorerStats().catch(() => {}); // async — pull 24h aggregate stats from explorer
+  loadBlockTxFromDb();
+  evictExpiredEntries();
+  seedWhaleEventsFromDb();
+  nonBlockTxCount = alertCache.filter(e => e.type !== "block_tx").length;
+  cacheReadyResolve?.();
+  setTimeout(() => loadRecentBlockTxs().catch(() => {}), 10_000);
+  fetchExplorerStats().catch(() => {});
 
   const CONTRACT = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS  as `0x${string}`;
   const HANDLER  = process.env.HANDLER_CONTRACT_ADDRESS      as `0x${string}`;
@@ -666,6 +680,7 @@ async function ensureSubscriptions() {
   const MOMENTUM_TOPIC  = keccak256(toBytes("WhaleMomentumDetected(uint256,uint256)"));
   const THRESHOLD_TOPIC = keccak256(toBytes("ThresholdUpdated(uint256,uint256)"));
 
+  // SDK but only for UI signals (no DB persistence) 
   if (!trackerSub) {
     const r1 = await sdk.subscribe({
       ethCalls: [],
@@ -679,37 +694,68 @@ async function ensureSubscriptions() {
             data: r?.data as `0x${string}`,
             topics: r?.topics as [`0x${string}`, ...`0x${string}`[]],
           });
-          const a      = decoded.args as any;
+          const a = decoded.args as any;
           const amount = BigInt(a.amount);
-          const ts     = Number(BigInt(a.timestamp)) * 1000;
+          const ts = Number(BigInt(a.timestamp)) * 1000;
 
           const txHash = r?.transactionHash ?? "";
-          const entry: CacheEntry = {
-            type: "whale",
+          
+          // Create content key for deduplication
+          const contentKey = `sdk:${a.from}:${a.to}:${amount.toString()}:${a.timestamp}`;
+          
+          // Skip if we've already seen this SDK event
+          if (!markSDKSeen(contentKey)) return;
+
+          // ============= TEMPORARY: Save whales to database for testing =============
+          if (txHash) {
+            const testEntry: CacheEntry = {
+              type: "whale",
+              receivedAt: Date.now(),
+              raw: {
+                from: a.from,
+                to: a.to,
+                amount: `0x${amount.toString(16)}`,
+                timestamp: `0x${BigInt(a.timestamp).toString(16)}`,
+                token: a.token ?? "STT",
+                txHash,
+                blockNumber: r?.blockNumber ? BigInt(r.blockNumber).toString() : "",
+                blockHash: r?.blockHash ?? "",
+              },
+            };
+            push(testEntry); // This will save to DB
+            console.log(`📝 SAVED WHALE TO DB: ${txHash.slice(0,10)}`);
+          }
+
+          // Send pending alert for UI
+          const pendingAlert: CacheEntry = {
+            type: "whale_pending",
             receivedAt: Date.now(),
             raw: {
-              from:        a.from,
-              to:          a.to,
-              amount:      `0x${amount.toString(16)}`,
-              timestamp:   `0x${BigInt(a.timestamp).toString(16)}`,
-              token:       a.token ?? "STT",
-              txHash,
-              blockNumber: r?.blockNumber ? BigInt(r.blockNumber).toString() : "",
-              blockHash:   r?.blockHash ?? "",
+              from: a.from,
+              to: a.to,
+              amount: `0x${amount.toString(16)}`,
+              timestamp: `0x${BigInt(a.timestamp).toString(16)}`,
+              token: a.token ?? "STT",
+              txHash: txHash || "pending",
+              blockNumber: "",
+              blockHash: "",
             },
           };
+          
+          // Broadcast pending alert immediately
+          const msg = encoder.encode(`data: ${JSON.stringify(pendingAlert)}\n\n`);
+          controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
+          
+          console.log(`⚡ Pending whale detected via SDK: ${a.from.slice(0,8)}→${a.to.slice(0,8)} ${txHash ? `tx:${txHash.slice(0,10)}` : '(pending)'}`);
 
-          // markSeen: true = first time seen → push. false = dupe (blockWatcher saw it first) → skip push.
+          // Update leaderboard (volume tracking)
           updateLeaderMap(a.from, a.to, amount, ts);
-          if (!txHash || markSeen(txHash)) {
-            push(entry);
-          }
 
           for (const wallet of [a.from as string, a.to as string]) {
             const le = leaderMap.get(wallet);
             if (le) persistLeaderEntry(wallet, le);
           }
-        } catch (e) { console.error("WhaleTransfer parse error:", e); }
+        } catch (e) { console.error("SDK parse error:", e); }
       },
       onError: (e: Error) => {
         console.error("Tracker SDK error:", (e as any).shortMessage ?? e.message);
@@ -718,9 +764,10 @@ async function ensureSubscriptions() {
     });
     if (r1 instanceof Error) throw r1;
     trackerSub = r1;
-    console.log("✅ WhaleTracker subscription:", r1.subscriptionId);
+    console.log("✅ WhaleTracker SDK subscription (UI signals only):", r1.subscriptionId);
   }
 
+  // Keep handler subscriptions (these are for reaction/alert/momentum events)
   if (!handlerSub && HANDLER) {
     const r2 = await sdk.subscribe({
       ethCalls: [], eventContractSources: [HANDLER], topicOverrides: [REACTED_TOPIC],
@@ -860,11 +907,10 @@ let cacheReadyResolve: (() => void) | null = null;
   cacheReady = new Promise<void>(resolve => { cacheReadyResolve = resolve; });
   ensureSubscriptions().catch(e => {
     initStarted = false;
-    cacheReadyResolve?.(); // resolve on error so GET doesn't hang
+    cacheReadyResolve?.();
     console.error("Subscription init error:", e.message);
   });
 })();
-
 
 export async function GET(req: NextRequest) {
   if (!initStarted) {
@@ -873,20 +919,19 @@ export async function GET(req: NextRequest) {
     ensureSubscriptions().catch(e => { initStarted = false; cacheReadyResolve?.(); });
   }
 
-  // Wait until cache is seeded before sending init — ensures 499 whale history events are included
   if (cacheReady) await cacheReady;
 
   const stream = new ReadableStream({
     start(controller) {
       controllers.add(controller);
 
-      // Send all whale events (newest first, max 500) — client filters by its selected window
+      // Send all whale events (newest first, max 500)
       const whaleAlerts = alertCache
-        .filter(e => e.type !== "block_tx")
+        .filter(e => e.type !== "block_tx" && e.type !== "whale_pending")
         .sort((a, b) => b.receivedAt - a.receivedAt)
         .slice(0, 500);
 
-      // Send full 3-day block_tx window so 30m/1h/24h client filters all work accurately
+      // Send block_tx events
       const blockTxAlerts = alertCache
         .filter(e => e.type === "block_tx")
         .sort((a, b) => b.receivedAt - a.receivedAt);
@@ -894,7 +939,7 @@ export async function GET(req: NextRequest) {
       controller.enqueue(encoder.encode(`data: ${JSON.stringify({
         type: "init",
         alerts: [...whaleAlerts, ...blockTxAlerts],
-        totalBlockTxsSeen, // server's running 3-day counter
+        totalBlockTxsSeen,
         networkLargestSTT,
         explorerStats,
       })}\n\n`));

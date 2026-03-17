@@ -8,7 +8,6 @@ import { privateKeyToAccount } from "viem/accounts";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 
-// ── Chain ─────────────────────────────────────────────────────────────────────
 const somniaTestnet = defineChain({
   id: 50312,
   name: "Somnia Testnet",
@@ -16,7 +15,6 @@ const somniaTestnet = defineChain({
   rpcUrls: { default: { http: ["https://dream-rpc.somnia.network"] } },
 });
 
-// ── Contract ABI ──────────────────────────────────────────────────────────────
 const TRACKER_ABI = [
   {
     name: "reportTransfer", type: "function", stateMutability: "nonpayable",
@@ -34,16 +32,14 @@ const TRACKER_ABI = [
   },
 ] as const;
 
-// ── Config ────────────────────────────────────────────────────────────────────
-const POLLING_MS    = 500;      // poll every 500ms
-const REPORT_DELAY  = 300;      // ms between reportTransfer calls
-const MAX_QUEUE     = 50;       // max pending transfers to report at once
-const LOG_INTERVAL  = 60_000;   // print stats every 60s
-// FIX 3 — gap backfill: max blocks to scan on restart (3h at 10 blocks/s)
-// Covers typical overnight RPC outages without taking too long to catch up.
+const POLLING_MS    = 500;
+const REPORT_DELAY  = 300;
+const MAX_QUEUE     = 50;
+const LOG_INTERVAL  = 60_000;
 const MAX_BACKFILL = 36_000n;
+// ============= FIX: Match threshold with route.ts =============
+const WHALE_THRESHOLD_STT = parseEther("1"); // 1 STT threshold
 
-// ── State ─────────────────────────────────────────────────────────────────────
 let lastBlock      = 0n;
 let totalSeen      = 0;
 let totalReported  = 0;
@@ -52,12 +48,8 @@ let totalErrors    = 0;
 let nonce          = -1;
 let reporting      = false;
 const reportQueue: { from: `0x${string}`; to: `0x${string}`; val: bigint; stt: number; key: string }[] = [];
-const queuedKeys = new Set<string>(); // dedup: prevents same transfer being queued twice on nonce retry
+const queuedKeys = new Set<string>();
 
-// ── FIX 1 — lastBlock persistence ────────────────────────────────────────────
-// Saves lastBlock to disk every 30s and on SIGINT/SIGTERM.
-// On startup, resumes from the saved block instead of always starting from head,
-// so any gap caused by crashes or restarts gets backfilled automatically.
 const LAST_BLOCK_FILE = join(process.cwd(), ".watchnetwork-lastblock.json");
 
 function loadLastBlock(): bigint {
@@ -75,7 +67,6 @@ function saveLastBlock() {
   catch {}
 }
 
-// ── Clients ───────────────────────────────────────────────────────────────────
 function makeClients() {
   const CONTRACT    = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS as `0x${string}`;
   const PRIVATE_KEY = process.env.PRIVATE_KEY as `0x${string}`;
@@ -92,7 +83,6 @@ function makeClients() {
   return { CONTRACT, account, pub, wal };
 }
 
-// ── Nonce management ──────────────────────────────────────────────────────────
 async function getNextNonce(pub: ReturnType<typeof createPublicClient>, address: `0x${string}`): Promise<number> {
   if (nonce === -1) {
     nonce = await pub.getTransactionCount({ address, blockTag: "pending" });
@@ -106,7 +96,6 @@ async function resetNonce(pub: ReturnType<typeof createPublicClient>, address: `
   console.log(`🔄 Nonce reset to: ${nonce}`);
 }
 
-// ── Report queue processor ────────────────────────────────────────────────────
 async function processQueue(
   CONTRACT: `0x${string}`,
   pub: ReturnType<typeof createPublicClient>,
@@ -118,7 +107,7 @@ async function processQueue(
 
   while (reportQueue.length > 0) {
     const item = reportQueue.shift()!;
-    queuedKeys.delete(item.key); // release dedup slot — processing begins
+    queuedKeys.delete(item.key);
     try {
       const txNonce = await getNextNonce(pub, address);
       const hash = await wal.writeContract({
@@ -142,7 +131,7 @@ async function processQueue(
 
       if (msg.includes("nonce") || msg.includes("replacement")) {
         console.warn(`⚠ Nonce error — resetting and requeueing`);
-        queuedKeys.add(item.key); // re-register: retry is not a new transfer
+        queuedKeys.add(item.key);
         reportQueue.unshift(item);
         await resetNonce(pub, address);
         await new Promise(r => setTimeout(r, 500));
@@ -164,7 +153,6 @@ async function processQueue(
   reporting = false;
 }
 
-// ── Block processor ───────────────────────────────────────────────────────────
 async function processBlock(
   block: any,
   threshold: bigint,
@@ -182,7 +170,6 @@ async function processBlock(
     if (val < threshold) continue;
     if (tx.from?.toLowerCase() === address.toLowerCase()) continue;
 
-    // Dedup: same from:to:val can only exist once in the queue at a time
     const key = `${tx.from?.toLowerCase()}:${(tx.to ?? "0x0")?.toLowerCase()}:${val.toString()}`;
     if (queuedKeys.has(key)) continue;
 
@@ -208,7 +195,6 @@ async function processBlock(
   );
 }
 
-// ── Threshold fetcher ─────────────────────────────────────────────────────────
 async function fetchThreshold(pub: ReturnType<typeof createPublicClient>, CONTRACT: `0x${string}`): Promise<bigint> {
   try {
     return await pub.readContract({ address: CONTRACT, abi: TRACKER_ABI, functionName: "threshold" }) as bigint;
@@ -218,7 +204,6 @@ async function fetchThreshold(pub: ReturnType<typeof createPublicClient>, CONTRA
   }
 }
 
-// ── Stats logger ──────────────────────────────────────────────────────────────
 function startStatsLogger() {
   setInterval(() => {
     console.log(
@@ -232,10 +217,6 @@ function startStatsLogger() {
   }, LOG_INTERVAL);
 }
 
-// ── FIX 2 — Gap backfill ──────────────────────────────────────────────────────
-// When we resume from a saved lastBlock, scan the gap and report any missed
-// whale transfers. Capped at MAX_BACKFILL blocks to bound startup time.
-// At BATCH=50 blocks and 200ms delay: 108k blocks ≈ ~7 minutes to scan.
 async function backfillGap(
   fromBlock: bigint,
   toBlock: bigint,
@@ -279,7 +260,6 @@ async function backfillGap(
   console.log(`✅ Gap backfill complete — ${found} whale transfers queued from missed blocks`);
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
   console.log("🐋 Somnia watchNetwork.ts starting...");
   console.log("   Chain:   Somnia Testnet (50312)");
@@ -300,13 +280,11 @@ async function main() {
     }
   }, 5 * 60_000);
 
-  // FIX 1: load saved lastBlock; if none, start from chain head
   const savedBlock = loadLastBlock();
   const chainHead  = await pub.getBlockNumber();
 
   if (savedBlock > 0n && savedBlock < chainHead) {
     lastBlock = savedBlock;
-    // FIX 2: backfill gap between saved block and current head
     await backfillGap(savedBlock, chainHead, threshold, CONTRACT, pub, wal, account.address);
     lastBlock = chainHead;
   } else {
@@ -315,29 +293,22 @@ async function main() {
 
   console.log(`✅ Ready — watching from block #${lastBlock}\n`);
 
-  // Save lastBlock to disk every 30s
   setInterval(saveLastBlock, 30_000);
-
   startStatsLogger();
 
-  // ── FIX 3 — RPC retry with exponential backoff ────────────────────────────
-  // viem's onError fires on every failed poll but auto-retries immediately.
-  // We track consecutive errors and add a delay so a flaky RPC doesn't spam
-  // the logs and allows the network time to recover before hammering it again.
   let rpcErrorCount = 0;
 
   pub.watchBlocks({
     includeTransactions: true,
     pollingInterval: POLLING_MS,
     onBlock: async (block) => {
-      rpcErrorCount = 0; // reset on successful delivery
+      rpcErrorCount = 0;
       if (!block.number || block.number <= lastBlock) return;
       lastBlock = block.number;
       await processBlock(block, threshold, CONTRACT, pub, wal, account.address);
     },
     onError: async (e) => {
       rpcErrorCount++;
-      // Backoff: 2s → 4s → 8s → 16s → cap at 30s
       const delay = Math.min(2000 * Math.pow(2, rpcErrorCount - 1), 30_000);
       console.error(`⚠ Block watcher error (attempt ${rpcErrorCount}): ${e.message?.split("\n")[0]}`);
       if (rpcErrorCount > 1) {
@@ -347,7 +318,6 @@ async function main() {
     },
   });
 
-  // Save on clean exit so next start resumes exactly where we left off
   const shutdown = () => {
     saveLastBlock();
     console.log(`\n👋 watchNetwork stopped at block #${lastBlock}.`);
@@ -359,5 +329,5 @@ async function main() {
 
 main().catch(e => {
   console.error("Fatal:", e?.message ?? e);
-  process.exit(1)
+  process.exit(1);
 });

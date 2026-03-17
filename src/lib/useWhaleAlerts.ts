@@ -4,10 +4,11 @@ import { useEffect, useRef, useState, useMemo } from "react";
 declare global {
   interface Window {
     _processedTxHashes?: Set<string>;
+    _processedPendingKeys?: Set<string>;
   }
 }
 
-export type AlertType = "whale" | "reaction" | "alert" | "momentum";
+export type AlertType = "whale" | "reaction" | "alert" | "momentum" | "whale_pending" | "whale_confirmed";
 
 export type WhaleAlert = {
   id:             string;
@@ -23,7 +24,8 @@ export type WhaleAlert = {
   blockHash:      string;
   reactionCount?: string;
   handlerEmitter?: string;
-  txFee?:         string; // estimated fee in STT
+  txFee?:         string;
+  isPending?:     boolean;
 };
 
 export type BlockTx = {
@@ -32,11 +34,11 @@ export type BlockTx = {
   to:          string;
   amount:      string;
   amountRaw:   number;
-  isTransfer:  boolean; // true = STT value > 0, false = contract call
+  isTransfer:  boolean;
   txHash:      string;
   blockNumber: string;
   timestamp:   number;
-  txFee:       string; // estimated fee in STT (gasPrice * gasLimit / 1e18)
+  txFee:       string;
 };
 
 function parseEntry(raw: any): WhaleAlert | null {
@@ -44,22 +46,29 @@ function parseEntry(raw: any): WhaleAlert | null {
     const r    = raw?.raw ?? raw;
     const type = (raw?.type ?? "whale") as AlertType;
 
-    if (type === "alert" || type === "momentum") {
+    if (type === "alert" || type === "momentum" || type === "whale_pending") {
       return {
         id:            `${Date.now()}-${Math.random()}`,
         type,
-        from: "", to: "", amount: "0", amountRaw: 0n,
+        from:          r.from ?? "",
+        to:            r.to ?? "",
+        amount:        r.amount ? (Number(BigInt(r.amount)) / 1e18).toFixed(8) : "0",
+        amountRaw:     BigInt(r.amount ?? "0x0"),
         timestamp:     Number(BigInt(r.timestamp ?? "0x0")) * 1000 || Date.now(),
-        token:         "",
-        txHash:        r.txHash      ?? "",
+        token:         r.token ?? "",
+        txHash:        r.txHash ?? "",
         blockNumber:   r.blockNumber ?? "",
-        blockHash:     r.blockHash   ?? "",
+        blockHash:     r.blockHash ?? "",
         reactionCount: r.reactionCount,
+        isPending:     type === "whale_pending",
       };
     }
 
     const amount    = BigInt(r?.amount    ?? "0x0");
-    const timestamp = BigInt(r?.timestamp ?? "0x0");
+    // Use block timestamp if available
+    const timestamp = r.blockTimestamp 
+      ? Number(r.blockTimestamp)
+      : Number(BigInt(r.timestamp ?? "0x0")) * 1000 || Date.now();
 
     return {
       id:             `${Date.now()}-${Math.random()}`,
@@ -68,7 +77,7 @@ function parseEntry(raw: any): WhaleAlert | null {
       to:             r.to    ?? "",
       amountRaw:      amount,
       amount:         (Number(amount) / 1e18).toFixed(8),
-      timestamp:      Number(timestamp) * 1000 || Date.now(),
+      timestamp,
       token:          r.token ?? "",
       txHash:         r.txHash      ?? "",
       blockNumber:    r.blockNumber ?? "",
@@ -76,6 +85,7 @@ function parseEntry(raw: any): WhaleAlert | null {
       reactionCount:  r.reactionCount,
       handlerEmitter: r.handlerEmitter,
       txFee:          r.txFee ?? "0",
+      isPending:      false,
     };
   } catch (e) {
     console.error("parseEntry error:", e, raw);
@@ -117,88 +127,133 @@ export type ExplorerStats = {
 };
 
 export function useWhaleAlerts(maxAlerts = 200) {
-  const [alerts,            setAlerts]           = useState<WhaleAlert[]>([]);
-  const [blockTxs,          setBlockTxs]         = useState<BlockTx[]>([]);
+  const [alerts, setAlerts] = useState<WhaleAlert[]>([]);
+  const [blockTxs, setBlockTxs] = useState<BlockTx[]>([]);
   const [totalBlockTxsSeen, setTotalBlockTxsSeen] = useState(0);
   const [networkLargestSTT, setNetworkLargestSTT] = useState(0);
-  const [currentThreshold,  setCurrentThreshold]  = useState<number|null>(null);
-  const [explorerStats,     setExplorerStats]     = useState<ExplorerStats|null>(null);
-  const [connected,         setConnected]         = useState(false);
-  const [error,             setError]             = useState<string | null>(null);
-  const esRef      = useRef<EventSource | null>(null);
+  const [currentThreshold, setCurrentThreshold] = useState<number | null>(null);
+  const [explorerStats, setExplorerStats] = useState<ExplorerStats | null>(null);
+  const [connected, setConnected] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const esRef = useRef<EventSource | null>(null);
   const retryCount = useRef(0);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     function connect() {
-      if (esRef.current) { esRef.current.close(); esRef.current = null; }
+      if (esRef.current) {
+        esRef.current.close();
+        esRef.current = null;
+      }
       const es = new EventSource("/api/whale-events");
       esRef.current = es;
 
-      es.onopen = () => { setConnected(true); setError(null); retryCount.current = 0; };
+      es.onopen = () => {
+        setConnected(true);
+        setError(null);
+        retryCount.current = 0;
+      };
 
       es.onmessage = (e) => {
         if (e.data === ": ping") return;
         try {
           const msg = JSON.parse(e.data);
+          
           if (msg.type === "init") {
             const all = msg.alerts as any[];
             setAlerts(
               all.filter(a => a.type !== "block_tx")
-                .map(parseEntry).filter(Boolean).reverse() as WhaleAlert[]
+                .map(parseEntry)
+                .filter(Boolean)
+                .reverse() as WhaleAlert[]
             );
             setBlockTxs(
               all.filter(a => a.type === "block_tx")
-                .map(parseBlockTx).filter(Boolean).reverse() as BlockTx[]
+                .map(parseBlockTx)
+                .filter(Boolean)
+                .reverse() as BlockTx[]
             );
             if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
             if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
-            if (msg.explorerStats)     setExplorerStats(msg.explorerStats);
+            if (msg.explorerStats) setExplorerStats(msg.explorerStats);
           }
-          if (msg.type === "connected") { setConnected(true); setError(null); }
+          
+          if (msg.type === "connected") {
+            setConnected(true);
+            setError(null);
+          }
+          
           if (msg.type === "error") setError(msg.message);
-          if (["whale","reaction","alert","momentum"].includes(msg.type)) {
+          
+          // Handle pending whales from SDK
+          if (msg.type === "whale_pending") {
+            const a = parseEntry(msg);
+            if (a) {
+              // Mark as pending with special styling
+              a.isPending = true;
+              setAlerts(prev => [a, ...prev]);
+              console.log(`⚡ Pending whale: ${a.from.slice(0,8)}→${a.to.slice(0,8)}`);
+            }
+          }
+          
+          // Handle confirmed whales (from block watcher)
+          if (msg.type === "whale") {
+            const a = parseEntry(msg);
+            if (a) {
+              setAlerts(prev => {
+                // Remove any pending version of this transaction
+                const filtered = prev.filter(p => 
+                  !(p.isPending && p.from === a.from && p.to === a.to && p.amount === a.amount)
+                );
+                return [a, ...filtered];
+              });
+              console.log(`✅ Confirmed whale: ${a.from.slice(0,8)}→${a.to.slice(0,8)} tx:${a.txHash.slice(0,10)}`);
+            }
+          }
+          
+          if (["reaction","alert","momentum"].includes(msg.type)) {
             const a = parseEntry(msg);
             if (a) setAlerts(prev => [a, ...prev]);
           }
+          
+          // ============= FIX: Block tx deduplication =============
           if (msg.type === "block_tx") {
-          // Add deduplication
-          const txHash = msg.raw?.txHash;
-          
-          // Check for duplicates using a Set
-          if (!window._processedTxHashes) {
-            window._processedTxHashes = new Set();
+            const txHash = msg.raw?.txHash;
+            
+            if (!window._processedTxHashes) {
+              window._processedTxHashes = new Set();
+            }
+            
+            if (txHash && window._processedTxHashes.has(txHash)) {
+              return;
+            }
+            
+            if (txHash) {
+              window._processedTxHashes.add(txHash);
+            }
+            
+            const tx = parseBlockTx(msg);
+            if (tx) {
+              setBlockTxs(prev => {
+                if (prev.some(t => t.txHash === tx.txHash)) return prev;
+                return [tx, ...prev];
+              });
+            }
+            if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
+            if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
           }
           
-          if (txHash && window._processedTxHashes.has(txHash)) {
-            console.log(`⏭️ Skipping duplicate tx: ${txHash.slice(0,10)}`);
-            return; // Skip duplicate
-          }
-          
-          if (txHash) {
-            window._processedTxHashes.add(txHash);
-          }
-          
-          const tx = parseBlockTx(msg);
-          if (tx) {
-            setBlockTxs(prev => {
-              // Also check array to be safe
-              if (prev.some(t => t.txHash === tx.txHash)) return prev;
-              return [tx, ...prev];
-            });
-          }
-          if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
-          if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
-        }
-          // Receipt fee resolved — patch the txFee on the matching whale alert
           if (msg.type === "whale_fee_update" && msg.txHash && msg.txFee) {
             setAlerts(prev => prev.map(a =>
               a.txHash === msg.txHash ? { ...a, txFee: msg.txFee } : a
             ));
           }
+          
           if (msg.type === "explorer_stats" && msg.stats) setExplorerStats(msg.stats);
           if (msg.type === "threshold_update") setCurrentThreshold(parseFloat(msg.raw?.newValue ?? "0"));
-        } catch {}
+        } catch (err) {
+          console.error("Error parsing SSE message:", err);
+        }
       };
 
       es.onerror = () => {
@@ -213,6 +268,7 @@ export function useWhaleAlerts(maxAlerts = 200) {
     }
 
     connect();
+
     return () => {
       if (retryTimer.current) clearTimeout(retryTimer.current);
       esRef.current?.close();
@@ -220,13 +276,21 @@ export function useWhaleAlerts(maxAlerts = 200) {
     };
   }, [maxAlerts]);
 
-  // Memoised — avoids filtering 50k entries on every render
-  const sttTransfers  = useMemo(() => blockTxs.filter(tx =>  tx.isTransfer), [blockTxs]);
+  const sttTransfers = useMemo(() => blockTxs.filter(tx => tx.isTransfer), [blockTxs]);
   const contractCalls = useMemo(() => blockTxs.filter(tx => !tx.isTransfer), [blockTxs]);
+  const pendingWhales = useMemo(() => alerts.filter(a => a.isPending), [alerts]);
 
   return {
-    alerts, blockTxs, sttTransfers, contractCalls,
-    totalBlockTxsSeen, networkLargestSTT, currentThreshold,
-    explorerStats, connected, error,
+    alerts,
+    blockTxs,
+    sttTransfers,
+    contractCalls,
+    pendingWhales,
+    totalBlockTxsSeen,
+    networkLargestSTT,
+    currentThreshold,
+    explorerStats,
+    connected,
+    error,
   };
 }
