@@ -8,7 +8,7 @@ declare global {
   }
 }
 
-export type AlertType = "whale" | "reaction" | "alert" | "momentum" | "whale_pending" | "whale_confirmed";
+export type AlertType = "whale" | "reaction" | "alert" | "momentum";
 
 export type WhaleAlert = {
   id:             string;
@@ -25,7 +25,8 @@ export type WhaleAlert = {
   reactionCount?: string;
   handlerEmitter?: string;
   txFee?:         string;
-  isPending?:     boolean;
+  linkedTxHash?:  string;  // confirmed whale tx that triggered this signal
+  signalReason?:  string;  // human-readable explanation: "5 txns ≥1 STT in 30s"
 };
 
 export type BlockTx = {
@@ -46,46 +47,29 @@ function parseEntry(raw: any): WhaleAlert | null {
     const r    = raw?.raw ?? raw;
     const type = (raw?.type ?? "whale") as AlertType;
 
-    if (type === "alert" || type === "momentum" || type === "whale_pending") {
-      return {
-        id:            `${Date.now()}-${Math.random()}`,
-        type,
-        from:          r.from ?? "",
-        to:            r.to ?? "",
-        amount:        r.amount ? (Number(BigInt(r.amount)) / 1e18).toFixed(8) : "0",
-        amountRaw:     BigInt(r.amount ?? "0x0"),
-        timestamp:     Number(BigInt(r.timestamp ?? "0x0")) * 1000 || Date.now(),
-        token:         r.token ?? "",
-        txHash:        r.txHash ?? "",
-        blockNumber:   r.blockNumber ?? "",
-        blockHash:     r.blockHash ?? "",
-        reactionCount: r.reactionCount,
-        isPending:     type === "whale_pending",
-      };
-    }
+    // Integrity gate: whale entries must have txHash + blockNumber
+    if (type === "whale" && (!r.txHash || !r.blockNumber)) return null;
 
-    const amount    = BigInt(r?.amount    ?? "0x0");
-    // Use block timestamp if available
-    const timestamp = r.blockTimestamp 
-      ? Number(r.blockTimestamp)
-      : Number(BigInt(r.timestamp ?? "0x0")) * 1000 || Date.now();
+    const amount    = BigInt(r?.amount ?? "0x0");
+    const timestamp = Number(BigInt(r?.timestamp ?? "0x0")) * 1000 || Date.now();
 
     return {
       id:             `${Date.now()}-${Math.random()}`,
       type,
-      from:           r.from  ?? "",
-      to:             r.to    ?? "",
+      from:           r.from         ?? "",
+      to:             r.to           ?? "",
       amountRaw:      amount,
       amount:         (Number(amount) / 1e18).toFixed(8),
       timestamp,
-      token:          r.token ?? "",
-      txHash:         r.txHash      ?? "",
-      blockNumber:    r.blockNumber ?? "",
-      blockHash:      r.blockHash   ?? "",
+      token:          r.token        ?? "",
+      txHash:         r.txHash       ?? "",
+      blockNumber:    r.blockNumber  ?? "",
+      blockHash:      r.blockHash    ?? "",
       reactionCount:  r.reactionCount,
       handlerEmitter: r.handlerEmitter,
-      txFee:          r.txFee ?? "0",
-      isPending:      false,
+      txFee:          r.txFee        ?? "0",
+      linkedTxHash:   r.linkedTxHash ?? "",
+      signalReason:   r.signalReason ?? "",
     };
   } catch (e) {
     console.error("parseEntry error:", e, raw);
@@ -178,40 +162,11 @@ export function useWhaleAlerts(maxAlerts = 200) {
             if (msg.explorerStats) setExplorerStats(msg.explorerStats);
           }
           
-          if (msg.type === "connected") {
-            setConnected(true);
-            setError(null);
-          }
-          
+          if (msg.type === "connected") { setConnected(true); setError(null); }
           if (msg.type === "error") setError(msg.message);
-          
-          // Handle pending whales from SDK
-          if (msg.type === "whale_pending") {
-            const a = parseEntry(msg);
-            if (a) {
-              // Mark as pending with special styling
-              a.isPending = true;
-              setAlerts(prev => [a, ...prev]);
-              console.log(`⚡ Pending whale: ${a.from.slice(0,8)}→${a.to.slice(0,8)}`);
-            }
-          }
-          
-          // Handle confirmed whales (from block watcher)
-          if (msg.type === "whale") {
-            const a = parseEntry(msg);
-            if (a) {
-              setAlerts(prev => {
-                // Remove any pending version of this transaction
-                const filtered = prev.filter(p => 
-                  !(p.isPending && p.from === a.from && p.to === a.to && p.amount === a.amount)
-                );
-                return [a, ...filtered];
-              });
-              console.log(`✅ Confirmed whale: ${a.from.slice(0,8)}→${a.to.slice(0,8)} tx:${a.txHash.slice(0,10)}`);
-            }
-          }
-          
-          if (["reaction","alert","momentum"].includes(msg.type)) {
+
+          // All alert types — only confirmed on-chain data passes parseEntry's integrity gate
+          if (["whale","reaction","alert","momentum"].includes(msg.type)) {
             const a = parseEntry(msg);
             if (a) setAlerts(prev => [a, ...prev]);
           }
@@ -278,14 +233,12 @@ export function useWhaleAlerts(maxAlerts = 200) {
 
   const sttTransfers = useMemo(() => blockTxs.filter(tx => tx.isTransfer), [blockTxs]);
   const contractCalls = useMemo(() => blockTxs.filter(tx => !tx.isTransfer), [blockTxs]);
-  const pendingWhales = useMemo(() => alerts.filter(a => a.isPending), [alerts]);
 
   return {
     alerts,
     blockTxs,
     sttTransfers,
     contractCalls,
-    pendingWhales,
     totalBlockTxsSeen,
     networkLargestSTT,
     currentThreshold,
