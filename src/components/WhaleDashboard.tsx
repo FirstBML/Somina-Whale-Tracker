@@ -1227,12 +1227,12 @@ export default function WhaleDashboard(){
 
   // Time-windowed network txns for KPI — available at top level
   const windowedBlockTxs = useMemo(()=>!windowCutoff?blockTxs:blockTxs.filter(tx=>tx.timestamp>=windowCutoff),[blockTxs,windowCutoff]);
-  // Network-wide total STT transferred within window — STT transfers only (exclude zero-value contract calls)
-  // Whale Tx Rate = whale txns / total network txns (count-based, consistent units)
+  // Whale Tx Rate = whale txns / STT transfers (not all txns — contract calls are irrelevant)
+  // Answers: "Of all actual STT value transfers, what % were whale-sized?"
   const whaleTxRate = useMemo(()=>{
-    const total = windowedBlockTxs.length;
-    if(!total) return null;
-    return Math.min(100,(windowedWhales.length/total)*100);
+    const sttXfers = windowedBlockTxs.filter(tx => tx.isTransfer).length;
+    if(!sttXfers) return null;
+    return Math.min(100,(windowedWhales.length/sttXfers)*100);
   },[windowedWhales.length,windowedBlockTxs]);
 
   // Dynamic token list from actual events — always current, no hardcoding
@@ -1473,7 +1473,7 @@ export default function WhaleDashboard(){
         justifyContent: "center",
         gap: 4
       }}>
-        <span>💸</span> STT XFERS
+        <span>💸</span> STT TXN COUNT
       </div>
       <div style={{
         color: t.statVal,
@@ -1585,8 +1585,8 @@ export default function WhaleDashboard(){
             <div style={{fontSize:7,fontFamily:"monospace",color:t.muted,textTransform:"uppercase",letterSpacing:"0.15em",marginBottom:4,paddingLeft:1}}>🐋 Whale Activity</div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(120px, 1fr))",gap:5}}>
               <KpiCard t={t} label="Whale Events"   value={windowedWhales.length}/>
-              <KpiCard t={t} label="Reactions"       value={windowedReactions.length}  sub="Phase 2"/>
-              <KpiCard t={t} label="Alerts"          value={windowedAlertCount}         sub="Phase 2"/>
+              <KpiCard t={t} label="Reactions"       value={windowedReactions.length}  />
+              <KpiCard t={t} label="Alerts"          value={windowedAlertCount}         />
               <KpiCard t={t} label="🔥 Momentum"
                 value={windowedMomentumCount>0 ? windowedMomentumCount : burst?.count ?? 0}
                 color="#ef4444"

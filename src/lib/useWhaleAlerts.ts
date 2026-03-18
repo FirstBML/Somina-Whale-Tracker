@@ -182,10 +182,25 @@ export function useWhaleAlerts(maxAlerts = 200) {
               .map(parseEntry).filter(Boolean).reverse() as WhaleAlert[];
             const parsedBlockTxs = all.filter(a => a.type === "block_tx")
               .map(parseBlockTx).filter(Boolean).reverse() as BlockTx[];
-            setAlerts(parsedAlerts);
-            setBlockTxs(parsedBlockTxs);
-            saveCache(ALERTS_CACHE_KEY,  parsedAlerts);
-            saveCache(BLOCKTX_CACHE_KEY, parsedBlockTxs);
+
+            // Merge with any live events received since the last init
+            // so backfill re-inits don't erase events that arrived in between
+            setAlerts(prev => {
+              const serverIds = new Set(parsedAlerts.map(a => a.txHash).filter(Boolean));
+              const liveOnly  = prev.filter(a => a.txHash && !serverIds.has(a.txHash));
+              const merged    = [...liveOnly, ...parsedAlerts]
+                .sort((a, b) => b.timestamp - a.timestamp);
+              saveCache(ALERTS_CACHE_KEY, merged);
+              return merged;
+            });
+            setBlockTxs(prev => {
+              const serverHashes = new Set(parsedBlockTxs.map(t => t.txHash).filter(Boolean));
+              const liveOnly     = prev.filter(t => t.txHash && !serverHashes.has(t.txHash));
+              const merged       = [...liveOnly, ...parsedBlockTxs]
+                .sort((a, b) => b.timestamp - a.timestamp);
+              saveCache(BLOCKTX_CACHE_KEY, merged);
+              return merged;
+            });
             if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
             if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
             if (msg.explorerStats) setExplorerStats(msg.explorerStats);

@@ -279,6 +279,11 @@ const insertBlockTx = db.prepare(`
 `);
 
 function loadBlockTxFromDb() {
+  // Clear existing block_tx entries from cache before reloading — prevents duplicates on reconnect
+  for (let i = alertCache.length - 1; i >= 0; i--) {
+    if (alertCache[i].type === "block_tx") alertCache.splice(i, 1);
+  }
+
   const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
   const rows = db.prepare(
     `SELECT * FROM block_tx_events WHERE received_at >= ? ORDER BY received_at ASC`
@@ -558,6 +563,29 @@ function broadcastExplorerStats() {
   controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
 }
 
+// Re-broadcast full init payload to all connected clients.
+// Called after backfill completes so clients that connected during startup
+// get the complete dataset without needing to reconnect.
+function broadcastFullInit() {
+  if (!controllers.size) return;
+  const whaleAlerts = alertCache
+    .filter(e => e.type !== "block_tx")
+    .sort((a, b) => b.receivedAt - a.receivedAt)
+    .slice(0, 500);
+  const blockTxAlerts = alertCache
+    .filter(e => e.type === "block_tx")
+    .sort((a, b) => b.receivedAt - a.receivedAt);
+  const msg = encoder.encode(`data: ${JSON.stringify({
+    type: "init",
+    alerts: [...whaleAlerts, ...blockTxAlerts],
+    totalBlockTxsSeen,
+    networkLargestSTT,
+    explorerStats,
+  })}\n\n`);
+  controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
+  console.log(`📡 Re-broadcast init: ${whaleAlerts.length} whale events, ${blockTxAlerts.length} block_txs to ${controllers.size} client(s)`);
+}
+
 async function loadRecentBlockTxs() {
   if (backfillRunning) {
     console.log("⏭ Backfill already running — skipping duplicate start");
@@ -648,10 +676,10 @@ async function loadRecentBlockTxs() {
       await new Promise(r => setTimeout(r, DELAY));
     }
     console.log(`✅ Block_tx backfill: ${loaded} new txns loaded (${scanned} blocks scanned)`);
-    // After backfill, promote any qualifying block_tx that whale detection may have missed
-    // (e.g. rows already in block_tx_events from a previous session before whale detection was added)
     promoteBlockTxToWhaleEvents();
     seedWhaleEventsFromDb();
+    // Broadcast updated init to all connected clients so they get the full backfilled dataset
+    broadcastFullInit();
   } catch (e: any) {
     console.warn("⚠ Block_tx backfill failed (non-critical):", e.message?.split("\n")[0]);
   } finally {
@@ -828,13 +856,22 @@ async function scheduleReconnect() {
 
 async function ensureSubscriptions() {
   if (trackerSub && handlerSub && momentumSub && blockWatcher) return;
+
+  // Clear non-block_tx entries before reseeding — prevents duplicates on WebSocket reconnect
+  for (let i = alertCache.length - 1; i >= 0; i--) {
+    if (alertCache[i].type !== "block_tx") alertCache.splice(i, 1);
+  }
+
   loadBlockTxFromDb();
   evictExpiredEntries();
-  promoteBlockTxToWhaleEvents(); // promote qualifying historical block_tx → whale_events first
-  seedWhaleEventsFromDb();       // then seed whale_events (including newly promoted rows) into cache
+  promoteBlockTxToWhaleEvents();
+  seedWhaleEventsFromDb();
   nonBlockTxCount = alertCache.filter(e => e.type !== "block_tx").length;
   cacheReadyResolve?.();
-  setTimeout(() => loadRecentBlockTxs().catch(() => {}), 10_000);
+  // Only start backfill if not already running
+  if (!backfillRunning) {
+    setTimeout(() => loadRecentBlockTxs().catch(() => {}), 10_000);
+  }
   fetchExplorerStats().catch(() => {});
 
   const CONTRACT = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS  as `0x${string}`;
