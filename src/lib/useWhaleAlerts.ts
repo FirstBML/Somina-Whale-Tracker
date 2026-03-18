@@ -110,9 +110,32 @@ export type ExplorerStats = {
   fetchedAt:    number;
 };
 
+const ALERTS_CACHE_KEY  = "wt_alerts_cache";
+const BLOCKTX_CACHE_KEY = "wt_blocktx_cache";
+const CACHE_TTL_MS      = 24 * 60 * 60_000;
+const isBrowser         = typeof window !== "undefined";
+
+function loadCached<T>(key: string): T[] {
+  if (!isBrowser) return [];
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return [];
+    const { ts, data } = JSON.parse(raw);
+    if (Date.now() - ts > CACHE_TTL_MS) { localStorage.removeItem(key); return []; }
+    return data as T[];
+  } catch { return []; }
+}
+
+function saveCache<T>(key: string, data: T[]) {
+  if (!isBrowser) return;
+  try { localStorage.setItem(key, JSON.stringify({ ts: Date.now(), data: data.slice(0, 500) })); }
+  catch {}
+}
+
 export function useWhaleAlerts(maxAlerts = 200) {
-  const [alerts, setAlerts] = useState<WhaleAlert[]>([]);
-  const [blockTxs, setBlockTxs] = useState<BlockTx[]>([]);
+  const [alerts,            setAlerts]           = useState<WhaleAlert[]>([]);
+  const [blockTxs,          setBlockTxs]         = useState<BlockTx[]>([]);
+  const [hydrated,          setHydrated]         = useState(false);
   const [totalBlockTxsSeen, setTotalBlockTxsSeen] = useState(0);
   const [networkLargestSTT, setNetworkLargestSTT] = useState(0);
   const [currentThreshold, setCurrentThreshold] = useState<number | null>(null);
@@ -123,7 +146,17 @@ export function useWhaleAlerts(maxAlerts = 200) {
   const retryCount = useRef(0);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Hydrate from localStorage after mount (browser only, avoids SSR mismatch)
   useEffect(() => {
+    const cachedAlerts   = loadCached<WhaleAlert>(ALERTS_CACHE_KEY);
+    const cachedBlockTxs = loadCached<BlockTx>(BLOCKTX_CACHE_KEY);
+    if (cachedAlerts.length)   setAlerts(cachedAlerts);
+    if (cachedBlockTxs.length) setBlockTxs(cachedBlockTxs);
+    setHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return; // wait for localStorage hydration before opening SSE
     function connect() {
       if (esRef.current) {
         esRef.current.close();
@@ -145,18 +178,14 @@ export function useWhaleAlerts(maxAlerts = 200) {
           
           if (msg.type === "init") {
             const all = msg.alerts as any[];
-            setAlerts(
-              all.filter(a => a.type !== "block_tx")
-                .map(parseEntry)
-                .filter(Boolean)
-                .reverse() as WhaleAlert[]
-            );
-            setBlockTxs(
-              all.filter(a => a.type === "block_tx")
-                .map(parseBlockTx)
-                .filter(Boolean)
-                .reverse() as BlockTx[]
-            );
+            const parsedAlerts = all.filter(a => a.type !== "block_tx")
+              .map(parseEntry).filter(Boolean).reverse() as WhaleAlert[];
+            const parsedBlockTxs = all.filter(a => a.type === "block_tx")
+              .map(parseBlockTx).filter(Boolean).reverse() as BlockTx[];
+            setAlerts(parsedAlerts);
+            setBlockTxs(parsedBlockTxs);
+            saveCache(ALERTS_CACHE_KEY,  parsedAlerts);
+            saveCache(BLOCKTX_CACHE_KEY, parsedBlockTxs);
             if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
             if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
             if (msg.explorerStats) setExplorerStats(msg.explorerStats);
@@ -168,7 +197,11 @@ export function useWhaleAlerts(maxAlerts = 200) {
           // All alert types — only confirmed on-chain data passes parseEntry's integrity gate
           if (["whale","reaction","alert","momentum"].includes(msg.type)) {
             const a = parseEntry(msg);
-            if (a) setAlerts(prev => [a, ...prev]);
+            if (a) setAlerts(prev => {
+              const next = [a, ...prev];
+              saveCache(ALERTS_CACHE_KEY, next);
+              return next;
+            });
           }
           
           // ============= FIX: Block tx deduplication =============
@@ -229,7 +262,7 @@ export function useWhaleAlerts(maxAlerts = 200) {
       esRef.current?.close();
       esRef.current = null;
     };
-  }, [maxAlerts]);
+  }, [maxAlerts, hydrated]);
 
   const sttTransfers = useMemo(() => blockTxs.filter(tx => tx.isTransfer), [blockTxs]);
   const contractCalls = useMemo(() => blockTxs.filter(tx => !tx.isTransfer), [blockTxs]);

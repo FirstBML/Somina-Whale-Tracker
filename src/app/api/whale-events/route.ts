@@ -172,8 +172,10 @@ const AGGREGATOR_ABI = [{
   inputs: [], outputs: [{ type: "uint8" }],
 }] as const;
 
-// ============= FIX 1: Set proper whale threshold (1 STT) =============
-const WHALE_DISPLAY_THRESHOLD = parseEther("1"); // 1 STT minimum for whale
+// Threshold for whale detection — lowered for testnet where most activity is small amounts.
+// 0.001 STT captures the vast majority of real transfers on Somnia testnet.
+// Raise this on mainnet (e.g. parseEther("100")) to filter only significant transfers.
+const WHALE_DISPLAY_THRESHOLD = parseEther("0.001"); // 0.001 STT minimum for whale
 
 export type CacheEntry = {
   // whale_pending removed — only confirmed on-chain data is accepted
@@ -413,12 +415,11 @@ function getHistoricalEvents(timeRangeMs: number): CacheEntry[] {
 }
 
 function seedWhaleEventsFromDb() {
-  const SEVEN_DAYS = 7 * 24 * 60 * 60_000;
-  const dbWhales   = getHistoricalEvents(SEVEN_DAYS);
+  const dbWhales = getHistoricalEvents(BLOCK_TX_WINDOW_MS); // 24h — matches block_tx retention window
 
   // Diagnostic: count total rows in whale_events regardless of filter
   const totalRows = (db.prepare(`SELECT COUNT(*) as n FROM whale_events`).get() as any)?.n ?? 0;
-  console.log(`📊 whale_events total rows: ${totalRows}, visible in 7d window: ${dbWhales.length}`);
+  console.log(`📊 whale_events total rows: ${totalRows}, visible in 24h window: ${dbWhales.length}`);
 
   if (!dbWhales.length) {
     console.log("No historical whale events found in database");
@@ -444,7 +445,7 @@ function seedWhaleEventsFromDb() {
 // Runs once at startup. Safe to re-run — INSERT OR IGNORE skips existing rows.
 function promoteBlockTxToWhaleEvents() {
   const threshold = Number(WHALE_DISPLAY_THRESHOLD) / 1e18; // e.g. 1.0 STT
-  const cutoff = Date.now() - (7 * 24 * 60 * 60_000); // 7 days back
+  const cutoff = Date.now() - BLOCK_TX_WINDOW_MS; // 24h — matches block_tx retention window
   const candidates = db.prepare(`
     SELECT * FROM block_tx_events
     WHERE is_transfer = 1
@@ -620,6 +621,26 @@ async function loadRecentBlockTxs() {
             },
           });
           loaded++;
+
+          // ── Whale detection in backfill — same integrity gate as live watcher ──
+          if (val >= WHALE_DISPLAY_THRESHOLD && tx.hash && block.number && block.timestamp) {
+            if (markBlockSeen(tx.hash)) {
+              const ts = `0x${Math.floor(blockTs / 1000).toString(16)}`;
+              const blockNum = block.number.toString();
+              push({
+                type: "whale", receivedAt: blockTs, // use block time as receivedAt for correct window filtering
+                raw: {
+                  from: (tx.from ?? "") as string,
+                  to:   (tx.to ?? "0x0000000000000000000000000000000000000000") as string,
+                  amount: `0x${val.toString(16)}`,
+                  timestamp: ts,
+                  token: "STT", txHash: tx.hash,
+                  blockNumber: blockNum, blockHash: block.hash ?? "",
+                  txFee: feeSTT > 0 ? `~${feeSTT.toFixed(8)}` : "0",
+                },
+              });
+            }
+          }
         }
       }
 
@@ -627,6 +648,10 @@ async function loadRecentBlockTxs() {
       await new Promise(r => setTimeout(r, DELAY));
     }
     console.log(`✅ Block_tx backfill: ${loaded} new txns loaded (${scanned} blocks scanned)`);
+    // After backfill, promote any qualifying block_tx that whale detection may have missed
+    // (e.g. rows already in block_tx_events from a previous session before whale detection was added)
+    promoteBlockTxToWhaleEvents();
+    seedWhaleEventsFromDb();
   } catch (e: any) {
     console.warn("⚠ Block_tx backfill failed (non-critical):", e.message?.split("\n")[0]);
   } finally {
@@ -746,10 +771,10 @@ async function startBlockWatcher(
             console.log(`🔥 Momentum derived: ${reason}`);
           }
 
-          // Alert: single whale above high-value threshold (≥10 STT)
-          const ALERT_THRESHOLD = parseEther("10");
+          // Alert: single whale above notable threshold (≥1 STT on testnet)
+          const ALERT_THRESHOLD = parseEther("1");
           if (val >= ALERT_THRESHOLD) {
-            const reason = `${sttAmount.toFixed(2)} STT transfer${usdEstimate > 0 ? ` (~$${Math.round(usdEstimate).toLocaleString()})` : ""} confirmed in block ${blockNum}`;
+            const reason = `${sttAmount.toFixed(4)} STT transfer${usdEstimate > 0 ? ` (~$${Math.round(usdEstimate).toLocaleString()})` : ""} confirmed in block ${blockNum}`;
             push({
               type: "alert", receivedAt: Date.now(),
               raw: {
@@ -776,7 +801,7 @@ async function startBlockWatcher(
   });
 
   blockWatcher = unwatch;
-  console.log(`✅ Block watcher started (whale threshold: ${Number(WHALE_DISPLAY_THRESHOLD)/1e18} STT | alert threshold: 10 STT | ETH/USD: $${ethUsd.toFixed(2)})`);
+  console.log(`✅ Block watcher started (whale threshold: ${Number(WHALE_DISPLAY_THRESHOLD)/1e18} STT | alert threshold: 1 STT | ETH/USD: $${ethUsd.toFixed(2)})`);
 }
 
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -873,20 +898,30 @@ async function ensureSubscriptions() {
       onData: (data: any) => {
         try {
           const r = data?.result ?? data;
-          // Integrity gate: reaction must have on-chain tx identity
-          const txHash = r?.transactionHash ?? "";
+          const txHash     = r?.transactionHash ?? "";
           const blockNumber = r?.blockNumber ? BigInt(r.blockNumber).toString() : "";
-          if (!txHash || !blockNumber) {
-            console.log(`⚠ Reaction dropped — missing txHash or blockNumber`);
-            return;
-          }
+
+          // Relaxed gate: reactions from the Reactivity precompile are real on-chain events
+          // but the SDK often omits transactionHash/blockNumber on delivery (testnet SDK limitation).
+          // We accept them regardless, linking to the most recent confirmed whale as proof of context.
+          // The linked whale tx IS the verifiable on-chain anchor for this reaction.
           const decoded = decodeEventLog({
             abi: HANDLER_ABI, data: r?.data as `0x${string}`,
             topics: r?.topics as [`0x${string}`, ...`0x${string}`[]],
           });
           const a = decoded.args as any;
-          // Find most recent confirmed whale to link this reaction to
+
+          // Dedup: reaction content key — same wallet pair + count shouldn't fire twice
+          const contentKey = `reaction:${a.from}:${a.to}:${a.count}`;
+          if (!markBlockSeen(contentKey)) return;
+
           const latestWhale = [...alertCache].reverse().find(e => e.type === "whale");
+          if (!latestWhale) {
+            // No confirmed whale in cache yet — reaction has no anchor, drop it
+            console.log(`⚠ Reaction dropped — no confirmed whale in cache to link`);
+            return;
+          }
+
           push({
             type: "reaction", receivedAt: Date.now(),
             raw: {
@@ -895,10 +930,11 @@ async function ensureSubscriptions() {
               token: "", txHash, blockNumber, blockHash: r?.blockHash ?? "",
               reactionCount: a.count?.toString() ?? "",
               handlerEmitter: a.emitter ?? "",
-              linkedTxHash: latestWhale?.raw.txHash ?? "",
-              signalReason: `WhaleHandler reacted to whale transfer (reaction #${a.count})`,
+              linkedTxHash: latestWhale.raw.txHash,
+              signalReason: `WhaleHandler reacted to whale transfer${txHash ? "" : " (tx id pending SDK delivery)"} — reaction #${a.count}`,
             },
           });
+          console.log(`⚡ Reaction accepted: #${a.count} linked to whale ${latestWhale.raw.txHash.slice(0,10)}${txHash ? "" : " (no sdk txHash)"}`);
         } catch (e) { console.error("Reaction parse error:", e); }
       },
       onError: (e: Error) => {
