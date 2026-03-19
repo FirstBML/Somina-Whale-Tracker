@@ -434,6 +434,7 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
   // Reset to page 0 when new network txs arrive
   const prevNetCount=useRef(filteredNetTxs.length);
   useEffect(()=>{if(filteredNetTxs.length!==prevNetCount.current){setNetPage(0);prevNetCount.current=filteredNetTxs.length;}},[filteredNetTxs.length]);
+  
   return(<div style={{padding:"14px 14px 0"}}>
     <BurstBanner burst={burst} t={t}/>
     
@@ -471,21 +472,47 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
                     <Td t={t}><div style={{display:"flex",gap:4,alignItems:"center"}}><TypeBadge type={a.type} t={t}/>{isMyTx&&<span style={{fontSize:8,background:"rgba(74,222,128,0.2)",color:"#4ade80",border:"1px solid rgba(74,222,128,0.4)",borderRadius:3,padding:"1px 5px",fontFamily:"monospace"}}>YOU</span>}</div></Td>
                     <Td t={t}>{a.token?<Badge text={a.token} color={TOKEN_COLORS[a.token]} t={t}/>:<span style={{color:t.muted,fontSize:11}}>—</span>}</Td>
                     <Td t={t} accent bold>{a.type==="whale"?parseFloat(a.amount).toFixed(8):<span style={{color:t.muted}}>—</span>}</Td>
-                    {/* USD Value for whales; inline reason preview for signals */}
+                    
+                    {/* ✅ FIX: Show USD for whales, signal reason for signals */}
                     <Td t={t}>{
-                      usd?<span style={{color:"#4ade80",fontFamily:"monospace",fontSize:11,fontWeight:700}}>{usd}</span>
-                      :isSignal&&a.signalReason?<span style={{color:sigColor,fontSize:9,fontFamily:"monospace",maxWidth:180,display:"inline-block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={a.signalReason}>{a.signalReason}</span>
-                      :<span style={{color:t.muted,fontSize:10}}>—</span>
+                      usd ? (
+                        <span style={{color:"#4ade80",fontFamily:"monospace",fontSize:11,fontWeight:700}}>{usd}</span>
+                      ) : isSignal && a.signalReason ? (
+                        <span style={{
+                          color: sigColor,
+                          fontSize: 9,
+                          fontFamily: "monospace",
+                          maxWidth: 180,
+                          display: "inline-block",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap"
+                        }} title={a.signalReason}>
+                          {a.signalReason}
+                        </span>
+                      ) : (
+                        <span style={{color:t.muted,fontSize:10}}>—</span>
+                      )
                     }</Td>
+                    
                     <Td t={t}><span style={{color:a.txFee?.startsWith("~")?t.muted:"#f59e0b",fontSize:10,fontFamily:"monospace"}}>{a.txFee&&parseFloat(a.txFee.replace("~",""))>0?(a.txFee.startsWith("~")?"~":"")+parseFloat(a.txFee.replace("~","")).toFixed(8):"—"}</span></Td>
                     <Td t={t}><ExLink href={a.from?addrUrl(a.from):""} label={a.from?short(a.from):"—"} t={t}/></Td>
                     <Td t={t}><ExLink href={a.to?addrUrl(a.to):""} label={a.to?short(a.to):"—"} t={t}/></Td>
+                    
                     {/* TX Hash for whales; linked whale tx for signals */}
                     <Td t={t}>{
-                      a.txHash?<ExLink href={txUrl(a.txHash)} label={shortHash(a.txHash)} t={t}/>
-                      :isSignal&&a.linkedTxHash?<span style={{display:"flex",alignItems:"center",gap:3}}><span style={{color:t.muted,fontSize:8}}>→</span><ExLink href={txUrl(a.linkedTxHash)} label={shortHash(a.linkedTxHash)} t={t}/></span>
-                      :<span style={{color:t.muted,fontSize:10}}>—</span>
+                      a.txHash ? (
+                        <ExLink href={txUrl(a.txHash)} label={shortHash(a.txHash)} t={t}/>
+                      ) : isSignal && a.linkedTxHash ? (
+                        <span style={{display:"flex",alignItems:"center",gap:3}}>
+                          <span style={{color:t.muted,fontSize:8}}>→</span>
+                          <ExLink href={txUrl(a.linkedTxHash)} label={shortHash(a.linkedTxHash)} t={t}/>
+                        </span>
+                      ) : (
+                        <span style={{color:t.muted,fontSize:10}}>—</span>
+                      )
                     }</Td>
+                    
                     <Td t={t}><span style={{color:t.subtext,fontSize:11}}>{a.blockNumber||"—"}</span></Td>
                     <Td t={t}><span style={{color:t.muted,fontSize:10}}>{timeAgo(a.timestamp)}</span></Td>
                     <td style={{padding:"10px 12px",borderBottom:`1px solid ${t.border}`}}><button onClick={()=>setExpanded(expanded===a.id?null:a.id)} style={{fontSize:9,fontFamily:"monospace",padding:"2px 8px",borderRadius:4,cursor:"pointer",background:t.accentBg,color:t.accent,border:`1px solid ${t.border}`}}>{expanded===a.id?"▲":"▼"}</button></td>
@@ -499,6 +526,7 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
                         <div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>To</span><div style={{marginTop:4}}><ExLink href={addrUrl(a.to)} label={a.to} t={t}/></div></div>
                         <div><span style={{color:t.accent,fontSize:9,textTransform:"uppercase"}}>Amount</span><div style={{color:t.accent,fontWeight:700,marginTop:4}}>{num(a.amount).toLocaleString()} <span style={{color:t.muted}}>{a.token}</span>{usd&&<span style={{color:"#4ade80",marginLeft:8}}>{usd}</span>}</div></div>
                       </>}
+                      
                       {/* Derived signal details — show why it fired */}
                       {(a.type==="momentum"||a.type==="alert"||a.type==="reaction")&&<>
                         <div style={{gridColumn:"1/-1",background:`rgba(${a.type==="momentum"?"239,68,68":a.type==="alert"?"249,115,22":"168,85,247"},0.08)`,border:`1px solid rgba(${a.type==="momentum"?"239,68,68":a.type==="alert"?"249,115,22":"168,85,247"},0.25)`,borderRadius:8,padding:"10px 14px"}}>
@@ -507,6 +535,34 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
                           </div>
                           <div style={{color:t.text,fontSize:11,lineHeight:1.6}}>{a.signalReason||"On-chain signal — see linked transaction for context."}</div>
                         </div>
+                        
+                        {/* ✅ FIX: Add signal reason explanation in expanded view */}
+                        {a.signalReason && (
+                          <div style={{gridColumn:"1/-1", marginTop:8}}>
+                            <span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Why this happened</span>
+                            <div style={{
+                              marginTop:4,
+                              padding:8,
+                              borderRadius:6,
+                              background: a.type === "momentum" ? "rgba(239,68,68,0.1)" :
+                                          a.type === "alert" ? "rgba(249,115,22,0.1)" :
+                                          "rgba(168,85,247,0.1)",
+                              border: `1px solid ${
+                                a.type === "momentum" ? "rgba(239,68,68,0.3)" :
+                                a.type === "alert" ? "rgba(249,115,22,0.3)" :
+                                "rgba(168,85,247,0.3)"
+                              }`,
+                              color: a.type === "momentum" ? "#ef4444" :
+                                     a.type === "alert" ? "#f97316" :
+                                     "#a855f7",
+                              fontSize: 11,
+                              fontFamily: "monospace"
+                            }}>
+                              {a.signalReason}
+                            </div>
+                          </div>
+                        )}
+                        
                         {a.linkedTxHash&&<div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Linked Whale TX</span><div style={{marginTop:4}}><ExLink href={txUrl(a.linkedTxHash)} label={shortHash(a.linkedTxHash)} t={t}/></div></div>}
                         {a.txHash&&<div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Signal TX Hash</span><div style={{marginTop:4}}><ExLink href={txUrl(a.txHash)} label={shortHash(a.txHash)} t={t}/></div></div>}
                         {a.type==="reaction"&&a.handlerEmitter&&<div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Handler Emitter</span><div style={{marginTop:4}}><ExLink href={addrUrl(a.handlerEmitter)} label={short(a.handlerEmitter)} t={t}/></div></div>}
@@ -581,7 +637,8 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
         }
       </>
     )}
-  </div>);}
+  </div>);
+}
 
 // ── My Wallet Tab ─────────────────────────────────────────────────────────────
 function MyWalletTab({alerts,connectedAddr,t}:{alerts:WhaleAlert[];connectedAddr:string;t:typeof T.dark}){
@@ -966,78 +1023,141 @@ function TokenFlowTab({alerts,t}:{alerts:WhaleAlert[];t:typeof T.dark}){
   </div>);}
 
 /// ── Leaderboard Tab (with Wallet Intelligence) ────────────────────────────────
-function LeaderboardTab({alerts,t,persistedEntries}:{alerts:WhaleAlert[];t:typeof T.dark;persistedEntries:{wallet:string;totalVolume:string;txCount:number;lastSeen:number}[]}){
-  const[mode,setMode]=useState<"senders"|"receivers"|"intelligence">("intelligence");
-  const[source,setSource]=useState<"live"|"persistent">("live");
-  const whaleOnly=useMemo(()=>alerts.filter(a=>a.type==="whale"),[alerts]);
+function LeaderboardTab({
+  alerts,
+  t,
+  persistedEntries,
+  timePreset  // 👈 ADD THIS PROP
+}: {
+  alerts: WhaleAlert[];
+  t: typeof T.dark;
+  persistedEntries: { wallet: string; totalVolume: string; txCount: number; lastSeen: number; }[];
+  timePreset: number;  // 👈 ADD THIS TYPE
+}) {
+  const [mode, setMode] = useState<"senders"|"receivers"|"intelligence">("intelligence");
+  const [source, setSource] = useState<"live"|"persistent">("live");
+  const whaleOnly = useMemo(() => alerts.filter(a => a.type === "whale"), [alerts]);
 
-  const walletProfiles = useMemo(()=>{
-    const map:Record<string,{inVol:number;outVol:number;txCount:number;firstSeen:number;lastSeen:number;burstCount:number;tokens:Set<string>}>={};
+  const walletProfiles = useMemo(() => {
+    const map: Record<string, {
+      inVol: number;
+      outVol: number;
+      txCount: number;
+      firstSeen: number;
+      lastSeen: number;
+      burstCount: number;
+      tokens: Set<string>;
+    }> = {};
 
-    whaleOnly.forEach(a=>{
+    // Get the current time window from the filter
+    const now = Date.now();
+    const windowCutoff = timePreset > 0 ? now - timePreset : 0;
+
+    // First pass: collect all transactions within the time window
+    whaleOnly.forEach(a => {
       const v = num(a.amount);
       const ts = a.timestamp;
+      
+      // Skip if timestamp is outside our window
+      if (windowCutoff > 0 && ts < windowCutoff) return;
 
       // Sender
-      if(!map[a.from]) map[a.from]={inVol:0,outVol:0,txCount:0,firstSeen:ts,lastSeen:ts,burstCount:0,tokens:new Set()};
-      map[a.from].outVol  += v;
+      if (!map[a.from]) map[a.from] = {
+        inVol: 0,
+        outVol: 0,
+        txCount: 0,
+        firstSeen: ts,
+        lastSeen: ts,
+        burstCount: 0,
+        tokens: new Set()
+      };
+      map[a.from].outVol += v;
       map[a.from].txCount += 1;
       map[a.from].firstSeen = Math.min(map[a.from].firstSeen, ts);
-      map[a.from].lastSeen  = Math.max(map[a.from].lastSeen,  ts);
-      if(a.token) map[a.from].tokens.add(a.token);
+      map[a.from].lastSeen = Math.max(map[a.from].lastSeen, ts);
+      if (a.token) map[a.from].tokens.add(a.token);
 
       // Receiver
-      if(!map[a.to]) map[a.to]={inVol:0,outVol:0,txCount:0,firstSeen:ts,lastSeen:ts,burstCount:0,tokens:new Set()};
-      map[a.to].inVol   += v;
+      if (!map[a.to]) map[a.to] = {
+        inVol: 0,
+        outVol: 0,
+        txCount: 0,
+        firstSeen: ts,
+        lastSeen: ts,
+        burstCount: 0,
+        tokens: new Set()
+      };
+      map[a.to].inVol += v;
       map[a.to].txCount += 1;
       map[a.to].firstSeen = Math.min(map[a.to].firstSeen, ts);
-      map[a.to].lastSeen  = Math.max(map[a.to].lastSeen,  ts);
-      if(a.token) map[a.to].tokens.add(a.token);
+      map[a.to].lastSeen = Math.max(map[a.to].lastSeen, ts);
+      if (a.token) map[a.to].tokens.add(a.token);
     });
 
-    // Count burst participation — how often this wallet appeared in a 60s cluster of 3+
+    // Second pass: count burst participation (also respecting time window)
     const BURST_WINDOW = 60_000;
-    whaleOnly.forEach(whale=>{
-      const cluster = whaleOnly.filter(w=>Math.abs(w.timestamp-whale.timestamp)<BURST_WINDOW);
-      if(cluster.length>=3){
+    whaleOnly.forEach(whale => {
+      // Skip if whale is outside our time window
+      if (windowCutoff > 0 && whale.timestamp < windowCutoff) return;
+      
+      const cluster = whaleOnly.filter(w => 
+        Math.abs(w.timestamp - whale.timestamp) < BURST_WINDOW &&
+        (windowCutoff === 0 || w.timestamp >= windowCutoff) // Also filter cluster members
+      );
+      
+      if (cluster.length >= 3) {
         const addrs = new Set([whale.from, whale.to]);
-        addrs.forEach(addr=>{ if(map[addr]) map[addr].burstCount++; });
+        addrs.forEach(addr => {
+          if (map[addr]) map[addr].burstCount++;
+        });
       }
     });
 
-    return Object.entries(map).map(([address, d])=>{
-      const totalVol = d.inVol + d.outVol;
+    return Object.entries(map)
+      .map(([address, d]) => {
+        const totalVol = d.inVol + d.outVol;
 
-      // Influence score: 0–100
-      const volScore   = totalVol>0 ? Math.log10(totalVol+1)*10 : 0;
-      const burstScore = d.burstCount * 2;
-      const txScore    = d.txCount>0 ? Math.log10(d.txCount+1)*5 : 0;
-      const influenceScore = Math.min(100, Math.round(volScore + burstScore + txScore));
+        // Influence score: 0–100
+        const volScore = totalVol > 0 ? Math.log10(totalVol + 1) * 10 : 0;
+        const burstScore = d.burstCount * 2;
+        const txScore = d.txCount > 0 ? Math.log10(d.txCount + 1) * 5 : 0;
+        const influenceScore = Math.min(100, Math.round(volScore + burstScore + txScore));
 
-      // Behavior type
-      const ratio = d.outVol>0 ? d.inVol/d.outVol : d.inVol>0 ? 999 : 1;
-      let behaviorType: string;
-      let behaviorColor: string;
-      if(d.burstCount>=6){
-        behaviorType="MARKET MOVER"; behaviorColor="#ef4444";
-      } else if(ratio>=1.2){
-        // Inflow meaningfully exceeds outflow — net accumulation
-        behaviorType="ACCUMULATOR";  behaviorColor="#4ade80";
-      } else {
-        // Outflow dominant or balanced — net distribution
-        behaviorType="DISTRIBUTOR";  behaviorColor="#f87171";
-      }
+        // Behavior type
+        const ratio = d.outVol > 0 ? d.inVol / d.outVol : d.inVol > 0 ? 999 : 1;
+        let behaviorType: string;
+        let behaviorColor: string;
+        if (d.burstCount >= 6) {
+          behaviorType = "MARKET MOVER";
+          behaviorColor = "#ef4444";
+        } else if (ratio >= 1.2) {
+          behaviorType = "ACCUMULATOR";
+          behaviorColor = "#4ade80";
+        } else {
+          behaviorType = "DISTRIBUTOR";
+          behaviorColor = "#f87171";
+        }
 
-      return {address,totalVol,inVol:d.inVol,outVol:d.outVol,txCount:d.txCount,
-        firstSeen:d.firstSeen,lastSeen:d.lastSeen,burstCount:d.burstCount,
-        tokens:Array.from(d.tokens),influenceScore,behaviorType,behaviorColor};
-    })
-    .filter(p=>p.totalVol>0)
-    .sort((a,b)=>b.influenceScore-a.influenceScore)
-    .slice(0,15);
-  },[whaleOnly]);
+        return {
+          address,
+          totalVol,
+          inVol: d.inVol,
+          outVol: d.outVol,
+          txCount: d.txCount,
+          firstSeen: d.firstSeen,
+          lastSeen: d.lastSeen,
+          burstCount: d.burstCount,
+          tokens: Array.from(d.tokens),
+          influenceScore,
+          behaviorType,
+          behaviorColor
+        };
+      })
+      .filter(p => p.totalVol > 0)
+      .sort((a, b) => b.influenceScore - a.influenceScore)
+      .slice(0, 15);
+  }, [whaleOnly, timePreset]); 
 
-  // Original live top (senders / receivers mode)
   const liveTop=useMemo(()=>{
     const map:Record<string,{count:number;volume:number;tokens:Set<string>}>={};
     whaleOnly.forEach(a=>{
@@ -1149,7 +1269,7 @@ function LeaderboardTab({alerts,t,persistedEntries}:{alerts:WhaleAlert[];t:typeo
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function WhaleDashboard(){
-  const{alerts,blockTxs,totalBlockTxsSeen,connected,error}=useWhaleAlerts(500);
+  const { alerts, blockTxs, totalBlockTxsSeen, connected, error } = useWhaleAlerts();
   const{address:walletAddr,isConnected}=useAccount();
   const{prices:oraclePrices,loading:pricesLoading,lastFetchedAt}=useOraclePrices(10_000);
   const[simulating,setSimulating]=useState(false);
@@ -1622,7 +1742,7 @@ export default function WhaleDashboard(){
             {tab==="feed"        && <LiveFeedTab    alerts={filtered} t={t} connectedAddr={walletAddr} burst={burst} oraclePrices={oraclePrices} blockTxs={windowedBlockTxs} totalBlockTxsSeen={totalBlockTxsSeen} timePreset={timePreset} feedSubTab={feedSubTab} setFeedSubTab={setFeedSubTab} netMinAmt={netMinAmt} setNetMinAmt={setNetMinAmt} netMaxAmt={netMaxAmt} setNetMaxAmt={setNetMaxAmt}/>}
             {tab==="analytics" && <AnalyticsTab alerts={filtered} t={t} oraclePrices={oraclePrices} blockTxs={blockTxs}/>}
             {tab==="charts"      && <ChartsTab      alerts={filtered} t={t}/>}
-            {tab==="leaderboard" && <LeaderboardTab alerts={filtered} t={t} persistedEntries={persistedEntries}/>}
+            {tab==="leaderboard" && <LeaderboardTab alerts={filtered} t={t} persistedEntries={persistedEntries} timePreset={timePreset}/>}
             {tab==="flow"        && <TokenFlowTab   alerts={filtered} t={t}/>}
             {tab==="howto"       && (
               <div style={{padding:20}}>

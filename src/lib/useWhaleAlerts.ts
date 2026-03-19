@@ -4,7 +4,6 @@ import { useEffect, useRef, useState, useMemo } from "react";
 declare global {
   interface Window {
     _processedTxHashes?: Set<string>;
-    _processedPendingKeys?: Set<string>;
   }
 }
 
@@ -25,8 +24,8 @@ export type WhaleAlert = {
   reactionCount?: string;
   handlerEmitter?: string;
   txFee?:         string;
-  linkedTxHash?:  string;  // confirmed whale tx that triggered this signal
-  signalReason?:  string;  // human-readable explanation: "5 txns ≥1 STT in 30s"
+  linkedTxHash?:  string;
+  signalReason?:  string;
 };
 
 export type BlockTx = {
@@ -67,7 +66,7 @@ function parseEntry(raw: any): WhaleAlert | null {
       blockHash:      r.blockHash    ?? "",
       reactionCount:  r.reactionCount,
       handlerEmitter: r.handlerEmitter,
-      txFee:          r.txFee        ?? "0",
+      txFee:          r.txFee        ?? "0",  
       linkedTxHash:   r.linkedTxHash ?? "",
       signalReason:   r.signalReason ?? "",
     };
@@ -128,11 +127,13 @@ function loadCached<T>(key: string): T[] {
 
 function saveCache<T>(key: string, data: T[]) {
   if (!isBrowser) return;
-  try { localStorage.setItem(key, JSON.stringify({ ts: Date.now(), data: data.slice(0, 500) })); }
+  try { localStorage.setItem(key, JSON.stringify({ ts: Date.now(), data: data})); }
   catch {}
 }
 
-export function useWhaleAlerts(maxAlerts = 200) {
+let lastKnownBlock = 0;
+
+export function useWhaleAlerts() {
   const [alerts,            setAlerts]           = useState<WhaleAlert[]>([]);
   const [blockTxs,          setBlockTxs]         = useState<BlockTx[]>([]);
   const [hydrated,          setHydrated]         = useState(false);
@@ -146,7 +147,7 @@ export function useWhaleAlerts(maxAlerts = 200) {
   const retryCount = useRef(0);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Hydrate from localStorage after mount (browser only, avoids SSR mismatch)
+  // Hydrate from localStorage after mount
   useEffect(() => {
     const cachedAlerts   = loadCached<WhaleAlert>(ALERTS_CACHE_KEY);
     const cachedBlockTxs = loadCached<BlockTx>(BLOCKTX_CACHE_KEY);
@@ -156,7 +157,8 @@ export function useWhaleAlerts(maxAlerts = 200) {
   }, []);
 
   useEffect(() => {
-    if (!hydrated) return; // wait for localStorage hydration before opening SSE
+    if (!hydrated) return;
+    
     function connect() {
       if (esRef.current) {
         esRef.current.close();
@@ -177,30 +179,17 @@ export function useWhaleAlerts(maxAlerts = 200) {
           const msg = JSON.parse(e.data);
           
           if (msg.type === "init") {
-            const all = msg.alerts as any[];
-            const parsedAlerts = all.filter(a => a.type !== "block_tx")
-              .map(parseEntry).filter(Boolean).reverse() as WhaleAlert[];
-            const parsedBlockTxs = all.filter(a => a.type === "block_tx")
-              .map(parseBlockTx).filter(Boolean).reverse() as BlockTx[];
-
-            // Merge with any live events received since the last init
-            // so backfill re-inits don't erase events that arrived in between
-            setAlerts(prev => {
-              const serverIds = new Set(parsedAlerts.map(a => a.txHash).filter(Boolean));
-              const liveOnly  = prev.filter(a => a.txHash && !serverIds.has(a.txHash));
-              const merged    = [...liveOnly, ...parsedAlerts]
-                .sort((a, b) => b.timestamp - a.timestamp);
-              saveCache(ALERTS_CACHE_KEY, merged);
-              return merged;
-            });
-            setBlockTxs(prev => {
-              const serverHashes = new Set(parsedBlockTxs.map(t => t.txHash).filter(Boolean));
-              const liveOnly     = prev.filter(t => t.txHash && !serverHashes.has(t.txHash));
-              const merged       = [...liveOnly, ...parsedBlockTxs]
-                .sort((a, b) => b.timestamp - a.timestamp);
-              saveCache(BLOCKTX_CACHE_KEY, merged);
-              return merged;
-            });
+            // ✅ FIX: Check if server data is newer than cache
+            if (msg.dbLatestBlock > lastKnownBlock) {
+              lastKnownBlock = msg.dbLatestBlock;
+              
+              const parsedAlerts = (msg.alerts || [])
+                .map(parseEntry).filter(Boolean) as WhaleAlert[];
+              
+              setAlerts(parsedAlerts);
+              saveCache(ALERTS_CACHE_KEY, parsedAlerts);
+            }
+            
             if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
             if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
             if (msg.explorerStats) setExplorerStats(msg.explorerStats);
@@ -209,7 +198,6 @@ export function useWhaleAlerts(maxAlerts = 200) {
           if (msg.type === "connected") { setConnected(true); setError(null); }
           if (msg.type === "error") setError(msg.message);
 
-          // All alert types — only confirmed on-chain data passes parseEntry's integrity gate
           if (["whale","reaction","alert","momentum"].includes(msg.type)) {
             const a = parseEntry(msg);
             if (a) setAlerts(prev => {
@@ -219,7 +207,6 @@ export function useWhaleAlerts(maxAlerts = 200) {
             });
           }
           
-          // ============= FIX: Block tx deduplication =============
           if (msg.type === "block_tx") {
             const txHash = msg.raw?.txHash;
             
@@ -239,7 +226,9 @@ export function useWhaleAlerts(maxAlerts = 200) {
             if (tx) {
               setBlockTxs(prev => {
                 if (prev.some(t => t.txHash === tx.txHash)) return prev;
-                return [tx, ...prev];
+                const next = [tx, ...prev];
+                saveCache(BLOCKTX_CACHE_KEY, next);
+                return next;
               });
             }
             if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
@@ -277,7 +266,7 @@ export function useWhaleAlerts(maxAlerts = 200) {
       esRef.current?.close();
       esRef.current = null;
     };
-  }, [maxAlerts, hydrated]);
+  }, [hydrated]);
 
   const sttTransfers = useMemo(() => blockTxs.filter(tx => tx.isTransfer), [blockTxs]);
   const contractCalls = useMemo(() => blockTxs.filter(tx => !tx.isTransfer), [blockTxs]);
