@@ -70,6 +70,7 @@ try { db.exec(`ALTER TABLE whale_events ADD COLUMN tx_fee TEXT`); } catch {}
 try { db.exec(`ALTER TABLE whale_events ADD COLUMN linked_tx_hash TEXT`); } catch {}
 try { db.exec(`ALTER TABLE whale_events ADD COLUMN signal_reason TEXT`); } catch {}
 try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_whale_tx_hash ON whale_events(tx_hash) WHERE tx_hash IS NOT NULL AND tx_hash != ''`); } catch {}
+try { db.exec(`ALTER TABLE block_tx_events ADD COLUMN block_timestamp INTEGER`); } catch {}
 
 const WHALE_ABI = [{
   name: "WhaleTransfer", type: "event",
@@ -150,7 +151,57 @@ const AGGREGATOR_ABI = [{
   inputs: [], outputs: [{ type: "uint8" }],
 }] as const;
 
-const WHALE_DISPLAY_THRESHOLD = parseEther("0.001"); // 0.001 STT minimum for whale
+const WHALE_PERCENTILE  = 90;   // top 10% of STT transfers = whale
+const MIN_WHALE_STT     = 0.5;  // absolute floor — ignore dust below 0.5 STT
+let dynamicWhaleThreshold: bigint = parseEther("0.5"); // safe default until computed
+
+function computePercentileThreshold(): number {
+  try {
+    const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
+    const rows = db.prepare(`
+      SELECT CAST(amount AS REAL) as amt
+      FROM block_tx_events
+      WHERE received_at >= ?
+        AND CAST(amount AS REAL) >= ?
+      ORDER BY amt ASC
+    `).all(cutoff, MIN_WHALE_STT) as { amt: number }[];
+ 
+    if (rows.length < 20) {
+      console.log(`🐋 Whale threshold: insufficient data (${rows.length} samples) — using ${MIN_WHALE_STT} STT floor`);
+      return MIN_WHALE_STT;
+    }
+ 
+    const idx = Math.floor(rows.length * (WHALE_PERCENTILE / 100));
+    const raw = rows[Math.min(idx, rows.length - 1)].amt;
+ 
+    // Apply floor — never drop below MIN_WHALE_STT
+    return Math.max(raw, MIN_WHALE_STT);
+  } catch (e) {
+    console.warn("⚠ computePercentileThreshold failed:", (e as any).message);
+    return MIN_WHALE_STT;
+  }
+}
+ 
+function refreshWhaleThreshold() {
+  const stt = computePercentileThreshold();
+  dynamicWhaleThreshold = BigInt(Math.round(stt * 1e18));
+  try {
+    const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
+    const n = (db.prepare(
+      `SELECT COUNT(*) as n FROM block_tx_events WHERE received_at >= ? AND CAST(amount AS REAL) >= ?`
+    ).get(cutoff, MIN_WHALE_STT) as any)?.n ?? 0;
+    console.log(`🐋 Whale threshold (p${WHALE_PERCENTILE}): ${stt.toFixed(6)} STT (${n} samples ≥ ${MIN_WHALE_STT} STT)`);
+  } catch {
+    console.log(`🐋 Whale threshold (p${WHALE_PERCENTILE}): ${stt.toFixed(6)} STT`);
+  }
+}
+  
+function rows_count_for_log(): number {
+  try {
+    const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
+    return (db.prepare(`SELECT COUNT(*) as n FROM block_tx_events WHERE received_at >= ? AND CAST(amount AS REAL) > 0`).get(cutoff) as any)?.n ?? 0;
+  } catch { return 0; }
+}
 
 export type CacheEntry = {
   type: "whale" | "reaction" | "alert" | "momentum" | "block_tx" | "threshold_update";
@@ -249,8 +300,8 @@ function markSDKSeen(key: string): boolean {
 // ── SQLite-backed block_tx persistence ───────────────────────────────────────
 const insertBlockTx = db.prepare(`
   INSERT OR IGNORE INTO block_tx_events
-  (id, from_addr, to_addr, amount, is_transfer, tx_hash, block_number, block_hash, tx_fee, received_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  (id, from_addr, to_addr, amount, is_transfer, tx_hash, block_number, block_hash, tx_fee, received_at, block_timestamp)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 function loadBlockTxFromDb() {
@@ -267,6 +318,7 @@ function loadBlockTxFromDb() {
   for (const row of rows) {
     const amountRaw = parseFloat(row.amount ?? "0");
     if (amountRaw > networkLargestSTT) networkLargestSTT = amountRaw;
+    const blockTsMs = row.block_timestamp ?? row.received_at;
     alertCache.push({
       type: "block_tx",
       receivedAt: row.received_at,
@@ -274,7 +326,7 @@ function loadBlockTxFromDb() {
         from:        row.from_addr,
         to:          row.to_addr,
         amount:      row.amount,
-        timestamp:   `0x${Math.floor(row.received_at / 1000).toString(16)}`,
+        timestamp:   `0x${Math.floor(blockTsMs / 1000).toString(16)}`,
         token:       "STT",
         txHash:      row.tx_hash,
         blockNumber: row.block_number,
@@ -291,6 +343,14 @@ setInterval(() => {
   const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
   const { changes } = db.prepare(`DELETE FROM block_tx_events WHERE received_at < ?`).run(cutoff);
   if (changes > 0) console.log(`🗑 Evicted ${changes} expired block_tx rows from SQLite`);
+}, 6 * 60 * 60_000);
+
+setInterval(() => {
+  const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
+  const { changes } = db.prepare(
+    `DELETE FROM whale_events WHERE timestamp < ? AND block_timestamp < ?`
+  ).run(cutoff, cutoff);
+  if (changes > 0) console.log(`🗑 Evicted ${changes} expired whale_event rows from SQLite`);
 }, 6 * 60 * 60_000);
 
 function broadcast(entry: CacheEntry) {
@@ -313,6 +373,11 @@ function push(entry: CacheEntry) {
     if (i > 0) alertCache.splice(0, i);
 
     try {
+      // Decode hex block timestamp back to ms for storage
+      const blockTsMs = (() => {
+        try { const t = Number(BigInt(entry.raw.timestamp ?? "0x0")) * 1000; return t > 0 ? t : null; }
+        catch { return null; }
+      })();
       insertBlockTx.run(
         `btx-${entry.receivedAt}-${Math.random()}`,
         entry.raw.from,
@@ -324,9 +389,9 @@ function push(entry: CacheEntry) {
         entry.raw.blockHash,
         entry.raw.txFee ?? "0",
         entry.receivedAt,
+        blockTsMs,
       );
-    } catch {} // IGNORE duplicate tx_hash
-  } else {
+    } catch {} // IGNORE duplicate tx_hash } else {
     if (nonBlockTxCount >= MAX_CACHE) {
       const idx = alertCache.findIndex(e => e.type !== "block_tx");
       if (idx !== -1) { alertCache.splice(idx, 1); nonBlockTxCount--; }
@@ -481,7 +546,7 @@ function seedWhaleEventsFromDb() {
 }
 
 function promoteBlockTxToWhaleEvents() {
-  const threshold = Number(WHALE_DISPLAY_THRESHOLD) / 1e18;
+  const threshold = Number(dynamicWhaleThreshold) / 1e18;
   const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
   const candidates = db.prepare(`
     SELECT * FROM block_tx_events
@@ -504,13 +569,14 @@ function promoteBlockTxToWhaleEvents() {
   for (const row of candidates) {
     const sttWei = `0x${Math.round(parseFloat(row.amount) * 1e18).toString(16)}`;
     try {
+      const blockTs = row.block_timestamp ?? row.received_at;
       insertWhale.run(
         `promoted-${row.tx_hash}`,
         "whale",
         row.from_addr, row.to_addr,
         sttWei,
-        row.received_at,
-        row.received_at,
+        row.received_at,   // timestamp (server receipt — used for ordering/eviction)
+        blockTs,           // block_timestamp (on-chain time — used for display)
         "STT",
         row.tx_hash,
         row.block_number || null,
@@ -631,21 +697,24 @@ function broadcastFullInit() {
     ORDER BY received_at DESC
   `).all(Date.now() - BLOCK_TX_WINDOW_MS) as any[];
   
-  const blockTxAlerts = blockTxRows.map((row: any) => ({
-    type: "block_tx",
-    receivedAt: row.received_at,
-    raw: {
-      from: row.from_addr,
-      to: row.to_addr,
-      amount: row.amount,
-      timestamp: `0x${Math.floor(row.received_at / 1000).toString(16)}`,
-      token: "STT",
-      txHash: row.tx_hash,
-      blockNumber: row.block_number,
-      blockHash: row.block_hash,
-      txFee: row.tx_fee || "0",
-    }
-  }));
+  const blockTxAlerts = blockTxRows.map((row: any) => {
+    const blockTsMs = row.block_timestamp ?? row.received_at;
+    return {
+      type: "block_tx",
+      receivedAt: row.received_at,
+      raw: {
+        from: row.from_addr,
+        to: row.to_addr,
+        amount: row.amount,
+        timestamp: `0x${Math.floor(blockTsMs / 1000).toString(16)}`,
+        token: "STT",
+        txHash: row.tx_hash,
+        blockNumber: row.block_number,
+        blockHash: row.block_hash,
+        txFee: row.tx_fee || "0",
+      }
+    };
+  });
 
   const dbTimestamp = db.prepare(`
     SELECT MAX(block_timestamp) as latest FROM whale_events
@@ -661,6 +730,9 @@ function broadcastFullInit() {
     totalBlockTxsSeen,
     networkLargestSTT,
     explorerStats,
+    whaleThresholdSTT: Number(dynamicWhaleThreshold) / 1e18,
+    whalePercentile: WHALE_PERCENTILE,
+ 
   })}\n\n`);
   
   controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
@@ -731,7 +803,7 @@ async function loadRecentBlockTxs() {
           loaded++;
 
           // Whale detection in backfill
-          if (val >= WHALE_DISPLAY_THRESHOLD && tx.hash && block.number && block.timestamp) {
+          if (val >= dynamicWhaleThreshold && tx.hash && block.number && block.timestamp) {
             if (markBlockSeen(tx.hash)) {
               const ts = `0x${Math.floor(blockTs / 1000).toString(16)}`;
               const blockNum = block.number.toString();
@@ -825,7 +897,7 @@ async function startBlockWatcher(
         }
 
         // ── INTEGRITY GATE: whale must have txHash + blockNumber + blockTimestamp ──
-        if (val >= WHALE_DISPLAY_THRESHOLD && txHash && blockNum && blockTs) {
+        if (val >= dynamicWhaleThreshold && txHash && blockNum && blockTs) {
           if (!markBlockSeen(txHash)) continue;
 
           const entry: CacheEntry = {
@@ -919,7 +991,7 @@ async function startBlockWatcher(
   });
 
   blockWatcher = unwatch;
-  console.log(`✅ Block watcher started (whale threshold: ${Number(WHALE_DISPLAY_THRESHOLD)/1e18} STT | ETH/USD: $${currentEthUsd.toFixed(2)})`);
+  console.log(`✅ Block watcher started (whale threshold: p${WHALE_PERCENTILE} = ${Number(dynamicWhaleThreshold)/1e18} STT | ETH/USD: $${currentEthUsd.toFixed(2)})`);
 }
 
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -955,7 +1027,10 @@ async function ensureSubscriptions() {
   evictExpiredEntries();
   promoteBlockTxToWhaleEvents();
   seedWhaleEventsFromDb();
+
   nonBlockTxCount = alertCache.filter(e => e.type !== "block_tx").length;
+  refreshWhaleThreshold(); // compute dynamic threshold from loaded block_tx data
+  setInterval(refreshWhaleThreshold, 5 * 60_000); // refresh every 5 min
   cacheReadyResolve?.();
   
   if (!backfillRunning) {

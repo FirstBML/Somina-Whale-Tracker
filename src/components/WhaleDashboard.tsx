@@ -44,8 +44,18 @@ function usdVal(amount:number, token:string, prices:Record<string,any>): string|
   return `$${usd.toFixed(2)}`;
 }
 
-function timeAgo(ts:number){const d=Math.floor((Date.now()-ts)/1000);if(d<60)return`${d}s ago`;if(d<3600)return`${Math.floor(d/60)}m ago`;return`${Math.floor(d/3600)}h ago`;}
-function fmtTime(ts:number){return new Date(ts).toLocaleString(undefined,{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit"});}
+function timeAgo(ts: number) {
+  if (!ts || ts <= 0) return "Just now";
+  const timestampMs = ts < 10000000000 ? ts * 1000 : ts; // ✅ Fixes 33B seconds bug
+  const diffInSeconds = Math.floor((Date.now() - timestampMs) / 1000);
+  if (diffInSeconds < 0) return "Just now";
+  if (diffInSeconds < 60) return `${diffInSeconds}s ago`;
+  if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}m ago`;
+  if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}h ago`;
+  return `${Math.floor(diffInSeconds / 86400)}d ago`;
+}
+
+function fmtTime(ts:number){const ms=ts<10_000_000_000?ts*1000:ts;return new Date(ms).toLocaleString(undefined,{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit"});}
 function fmtMs(ms:number){if(ms<1000)return`${Math.round(ms)}ms`;if(ms<60000)return`${(ms/1000).toFixed(1)}s`;return`${Math.floor(ms/60000)}m ${Math.round((ms%60000)/1000)}s`;}
 
 let _audioCtx: AudioContext | null = null;
@@ -178,9 +188,9 @@ function Speedometer({value,t}:{value:number|null;t:typeof T.dark}){
 
 // ── SpeedometerLarge — full SVG arc gauge for sidebar ────────────────────────
 function SpeedometerLarge({value,t}:{value:number|null;t:typeof T.dark}){
-  const pct = Math.min(100,(value??0)*10);
-  const color = pct>=50?"#ef4444":pct>=20?"#f97316":pct>=5?"#f59e0b":"#4ade80";
-  const label = pct>=50?"HIGH":pct>=20?"ELEVATED":pct>=5?"MODERATE":"LOW";
+  const pct = Math.min(100,(value??0)*20);
+  const color = pct>=80?"#ef4444":pct>=50?"#f97316":pct>=20?"#f59e0b":"#4ade80";
+  const label = pct>=80?"HIGH":pct>=50?"ELEVATED":pct>=20?"MODERATE":"LOW";
   const displayVal = value!=null?`${value.toFixed(2)}%`:"—";
   // cy=100 gives enough room below hub for value text + label badge within height=165
   const cx=130,cy=100,r=88;
@@ -242,7 +252,7 @@ function SpeedometerLarge({value,t}:{value:number|null;t:typeof T.dark}){
           const a=startDeg-(sweep*(p/100));
           const [ox,oy]=pt(96,a); const [ix,iy]=pt(88,a);
           const [lx,ly]=pt(104,a);
-          const tickLabels=["0","2.5","5","7.5","10%"];
+          const tickLabels=["0","1.25","2.5","3.75","5%"];
           return(<g key={i}>
             <line x1={ox} y1={oy} x2={ix} y2={iy} stroke="rgba(255,255,255,0.5)" strokeWidth="1.5"/>
             <text x={lx} y={ly} textAnchor="middle" dominantBaseline="middle" fill="rgba(103,184,204,0.6)" fontSize="7" fontFamily="monospace">{tickLabels[i]}</text>
@@ -1269,7 +1279,7 @@ function LeaderboardTab({
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function WhaleDashboard(){
-  const { alerts, blockTxs, totalBlockTxsSeen, connected, error } = useWhaleAlerts();
+ const { alerts, blockTxs, totalBlockTxsSeen, connected, error, whaleThresholdSTT, whalePercentile } = useWhaleAlerts();
   const{address:walletAddr,isConnected}=useAccount();
   const{prices:oraclePrices,loading:pricesLoading,lastFetchedAt}=useOraclePrices(10_000);
   const[simulating,setSimulating]=useState(false);
@@ -1721,7 +1731,36 @@ export default function WhaleDashboard(){
                 value={whaleTotalFees>0 ? (whaleTotalFees>=1000?`${Math.round(whaleTotalFees).toLocaleString()} STT`:`${whaleTotalFees.toFixed(8)} STT`) : "—"}
                 color="#f59e0b"
                 sub={whaleTotalFees>0 ? (whaleFeeEstimated ? "~estimated" : "actual fees") : "no data"}/>
-            </div>
+              <KpiCard t={t} label="🎯 Whale Threshold"
+                value={whaleThresholdSTT!=null ? `≥${whaleThresholdSTT.toFixed(4)} STT` : "≥1 STT"}
+                color={t.muted}
+                sub={`p${whalePercentile} of 24h transfers`}/>
+ 
+              <KpiCard t={t} label="🎯 Whale Threshold"
+                value={whaleThresholdSTT!=null ? `≥${whaleThresholdSTT.toFixed(4)} STT` : "≥1 STT"}
+                color={t.muted}
+                sub={`p${whalePercentile} of 24h transfers`}/>
+ 
+              <KpiCard t={t} label="🎯 Whale Threshold"
+                value={whaleThresholdSTT!=null ? `≥${whaleThresholdSTT.toFixed(4)} STT` : "≥1 STT"}
+                color={t.muted}
+                sub={`p${whalePercentile} of 24h transfers`}/>
+              <KpiCard t={t} label="🎯 Whale Threshold"
+                value={whaleThresholdSTT!=null ? `≥${whaleThresholdSTT.toFixed(4)} STT` : "≥1 STT"}
+                color={t.muted}
+                sub={`p${whalePercentile} of 24h transfers`}/>             <KpiCard t={t} label="🎯 Whale Threshold"
+                value={whaleThresholdSTT!=null ? `≥${whaleThresholdSTT.toFixed(4)} STT` : "≥1 STT"}
+                color={t.muted}
+                sub={`p${whalePercentile} of 24h transfers`}/>             <KpiCard t={t} label="🎯 Whale Threshold"
+                value={whaleThresholdSTT!=null ? `≥${whaleThresholdSTT.toFixed(4)} STT` : "≥1 STT"}
+                color={t.muted}
+                sub={`p${whalePercentile} of 24h transfers`}/>             <KpiCard t={t} label="🎯 Whale Threshold"
+                value={whaleThresholdSTT!=null ? `≥${whaleThresholdSTT.toFixed(4)} STT` : "≥1 STT"}
+                color={t.muted}
+                sub={`p${whalePercentile} of 24h transfers`}/>             <KpiCard t={t} label="🎯 Whale Threshold"
+                value={whaleThresholdSTT!=null ? `≥${whaleThresholdSTT.toFixed(4)} STT` : "≥1 STT"}
+                color={t.muted}
+                sub={`p${whalePercentile} of 24h transfers`}/>           </div>
           </div>
 
           {/* Tabs */}

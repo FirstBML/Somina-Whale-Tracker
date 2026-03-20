@@ -139,7 +139,9 @@ export function useWhaleAlerts() {
   const [hydrated,          setHydrated]         = useState(false);
   const [totalBlockTxsSeen, setTotalBlockTxsSeen] = useState(0);
   const [networkLargestSTT, setNetworkLargestSTT] = useState(0);
-  const [currentThreshold, setCurrentThreshold] = useState<number | null>(null);
+  const [currentThreshold,    setCurrentThreshold]    = useState<number | null>(null);
+  const [whaleThresholdSTT,   setWhaleThresholdSTT]   = useState<number | null>(null);
+  const [whalePercentile,     setWhalePercentile]     = useState<number>(95);
   const [explorerStats, setExplorerStats] = useState<ExplorerStats | null>(null);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -179,21 +181,34 @@ export function useWhaleAlerts() {
           const msg = JSON.parse(e.data);
           
           if (msg.type === "init") {
-            // ✅ FIX: Check if server data is newer than cache
-            if (msg.dbLatestBlock > lastKnownBlock) {
-              lastKnownBlock = msg.dbLatestBlock;
-              
-              const parsedAlerts = (msg.alerts || [])
-                .map(parseEntry).filter(Boolean) as WhaleAlert[];
-              
-              setAlerts(parsedAlerts);
-              saveCache(ALERTS_CACHE_KEY, parsedAlerts);
-            }
-            
-            if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
-            if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
-            if (msg.explorerStats) setExplorerStats(msg.explorerStats);
+          if (msg.dbLatestBlock > lastKnownBlock) {
+            lastKnownBlock = msg.dbLatestBlock;
+
+            const allAlerts = msg.alerts || [];
+
+            // ✅ Separate whale events from block_tx — parseEntry ignores block_tx type
+            const parsedAlerts = allAlerts
+              .filter((a: any) => a.type !== "block_tx")
+              .map(parseEntry).filter(Boolean) as WhaleAlert[];
+
+            const parsedBlockTxs = allAlerts
+              .filter((a: any) => a.type === "block_tx")
+              .map(parseBlockTx).filter(Boolean) as BlockTx[];
+
+            setAlerts(parsedAlerts);
+            setBlockTxs(parsedBlockTxs);
+            saveCache(ALERTS_CACHE_KEY, parsedAlerts);
+            saveCache(BLOCKTX_CACHE_KEY, parsedBlockTxs);
+
+            // Pre-seed dedup set so live messages don't duplicate loaded history
+            if (!window._processedTxHashes) window._processedTxHashes = new Set();
+            parsedBlockTxs.forEach(tx => { if (tx.txHash) window._processedTxHashes!.add(tx.txHash); });
           }
+
+          if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
+          if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
+          if (msg.explorerStats)     setExplorerStats(msg.explorerStats);
+        }
           
           if (msg.type === "connected") { setConnected(true); setError(null); }
           if (msg.type === "error") setError(msg.message);
@@ -233,14 +248,14 @@ export function useWhaleAlerts() {
             }
             if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
             if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
-          }
-          
+          }  // ← closes the block_tx if block
+
           if (msg.type === "whale_fee_update" && msg.txHash && msg.txFee) {
             setAlerts(prev => prev.map(a =>
               a.txHash === msg.txHash ? { ...a, txFee: msg.txFee } : a
             ));
           }
-          
+
           if (msg.type === "explorer_stats" && msg.stats) setExplorerStats(msg.stats);
           if (msg.type === "threshold_update") setCurrentThreshold(parseFloat(msg.raw?.newValue ?? "0"));
         } catch (err) {
@@ -279,6 +294,8 @@ export function useWhaleAlerts() {
     totalBlockTxsSeen,
     networkLargestSTT,
     currentThreshold,
+    whaleThresholdSTT,
+    whalePercentile,
     explorerStats,
     connected,
     error,
