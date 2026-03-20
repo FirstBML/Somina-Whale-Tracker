@@ -262,15 +262,7 @@ const controllers = new Set<ReadableStreamDefaultController>();
 let nonBlockTxCount = 0;
 let currentEthUsd = 2300; // fallback, will be updated
 
-export type ExplorerStats = {
-  txCount24h:   number;
-  totalFees24h: number;
-  avgFee24h:    number;
-  fetchedAt:    number;
-};
-let explorerStats: ExplorerStats | null = null;
-
-// ============= FIX 2: Separate dedup sets =============
+// ============= Separate dedup sets =============
 const seenBlockTxHashes = new Set<string>();
 const seenSDKContentKeys = new Set<string>();
 const MAX_SEEN_HASHES = 10_000;
@@ -460,7 +452,7 @@ function push(entry: CacheEntry) {
   }
 }
 
-// ============= FIX: Calculate average whale size for alerts =============
+// ============= Calculate average whale size for alerts =============
 function getAverageWhaleSize(): number {
   try {
     const rows = db.prepare(`
@@ -494,7 +486,7 @@ function getHistoricalEvents(timeRangeMs: number): CacheEntry[] {
     FROM whale_events 
     WHERE (timestamp > ? OR block_timestamp > ?)
     ORDER BY COALESCE(block_timestamp, timestamp) DESC
-  `).all(cutoff, cutoff); // ✅ FIX: Removed LIMIT to get ALL data
+  `).all(cutoff, cutoff); 
   
   return rows.map((row: any) => ({
     type: row.type,
@@ -614,58 +606,10 @@ function evictExpiredEntries() {
 
 const EXPLORER_BASE = "https://shannon-explorer.somnia.network";
 
-async function fetchExplorerStats(): Promise<void> {
-  try {
-    const [statsRes, feeRes] = await Promise.allSettled([
-      fetch(`${EXPLORER_BASE}/api?module=stats&action=ethsupply`),
-      fetch(`${EXPLORER_BASE}/api/v2/stats`),
-    ]);
-
-    if (feeRes.status === "fulfilled" && feeRes.value.ok) {
-      const data = await feeRes.value.json();
-      const txCount  = data.transactions_today ?? data.transaction_count_today ?? 0;
-      const gasUsed  = BigInt(data.gas_used_today ?? "0");
-      const AVG_GAS_PRICE = 6_000_000_000n;
-      const totalFeesWei  = gasUsed * AVG_GAS_PRICE;
-      const totalFees24h  = Number(totalFeesWei) / 1e18;
-      const avgFee24h     = txCount > 0 ? totalFees24h / txCount : 0;
-      explorerStats = { txCount24h: txCount, totalFees24h, avgFee24h, fetchedAt: Date.now() };
-      console.log(`📡 Explorer stats: ${txCount.toLocaleString()} txns/24h · ${totalFees24h.toFixed(2)} STT fees`);
-      broadcastExplorerStats();
-      return;
-    }
-
-    const blockTxs24h = alertCache.filter(
-      e => e.type === "block_tx" && e.receivedAt >= Date.now() - 24 * 60 * 60_000
-    );
-    if (blockTxs24h.length > 0) {
-      const totalFees24h = blockTxs24h.reduce((s, e) => {
-        const f = parseFloat(e.raw.txFee?.replace("~","") ?? "0");
-        return s + (isNaN(f) ? 0 : f);
-      }, 0);
-      explorerStats = {
-        txCount24h:   totalBlockTxsSeen,
-        totalFees24h,
-        avgFee24h:    blockTxs24h.length > 0 ? totalFees24h / blockTxs24h.length : 0,
-        fetchedAt:    Date.now(),
-      };
-      broadcastExplorerStats();
-    }
-  } catch (e: any) {
-    console.warn("⚠ Explorer stats fetch failed (non-critical):", e.message?.split("\n")[0]);
-  }
-}
-
-function broadcastExplorerStats() {
-  if (!explorerStats) return;
-  const msg = encoder.encode(`data: ${JSON.stringify({ type: "explorer_stats", stats: explorerStats })}\n\n`);
-  controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
-}
-
 function broadcastFullInit() {
   if (!controllers.size) return;
   
-  // ✅ FIX: Read whales directly from SQLite (NO LIMIT)
+  // Read whales directly from SQLite 
   const whaleRows = db.prepare(`
     SELECT * FROM whale_events 
     WHERE type != 'block_tx'
@@ -690,7 +634,7 @@ function broadcastFullInit() {
     }
   }));
 
-  // ✅ FIX: Read block_tx events directly from SQLite (NO LIMIT)
+  // Read block_tx events directly from SQLite 
   const blockTxRows = db.prepare(`
     SELECT * FROM block_tx_events 
     WHERE received_at >= ?
@@ -729,7 +673,6 @@ function broadcastFullInit() {
     serverTime: Date.now(),
     totalBlockTxsSeen,
     networkLargestSTT,
-    explorerStats,
     whaleThresholdSTT: Number(dynamicWhaleThreshold) / 1e18,
     whalePercentile: WHALE_PERCENTILE,
  
@@ -829,7 +772,7 @@ async function loadRecentBlockTxs() {
     }
     console.log(`✅ Block_tx backfill: ${loaded} new txns loaded (${scanned} blocks scanned)`);
     
-    // ✅ FIX: Proper order: DB first, then cache, then broadcast
+    // ✅ Proper order: DB first, then cache, then broadcast
     promoteBlockTxToWhaleEvents();
     seedWhaleEventsFromDb();
     broadcastFullInit();
@@ -861,8 +804,6 @@ async function startBlockWatcher(
   currentEthUsd = await getEthUsdPrice(httpPub);
   setInterval(async () => { currentEthUsd = await getEthUsdPrice(httpPub) || currentEthUsd; }, 120_000);
   console.log(`💰 ETH/USD oracle price: $${currentEthUsd.toFixed(2)} (Protofire)`);
-
-  setInterval(() => fetchExplorerStats().catch(() => {}), 60_000);
 
   const unwatch = httpPub.watchBlocks({
     includeTransactions: true,
@@ -913,7 +854,7 @@ async function startBlockWatcher(
           push(entry);
 
           const usdEstimate = currentEthUsd > 0 ? sttAmount * currentEthUsd : 0;
-          const label = usdEstimate > 0 ? `~$${Math.round(usdEstimate).toLocaleString()} USD` : `${sttAmount.toFixed(4)} STT`;
+          const label = `${sttAmount.toFixed(4)} STT`;
           console.log(`🌊 Confirmed whale: ${label}  ${from.slice(0,8)}→${to.slice(0,8)}  block:${blockNum}  tx:${txHash.slice(0,10)}`);
 
           // Resolve actual fee asynchronously
@@ -927,7 +868,7 @@ async function startBlockWatcher(
             }
           }).catch(() => {});
 
-          // ── FIX: SMART ALERT (2x average of last 50 whales) ─────────────────────
+          // ── SMART ALERT (2x average of last 50 whales) ─────────────────────
           const avgSize = getAverageWhaleSize();
           if (avgSize > 0 && usdEstimate >= avgSize * 2) {
             const reason = `${sttAmount.toFixed(4)} STT transfer (~$${Math.round(usdEstimate).toLocaleString()}) is 2x larger than average ($${Math.round(avgSize).toLocaleString()})`;
@@ -944,7 +885,7 @@ async function startBlockWatcher(
             console.log(`🚨 Alert derived: ${reason}`);
           }
 
-          // ── FIX: SMART MOMENTUM (count + optional volume) ──────────────────────
+          // ──  SMART MOMENTUM (count + optional volume) ──────────────────────
           const MOMENTUM_WINDOW = 60 * 1000; // 60 seconds
           const MOMENTUM_VOLUME_THRESHOLD = 50000; // $50k (optional)
 
@@ -1036,8 +977,7 @@ async function ensureSubscriptions() {
   if (!backfillRunning) {
     setTimeout(() => loadRecentBlockTxs().catch(() => {}), 10_000);
   }
-  fetchExplorerStats().catch(() => {});
-
+  
   const CONTRACT = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS  as `0x${string}`;
   const HANDLER  = process.env.HANDLER_CONTRACT_ADDRESS      as `0x${string}`;
   const account  = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
@@ -1198,7 +1138,7 @@ export async function GET(req: NextRequest) {
     start(controller) {
       controllers.add(controller);
 
-      // ✅ FIX: Read whales directly from SQLite (NO LIMIT)
+      // ✅ Read whales directly from SQLite
       const whaleRows = db.prepare(`
         SELECT * FROM whale_events 
         WHERE type != 'block_tx'
@@ -1223,7 +1163,7 @@ export async function GET(req: NextRequest) {
         }
       }));
 
-      // ✅ FIX: Read block_tx events directly from SQLite (NO LIMIT)
+      // ✅ Read block_tx events directly from SQLite
       const blockTxRows = db.prepare(`
         SELECT * FROM block_tx_events 
         WHERE received_at >= ?
@@ -1259,7 +1199,6 @@ export async function GET(req: NextRequest) {
         serverTime: Date.now(),
         totalBlockTxsSeen,
         networkLargestSTT,
-        explorerStats,
       })}\n\n`));
 
       controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "connected" })}\n\n`));

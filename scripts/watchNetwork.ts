@@ -39,16 +39,15 @@ const REPORT_DELAY  = 300;
 const MAX_QUEUE     = 50;
 const LOG_INTERVAL  = 60_000;
 const MAX_BACKFILL = 90_000n;
-const WHALE_THRESHOLD_STT = parseEther("1"); // 1 STT threshold
+const WHALE_THRESHOLD_STT = parseEther("0.5"); // 0.5 STT threshold
 
-// ============= FIX: Add missing variables =============
 let lastBlock      = 0n;
 let totalSeen      = 0;
 let totalReported  = 0;
 let totalSkipped   = 0;
 let totalErrors    = 0;
-let totalBlockTxsSeen = 0;  // ← ADD THIS LINE
-let totalSttTxns    = 0;    // ← ADD THIS LINE for STT transfers count
+let totalBlockTxsSeen = 0;  
+let totalSttTxns    = 0;    
 let nonce          = -1;
 let reporting      = false;
 

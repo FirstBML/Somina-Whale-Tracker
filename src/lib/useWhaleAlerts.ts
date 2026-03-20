@@ -102,13 +102,6 @@ function parseBlockTx(msg: any): BlockTx | null {
   }
 }
 
-export type ExplorerStats = {
-  txCount24h:   number;
-  totalFees24h: number;
-  avgFee24h:    number;
-  fetchedAt:    number;
-};
-
 const ALERTS_CACHE_KEY  = "wt_alerts_cache";
 const BLOCKTX_CACHE_KEY = "wt_blocktx_cache";
 const CACHE_TTL_MS      = 24 * 60 * 60_000;
@@ -142,7 +135,6 @@ export function useWhaleAlerts() {
   const [currentThreshold,    setCurrentThreshold]    = useState<number | null>(null);
   const [whaleThresholdSTT,   setWhaleThresholdSTT]   = useState<number | null>(null);
   const [whalePercentile,     setWhalePercentile]     = useState<number>(95);
-  const [explorerStats, setExplorerStats] = useState<ExplorerStats | null>(null);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
@@ -207,7 +199,6 @@ export function useWhaleAlerts() {
 
           if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
           if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
-          if (msg.explorerStats)     setExplorerStats(msg.explorerStats);
         }
           
           if (msg.type === "connected") { setConnected(true); setError(null); }
@@ -256,7 +247,6 @@ export function useWhaleAlerts() {
             ));
           }
 
-          if (msg.type === "explorer_stats" && msg.stats) setExplorerStats(msg.stats);
           if (msg.type === "threshold_update") setCurrentThreshold(parseFloat(msg.raw?.newValue ?? "0"));
         } catch (err) {
           console.error("Error parsing SSE message:", err);
@@ -296,7 +286,6 @@ export function useWhaleAlerts() {
     currentThreshold,
     whaleThresholdSTT,
     whalePercentile,
-    explorerStats,
     connected,
     error,
   };

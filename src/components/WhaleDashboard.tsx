@@ -46,7 +46,7 @@ function usdVal(amount:number, token:string, prices:Record<string,any>): string|
 
 function timeAgo(ts: number) {
   if (!ts || ts <= 0) return "Just now";
-  const timestampMs = ts < 10000000000 ? ts * 1000 : ts; // ✅ Fixes 33B seconds bug
+  const timestampMs = ts < 10000000000 ? ts * 1000 : ts; 
   const diffInSeconds = Math.floor((Date.now() - timestampMs) / 1000);
   if (diffInSeconds < 0) return "Just now";
   if (diffInSeconds < 60) return `${diffInSeconds}s ago`;
@@ -483,7 +483,7 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
                     <Td t={t}>{a.token?<Badge text={a.token} color={TOKEN_COLORS[a.token]} t={t}/>:<span style={{color:t.muted,fontSize:11}}>—</span>}</Td>
                     <Td t={t} accent bold>{a.type==="whale"?parseFloat(a.amount).toFixed(8):<span style={{color:t.muted}}>—</span>}</Td>
                     
-                    {/* ✅ FIX: Show USD for whales, signal reason for signals */}
+                    {/* ✅ Show USD for whales, signal reason for signals */}
                     <Td t={t}>{
                       usd ? (
                         <span style={{color:"#4ade80",fontFamily:"monospace",fontSize:11,fontWeight:700}}>{usd}</span>
@@ -546,7 +546,7 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
                           <div style={{color:t.text,fontSize:11,lineHeight:1.6}}>{a.signalReason||"On-chain signal — see linked transaction for context."}</div>
                         </div>
                         
-                        {/* ✅ FIX: Add signal reason explanation in expanded view */}
+                        {/* ✅ Add signal reason explanation in expanded view */}
                         {a.signalReason && (
                           <div style={{gridColumn:"1/-1", marginTop:8}}>
                             <span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Why this happened</span>
@@ -1360,9 +1360,10 @@ export default function WhaleDashboard(){
   // Whale Tx Rate = whale txns / STT transfers (not all txns — contract calls are irrelevant)
   // Answers: "Of all actual STT value transfers, what % were whale-sized?"
   const whaleTxRate = useMemo(()=>{
-    const sttXfers = windowedBlockTxs.filter(tx => tx.isTransfer).length;
-    if(!sttXfers) return null;
-    return Math.min(100,(windowedWhales.length/sttXfers)*100);
+    const total = windowedBlockTxs.length;
+    if(!total) return null;
+    // Whales as % of ALL network transactions — more meaningful metric
+    return Math.min(100,(windowedWhales.length/total)*100);
   },[windowedWhales.length,windowedBlockTxs]);
 
   // Dynamic token list from actual events — always current, no hardcoding
@@ -1513,129 +1514,55 @@ export default function WhaleDashboard(){
 
       {/* Txn Count + STT Transfers */}
       {/* Txn Count + STT Transfers - Redesigned */}
-<div style={{ padding: "12px 12px", borderBottom: `1px solid ${t.border}`, flexShrink: 0 }}>
-  <div style={{
-    fontSize: 9,
-    fontFamily: "monospace",
-    color: t.accent,
-    textTransform: "uppercase",
-    letterSpacing: "0.1em",
-    marginBottom: 10,
-    display: "flex",
-    alignItems: "center",
-    gap: 6
-  }}>
-    <span style={{ fontSize: 12 }}>🌐</span> Network Activity
+<div style={{padding:"12px 12px",borderBottom:`1px solid ${t.border}`,flexShrink:0}}>
+  <div style={{fontSize:8,fontFamily:"monospace",color:t.accent,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:12,display:"flex",alignItems:"center",gap:5}}>
+    <span style={{fontSize:11}}>🌐</span> Network Activity
   </div>
-  
-  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-    {/* TXN COUNT Card */}
-    <div style={{
-      background: "linear-gradient(145deg, rgba(6,182,212,0.08) 0%, rgba(6,182,212,0.02) 100%)",
-      border: `1px solid ${t.border}`,
-      borderRadius: 12,
-      padding: "12px 8px",
-      textAlign: "center",
-      boxShadow: "0 4px 12px rgba(0,0,0,0.2)"
-    }}>
-      <div style={{
-        color: t.muted,
-        fontSize: 9,
-        fontFamily: "monospace",
-        textTransform: "uppercase",
-        letterSpacing: "0.08em",
-        marginBottom: 6,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 4
-      }}>
-        <span>📊</span> TXN COUNT
+  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+    {/* TXN COUNT */}
+    <div style={{textAlign:"center",padding:"4px 0"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:4,marginBottom:4}}>
+        <span style={{fontSize:9}}>📊</span>
+        <span style={{color:t.muted,fontSize:8,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.08em"}}>TXN COUNT</span>
       </div>
       <div style={{
-        color: t.statVal,
-        fontSize: 22,
-        fontWeight: 700,
-        fontFamily: "monospace",
-        lineHeight: 1.2
+        color:t.statVal,
+        fontSize:28,
+        fontWeight:800,
+        fontFamily:"'Courier New', monospace",
+        lineHeight:1,
+        letterSpacing:"-0.02em",
+        textShadow:"0 0 20px rgba(103,232,249,0.3)"
       }}>
         {windowedBlockTxs.length.toLocaleString()}
       </div>
-      <div style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 4,
-        marginTop: 4,
-        color: t.muted,
-        fontSize: 8,
-        fontFamily: "monospace"
-      }}>
-        <span>⏱️</span>
-        <span>
-          {timePreset < 3600_000 
-            ? `${Math.round(timePreset/60_000)}m` 
-            : timePreset < 86400_000 
-              ? `${Math.round(timePreset/3600_000)}h` 
-              : `${Math.ceil(timePreset/86400_000)}d`} window
-        </span>
+      <div style={{color:t.muted,fontSize:8,fontFamily:"monospace",marginTop:4}}>
+        {timePreset<3600_000?`${Math.round(timePreset/60_000)}m`:timePreset<86400_000?`${Math.round(timePreset/3600_000)}h`:`${Math.ceil(timePreset/86400_000)}d`} window
       </div>
     </div>
-
-    {/* STT XFERS Card */}
-    <div style={{
-      background: "linear-gradient(145deg, rgba(6,182,212,0.08) 0%, rgba(6,182,212,0.02) 100%)",
-      border: `1px solid ${t.border}`,
-      borderRadius: 12,
-      padding: "12px 8px",
-      textAlign: "center",
-      boxShadow: "0 4px 12px rgba(0,0,0,0.2)"
-    }}>
-      <div style={{
-        color: t.muted,
-        fontSize: 9,
-        fontFamily: "monospace",
-        textTransform: "uppercase",
-        letterSpacing: "0.08em",
-        marginBottom: 6,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 4
-      }}>
-        <span>💸</span> STT TXN COUNT
+    {/* STT TXN COUNT */}
+    <div style={{textAlign:"center",padding:"4px 0",borderLeft:`1px solid ${t.border}`}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:4,marginBottom:4}}>
+        <span style={{fontSize:9}}>💸</span>
+        <span style={{color:t.muted,fontSize:8,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.08em"}}>STT TXN</span>
       </div>
       <div style={{
-        color: t.statVal,
-        fontSize: 22,
-        fontWeight: 700,
-        fontFamily: "monospace",
-        lineHeight: 1.2
+        color:t.statVal,
+        fontSize:28,
+        fontWeight:800,
+        fontFamily:"'Courier New', monospace",
+        lineHeight:1,
+        letterSpacing:"-0.02em",
+        textShadow:"0 0 20px rgba(103,232,249,0.3)"
       }}>
-        {windowedBlockTxs.filter(tx => tx.isTransfer).length.toLocaleString()}
+        {windowedBlockTxs.filter(tx=>tx.isTransfer).length.toLocaleString()}
       </div>
-      <div style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 4,
-        marginTop: 4,
-        color: t.muted,
-        fontSize: 8,
-        fontFamily: "monospace"
-      }}>
-        <span>⏳</span>
-        <span>
-          {(() => {
-            if (!blockTxs.length) return "live";
-            const a = now - blockTxs.reduce((m, tx) => Math.min(m, tx.timestamp), Date.now());
-            return a < 3600_000 
-              ? `${Math.round(a/60_000)}m buf` 
-              : a < 86400_000 
-                ? `${(a/3600_000).toFixed(1)}h buf` 
-                : `${(a/86400_000).toFixed(1)}d buf`;
-          })()}
-        </span>
+      <div style={{color:t.muted,fontSize:8,fontFamily:"monospace",marginTop:4}}>
+        {(()=>{
+          if(!blockTxs.length)return"live";
+          const a=now-blockTxs.reduce((m,tx)=>Math.min(m,tx.timestamp),Date.now());
+          return a<3600_000?`${Math.round(a/60_000)}m buf`:a<86400_000?`${(a/3600_000).toFixed(1)}h buf`:`${(a/86400_000).toFixed(1)}d buf`;
+        })()}
       </div>
     </div>
   </div>
@@ -1731,36 +1658,7 @@ export default function WhaleDashboard(){
                 value={whaleTotalFees>0 ? (whaleTotalFees>=1000?`${Math.round(whaleTotalFees).toLocaleString()} STT`:`${whaleTotalFees.toFixed(8)} STT`) : "—"}
                 color="#f59e0b"
                 sub={whaleTotalFees>0 ? (whaleFeeEstimated ? "~estimated" : "actual fees") : "no data"}/>
-              <KpiCard t={t} label="🎯 Whale Threshold"
-                value={whaleThresholdSTT!=null ? `≥${whaleThresholdSTT.toFixed(4)} STT` : "≥1 STT"}
-                color={t.muted}
-                sub={`p${whalePercentile} of 24h transfers`}/>
- 
-              <KpiCard t={t} label="🎯 Whale Threshold"
-                value={whaleThresholdSTT!=null ? `≥${whaleThresholdSTT.toFixed(4)} STT` : "≥1 STT"}
-                color={t.muted}
-                sub={`p${whalePercentile} of 24h transfers`}/>
- 
-              <KpiCard t={t} label="🎯 Whale Threshold"
-                value={whaleThresholdSTT!=null ? `≥${whaleThresholdSTT.toFixed(4)} STT` : "≥1 STT"}
-                color={t.muted}
-                sub={`p${whalePercentile} of 24h transfers`}/>
-              <KpiCard t={t} label="🎯 Whale Threshold"
-                value={whaleThresholdSTT!=null ? `≥${whaleThresholdSTT.toFixed(4)} STT` : "≥1 STT"}
-                color={t.muted}
-                sub={`p${whalePercentile} of 24h transfers`}/>             <KpiCard t={t} label="🎯 Whale Threshold"
-                value={whaleThresholdSTT!=null ? `≥${whaleThresholdSTT.toFixed(4)} STT` : "≥1 STT"}
-                color={t.muted}
-                sub={`p${whalePercentile} of 24h transfers`}/>             <KpiCard t={t} label="🎯 Whale Threshold"
-                value={whaleThresholdSTT!=null ? `≥${whaleThresholdSTT.toFixed(4)} STT` : "≥1 STT"}
-                color={t.muted}
-                sub={`p${whalePercentile} of 24h transfers`}/>             <KpiCard t={t} label="🎯 Whale Threshold"
-                value={whaleThresholdSTT!=null ? `≥${whaleThresholdSTT.toFixed(4)} STT` : "≥1 STT"}
-                color={t.muted}
-                sub={`p${whalePercentile} of 24h transfers`}/>             <KpiCard t={t} label="🎯 Whale Threshold"
-                value={whaleThresholdSTT!=null ? `≥${whaleThresholdSTT.toFixed(4)} STT` : "≥1 STT"}
-                color={t.muted}
-                sub={`p${whalePercentile} of 24h transfers`}/>           </div>
+              </div>
           </div>
 
           {/* Tabs */}
@@ -1771,9 +1669,8 @@ export default function WhaleDashboard(){
           {/* Price Ticker */}
           <PriceTicker prices={oraclePrices} loading={pricesLoading} t={t} lastFetchedAt={lastFetchedAt}/>
         </div>
-      </div>
-
-      {/* Scrollable tab content */}
+      
+      </div> {/* Scrollable tab content */}
       <div style={{flex:1,overflowY:"auto"}}>
         {error&&<div style={{background:t.errBg,border:`1px solid ${t.errBorder}`,margin:"8px 12px 0",borderRadius:8,padding:10,color:t.errText,fontSize:11,fontFamily:"monospace"}}>⚠ {error}</div>}
         <div style={{padding:"8px 12px"}}>
