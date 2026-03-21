@@ -35,6 +35,7 @@ const TOKEN_PRICE_MAP: Record<string,string> = {
   USDC:"USDC", USDT:"USDT",
   SOL:"SOL",
 };
+
 function usdVal(amount:number, token:string, prices:Record<string,any>): string|null {
   const key = TOKEN_PRICE_MAP[token];
   if(!key || !prices[key]) return null;
@@ -410,40 +411,46 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
     return i%2===0?t.tableRow:t.tableAlt;
   }
 
-  // ── Network Activity sorting ──────────────────────────────────────────────
+  // ── Network Activity — server-side paginated ──────────────────────────────
   type NetSortCol = "from"|"to"|"amount"|"fee"|"block"|"time";
   const[netSort,setNetSort]=useState<{col:NetSortCol;dir:"asc"|"desc"}>({col:"time",dir:"desc"});
+  const[netPage,setNetPage]=useState(0);
+  const[netData,setNetData]=useState<{rows:BlockTx[];total:number;pages:number;sttCount:number}>({rows:[],total:0,pages:1,sttCount:0});
+  const[netLoading,setNetLoading]=useState(false);
+ 
   function toggleNetSort(col:NetSortCol){
-    setNetSort(s=>s.col===col?{col,dir:s.dir==="desc"?"asc":"desc"}:{col,dir:"desc"});
+    setNetSort(s=>({col,dir:s.col===col&&s.dir==="desc"?"asc":"desc"}));
     setNetPage(0);
   }
-
-  // Network Activity filters
-  const filteredNetTxs = useMemo(()=>{
-    const d = netSort.dir==="desc"?-1:1;
-    return blockTxs.filter(tx=>{
-      if(netMinAmt && tx.amountRaw < parseFloat(netMinAmt)) return false;
-      if(netMaxAmt && tx.amountRaw > parseFloat(netMaxAmt)) return false;
-      return true;
-    }).sort((a,b)=>{
-      switch(netSort.col){
-        case "from":   return d*(a.from.localeCompare(b.from));
-        case "to":     return d*(a.to.localeCompare(b.to));
-        case "amount": return d*(a.amountRaw-b.amountRaw);
-        case "fee":    return d*(parseFloat(a.txFee.replace("~",""))-parseFloat(b.txFee.replace("~","")));
-        case "block":  return d*(parseInt(a.blockNumber||"0")-parseInt(b.blockNumber||"0"));
-        case "time":   default: return d*(a.timestamp-b.timestamp);
-      }
+ 
+  // Fetch from server when sort/page/filters change
+  useEffect(()=>{
+    if(feedSubTab!=="network-activity") return;
+    setNetLoading(true);
+    const params = new URLSearchParams({
+      page: String(netPage),
+      sort: netSort.col,
+      dir:  netSort.dir,
+      ...(netMinAmt ? {min: netMinAmt} : {}),
+      ...(netMaxAmt ? {max: netMaxAmt} : {}),
     });
-  },[blockTxs,netMinAmt,netMaxAmt,netSort]);
-
-  const[netPage,setNetPage]=useState(0);
-  const NET_PAGE=10;
-  const netPages=Math.max(1,Math.ceil(filteredNetTxs.length/NET_PAGE));
-  const netSlice=filteredNetTxs.slice(netPage*NET_PAGE,(netPage+1)*NET_PAGE);
-  // Reset to page 0 when new network txs arrive
-  const prevNetCount=useRef(filteredNetTxs.length);
-  useEffect(()=>{if(filteredNetTxs.length!==prevNetCount.current){setNetPage(0);prevNetCount.current=filteredNetTxs.length;}},[filteredNetTxs.length]);
+    fetch(`/api/network-activity?${params}`)
+      .then(r=>r.json())
+      .then(d=>{ setNetData(d); setNetLoading(false); })
+      .catch(()=>setNetLoading(false));
+  },[netPage, netSort, netMinAmt, netMaxAmt, feedSubTab]);
+ 
+  // Re-fetch when new live block_txs arrive (throttled — only every 10 new txs)
+  const prevBlockTxLen = useRef(0);
+  useEffect(()=>{
+    if(Math.abs(blockTxs.length - prevBlockTxLen.current) >= 10){
+      prevBlockTxLen.current = blockTxs.length;
+      if(feedSubTab==="network-activity" && netPage===0){
+        const params = new URLSearchParams({page:"0",sort:netSort.col,dir:netSort.dir,...(netMinAmt?{min:netMinAmt}:{}),...(netMaxAmt?{max:netMaxAmt}:{})});
+        fetch(`/api/network-activity?${params}`).then(r=>r.json()).then(setNetData).catch(()=>{});
+      }
+    }
+  },[blockTxs.length]);
   
   return(<div style={{padding:"14px 14px 0"}}>
     <BurstBanner burst={burst} t={t}/>
@@ -610,41 +617,48 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
           </div>
         </div>
 
-        {filteredNetTxs.length===0
-          ? <div style={{padding:"24px",textAlign:"center",color:t.muted,fontSize:11,fontFamily:"monospace"}}>Waiting for block activity...</div>
-          : <><div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
-              <thead><tr>
-                <SortTh t={t} active={netSort.col==="from"}   dir={netSort.dir} onClick={()=>toggleNetSort("from")}>From</SortTh>
-                <SortTh t={t} active={netSort.col==="to"}     dir={netSort.dir} onClick={()=>toggleNetSort("to")}>To</SortTh>
-                <SortTh t={t} active={netSort.col==="amount"} dir={netSort.dir} onClick={()=>toggleNetSort("amount")}>Amount (STT)</SortTh>
-                <SortTh t={t} active={netSort.col==="fee"}    dir={netSort.dir} onClick={()=>toggleNetSort("fee")}>Tx Fee (STT)</SortTh>
-                <Th t={t}>TX Hash</Th>
-                <SortTh t={t} active={netSort.col==="block"}  dir={netSort.dir} onClick={()=>toggleNetSort("block")}>Block</SortTh>
-                <SortTh t={t} active={netSort.col==="time"}   dir={netSort.dir} onClick={()=>toggleNetSort("time")}>Time</SortTh>
-              </tr></thead>
-              <tbody>{netSlice.map((tx,i)=>(
-                <tr key={tx.id} style={{background:i%2===0?t.tableRow:t.tableAlt}}>
-                  <Td t={t}><ExLink href={addrUrl(tx.from)} label={short(tx.from)} t={t}/></Td>
-                  <Td t={t}><ExLink href={addrUrl(tx.to)}   label={short(tx.to)}   t={t}/></Td>
-                  <Td t={t} accent bold>{tx.isTransfer ? `${(parseFloat(tx.amount)).toFixed(8)} STT` : <span style={{color:t.muted,fontSize:10}}>0.00000000 STT</span>}</Td>
-                  <Td t={t}><span style={{color:tx.txFee?.startsWith("~")?t.muted:"#f59e0b",fontSize:10,fontFamily:"monospace"}}>{tx.txFee&&parseFloat(tx.txFee.replace("~",""))>0?(tx.txFee.startsWith("~")?"~":"")+parseFloat(tx.txFee.replace("~","")).toFixed(8)+" STT":"—"}</span></Td>
-                  <Td t={t}><ExLink href={txUrl(tx.txHash)} label={shortHash(tx.txHash)} t={t}/></Td>
-                  <Td t={t}><span style={{color:t.subtext,fontSize:11}}>{tx.blockNumber}</span></Td>
-                  <Td t={t}><span style={{color:t.muted,fontSize:10}}>{timeAgo(tx.timestamp)}</span></Td>
-                </tr>
-              ))}</tbody>
-            </table></div>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 4px",borderTop:`1px solid ${t.border}`}}>
-              <span style={{color:t.muted,fontSize:10,fontFamily:"monospace"}}>{filteredNetTxs.length} total · page {netPage+1} of {netPages}</span>
-              <div style={{display:"flex",gap:6}}>
-                <button onClick={()=>setNetPage(0)} disabled={netPage===0} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:netPage===0?"not-allowed":"pointer",background:t.accentBg,color:netPage===0?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:netPage===0?0.4:1}}>«</button>
-                <button onClick={()=>setNetPage(p=>Math.max(0,p-1))} disabled={netPage===0} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:netPage===0?"not-allowed":"pointer",background:t.accentBg,color:netPage===0?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:netPage===0?0.4:1}}>‹ Prev</button>
-                <button onClick={()=>setNetPage(p=>Math.min(netPages-1,p+1))} disabled={netPage>=netPages-1} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:netPage>=netPages-1?"not-allowed":"pointer",background:t.accentBg,color:netPage>=netPages-1?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:netPage>=netPages-1?0.4:1}}>Next ›</button>
-                <button onClick={()=>setNetPage(netPages-1)} disabled={netPage>=netPages-1} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:netPage>=netPages-1?"not-allowed":"pointer",background:t.accentBg,color:netPage>=netPages-1?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:netPage>=netPages-1?0.4:1}}>»</button>
+        {netLoading && netData.rows.length===0
+          ? <div style={{padding:"24px",textAlign:"center",color:t.muted,fontSize:11,fontFamily:"monospace"}}>Loading...</div>
+          : netData.total===0
+            ? <div style={{padding:"24px",textAlign:"center",color:t.muted,fontSize:11,fontFamily:"monospace"}}>Waiting for block activity...</div>
+            : <><div style={{overflowX:"auto",opacity:netLoading?0.6:1,transition:"opacity 0.2s"}}>
+                <table style={{width:"100%",borderCollapse:"collapse"}}>
+                  <thead><tr>
+                    <SortTh t={t} active={netSort.col==="from"}   dir={netSort.dir} onClick={()=>toggleNetSort("from")}>From</SortTh>
+                    <SortTh t={t} active={netSort.col==="to"}     dir={netSort.dir} onClick={()=>toggleNetSort("to")}>To</SortTh>
+                    <SortTh t={t} active={netSort.col==="amount"} dir={netSort.dir} onClick={()=>toggleNetSort("amount")}>Amount (STT)</SortTh>
+                    <SortTh t={t} active={netSort.col==="fee"}    dir={netSort.dir} onClick={()=>toggleNetSort("fee")}>Tx Fee (STT)</SortTh>
+                    <Th t={t}>TX Hash</Th>
+                    <SortTh t={t} active={netSort.col==="block"}  dir={netSort.dir} onClick={()=>toggleNetSort("block")}>Block</SortTh>
+                    <SortTh t={t} active={netSort.col==="time"}   dir={netSort.dir} onClick={()=>toggleNetSort("time")}>Time</SortTh>
+                  </tr></thead>
+                  <tbody>{netData.rows.map((tx,i)=>(
+                    <tr key={tx.id} style={{background:i%2===0?t.tableRow:t.tableAlt}}>
+                      <Td t={t}><ExLink href={addrUrl(tx.from)} label={short(tx.from)} t={t}/></Td>
+                      <Td t={t}><ExLink href={addrUrl(tx.to)}   label={short(tx.to)}   t={t}/></Td>
+                      <Td t={t} accent bold>{tx.isTransfer ? `${tx.amountRaw.toFixed(8)} STT` : <span style={{color:t.muted,fontSize:10}}>0.00000000 STT</span>}</Td>
+                      <Td t={t}><span style={{color:tx.txFee?.startsWith("~")?t.muted:"#f59e0b",fontSize:10,fontFamily:"monospace"}}>{tx.txFee&&parseFloat(tx.txFee.replace("~",""))>0?(tx.txFee.startsWith("~")?"~":"")+parseFloat(tx.txFee.replace("~","")).toFixed(8)+" STT":"—"}</span></Td>
+                      <Td t={t}><ExLink href={txUrl(tx.txHash)} label={shortHash(tx.txHash)} t={t}/></Td>
+                      <Td t={t}><span style={{color:t.subtext,fontSize:11}}>{tx.blockNumber}</span></Td>
+                      <Td t={t}><span style={{color:t.muted,fontSize:10}}>{timeAgo(tx.timestamp)}</span></Td>
+                    </tr>
+                  ))}</tbody>
+                </table>
               </div>
-            </div>
-          </>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 4px",borderTop:`1px solid ${t.border}`}}>
+                <span style={{color:t.muted,fontSize:10,fontFamily:"monospace"}}>
+                  {netData.total.toLocaleString()} total · {netData.sttCount.toLocaleString()} STT transfers · page {netPage+1} of {netData.pages}
+                </span>
+                <div style={{display:"flex",gap:6}}>
+                  <button onClick={()=>setNetPage(0)} disabled={netPage===0||netLoading} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:netPage===0?"not-allowed":"pointer",background:t.accentBg,color:netPage===0?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:netPage===0?0.4:1}}>«</button>
+                  <button onClick={()=>setNetPage(p=>Math.max(0,p-1))} disabled={netPage===0||netLoading} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:netPage===0?"not-allowed":"pointer",background:t.accentBg,color:netPage===0?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:netPage===0?0.4:1}}>‹ Prev</button>
+                  <button onClick={()=>setNetPage(p=>Math.min(netData.pages-1,p+1))} disabled={netPage>=netData.pages-1||netLoading} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:netPage>=netData.pages-1?"not-allowed":"pointer",background:t.accentBg,color:netPage>=netData.pages-1?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:netPage>=netData.pages-1?0.4:1}}>Next ›</button>
+                  <button onClick={()=>setNetPage(netData.pages-1)} disabled={netPage>=netData.pages-1||netLoading} style={{fontSize:10,fontFamily:"monospace",padding:"3px 8px",borderRadius:5,cursor:netPage>=netData.pages-1?"not-allowed":"pointer",background:t.accentBg,color:netPage>=netData.pages-1?t.muted:t.accent,border:`1px solid ${t.border}`,opacity:netPage>=netData.pages-1?0.4:1}}>»</button>
+                </div>
+              </div>
+            </>
         }
+ 
       </>
     )}
   </div>);
@@ -1104,24 +1118,25 @@ function LeaderboardTab({
       if (a.token) map[a.to].tokens.add(a.token);
     });
 
-    // Second pass: count burst participation (also respecting time window)
+     // Second pass: burst detection using sorted sliding window — O(n log n) not O(n²)
     const BURST_WINDOW = 60_000;
-    whaleOnly.forEach(whale => {
-      // Skip if whale is outside our time window
-      if (windowCutoff > 0 && whale.timestamp < windowCutoff) return;
-      
-      const cluster = whaleOnly.filter(w => 
-        Math.abs(w.timestamp - whale.timestamp) < BURST_WINDOW &&
-        (windowCutoff === 0 || w.timestamp >= windowCutoff) // Also filter cluster members
-      );
-      
-      if (cluster.length >= 3) {
-        const addrs = new Set([whale.from, whale.to]);
-        addrs.forEach(addr => {
-          if (map[addr]) map[addr].burstCount++;
-        });
+    const windowWhales = whaleOnly
+      .filter(w => windowCutoff === 0 || w.timestamp >= windowCutoff)
+      .sort((a, b) => a.timestamp - b.timestamp);
+ 
+    let left = 0;
+    for (let right = 0; right < windowWhales.length; right++) {
+      // Shrink left pointer until window fits within BURST_WINDOW
+      while (windowWhales[right].timestamp - windowWhales[left].timestamp >= BURST_WINDOW) {
+        left++;
       }
-    });
+      const clusterSize = right - left + 1;
+      if (clusterSize >= 3) {
+        const w = windowWhales[right];
+        if (map[w.from]) map[w.from].burstCount++;
+        if (map[w.to])   map[w.to].burstCount++;
+      }
+    }
 
     return Object.entries(map)
       .map(([address, d]) => {
@@ -1676,7 +1691,8 @@ export default function WhaleDashboard(){
         <div style={{padding:"8px 12px"}}>
           <div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:14,overflow:"hidden"}}>
             {tab==="feed"        && <LiveFeedTab    alerts={filtered} t={t} connectedAddr={walletAddr} burst={burst} oraclePrices={oraclePrices} blockTxs={windowedBlockTxs} totalBlockTxsSeen={totalBlockTxsSeen} timePreset={timePreset} feedSubTab={feedSubTab} setFeedSubTab={setFeedSubTab} netMinAmt={netMinAmt} setNetMinAmt={setNetMinAmt} netMaxAmt={netMaxAmt} setNetMaxAmt={setNetMaxAmt}/>}
-            {tab==="analytics" && <AnalyticsTab alerts={filtered} t={t} oraclePrices={oraclePrices} blockTxs={blockTxs}/>}
+                       {tab==="analytics" && <AnalyticsTab alerts={filtered} t={t} oraclePrices={oraclePrices} blockTxs={blockTxs.slice(0,5000)}/>}
+
             {tab==="charts"      && <ChartsTab      alerts={filtered} t={t}/>}
             {tab==="leaderboard" && <LeaderboardTab alerts={filtered} t={t} persistedEntries={persistedEntries} timePreset={timePreset}/>}
             {tab==="flow"        && <TokenFlowTab   alerts={filtered} t={t}/>}

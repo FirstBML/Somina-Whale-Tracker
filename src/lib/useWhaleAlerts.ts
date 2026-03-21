@@ -197,8 +197,10 @@ export function useWhaleAlerts() {
             parsedBlockTxs.forEach(tx => { if (tx.txHash) window._processedTxHashes!.add(tx.txHash); });
           }
 
-          if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
+           if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
           if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
+          if (msg.whaleThresholdSTT) setWhaleThresholdSTT(msg.whaleThresholdSTT);
+          if (msg.whalePercentile)   setWhalePercentile(msg.whalePercentile);
         }
           
           if (msg.type === "connected") { setConnected(true); setError(null); }

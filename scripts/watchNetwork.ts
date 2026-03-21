@@ -225,8 +225,8 @@ async function fetchThreshold(pub: ReturnType<typeof createPublicClient>, CONTRA
   try {
     return await pub.readContract({ address: CONTRACT, abi: TRACKER_ABI, functionName: "threshold" }) as bigint;
   } catch {
-    console.warn("⚠ Could not fetch on-chain threshold — using 1 STT fallback");
-    return parseEther("1");
+    console.warn("⚠ Could not fetch on-chain threshold — using 0.5 STT fallback");
+    return parseEther("0.5");
   }
 }
 

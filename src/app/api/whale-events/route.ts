@@ -196,12 +196,6 @@ function refreshWhaleThreshold() {
   }
 }
   
-function rows_count_for_log(): number {
-  try {
-    const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
-    return (db.prepare(`SELECT COUNT(*) as n FROM block_tx_events WHERE received_at >= ? AND CAST(amount AS REAL) > 0`).get(cutoff) as any)?.n ?? 0;
-  } catch { return 0; }
-}
 
 export type CacheEntry = {
   type: "whale" | "reaction" | "alert" | "momentum" | "block_tx" | "threshold_update";
@@ -383,7 +377,8 @@ function push(entry: CacheEntry) {
         entry.receivedAt,
         blockTsMs,
       );
-    } catch {} // IGNORE duplicate tx_hash } else {
+   } catch {} // IGNORE duplicate tx_hash
+  } else {
     if (nonBlockTxCount >= MAX_CACHE) {
       const idx = alertCache.findIndex(e => e.type !== "block_tx");
       if (idx !== -1) { alertCache.splice(idx, 1); nonBlockTxCount--; }
@@ -453,29 +448,25 @@ function push(entry: CacheEntry) {
 }
 
 // ============= Calculate average whale size for alerts =============
-function getAverageWhaleSize(): number {
+function getAverageWhaleSizeSTT(): number {
   try {
     const rows = db.prepare(`
-      SELECT amount FROM whale_events 
+      SELECT amount FROM whale_events
       WHERE type = 'whale' AND amount IS NOT NULL
       ORDER BY block_timestamp DESC
       LIMIT ${ALERT_WINDOW_SIZE}
     `).all() as { amount: string }[];
-    
+ 
     if (rows.length < 5) return 0;
-    
+ 
     const amounts = rows.map(r => {
-      const wei = BigInt(r.amount);
-      return Number(wei) / 1e18 * currentEthUsd;
+      try { return Number(BigInt(r.amount)) / 1e18; }
+      catch { return 0; }
     }).filter(a => a > 0);
-    
-    if (amounts.length === 0) return 0;
-    
-    const sum = amounts.reduce((a, b) => a + b, 0);
-    return sum / amounts.length;
-  } catch (e) {
-    return 0;
-  }
+ 
+    if (!amounts.length) return 0;
+    return amounts.reduce((s, v) => s + v, 0) / amounts.length;
+  } catch { return 0; }
 }
 
 function getHistoricalEvents(timeRangeMs: number): CacheEntry[] {
@@ -762,6 +753,22 @@ async function loadRecentBlockTxs() {
                   txFee: feeSTT > 0 ? `~${feeSTT.toFixed(8)}` : "0",
                 },
               });
+ 
+              // Smart alert check for backfilled whales
+              const avgSizeSTT = getAverageWhaleSizeSTT();
+              if (avgSizeSTT > 0 && sttAmount >= avgSizeSTT * 2) {
+                push({
+                  type: "alert", receivedAt: blockTs,
+                  raw: {
+                    from: (tx.from ?? "") as string,
+                    to:   (tx.to ?? "0x0000000000000000000000000000000000000000") as string,
+                    amount: "0x0", timestamp: ts, token: "",
+                    txHash: tx.hash, blockNumber: blockNum, blockHash: block.hash ?? "",
+                    linkedTxHash: tx.hash,
+                    signalReason: `${sttAmount.toFixed(4)} STT is 2× larger than recent average (${avgSizeSTT.toFixed(4)} STT)`,
+                  },
+                });
+              }
             }
           }
         }
@@ -853,10 +860,8 @@ async function startBlockWatcher(
           };
           push(entry);
 
-          const usdEstimate = currentEthUsd > 0 ? sttAmount * currentEthUsd : 0;
-          const label = `${sttAmount.toFixed(4)} STT`;
-          console.log(`🌊 Confirmed whale: ${label}  ${from.slice(0,8)}→${to.slice(0,8)}  block:${blockNum}  tx:${txHash.slice(0,10)}`);
-
+          console.log(`🌊 Confirmed whale: ${sttAmount.toFixed(4)} STT  ${from.slice(0,8)}→${to.slice(0,8)}  block:${blockNum}  tx:${txHash.slice(0,10)}`);
+ 
           // Resolve actual fee asynchronously
           fetchActualFee(httpPub, txHash as `0x${string}`).then(actualFee => {
             if (!actualFee) return;
@@ -867,11 +872,11 @@ async function startBlockWatcher(
               controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
             }
           }).catch(() => {});
-
-          // ── SMART ALERT (2x average of last 50 whales) ─────────────────────
-          const avgSize = getAverageWhaleSize();
-          if (avgSize > 0 && usdEstimate >= avgSize * 2) {
-            const reason = `${sttAmount.toFixed(4)} STT transfer (~$${Math.round(usdEstimate).toLocaleString()}) is 2x larger than average ($${Math.round(avgSize).toLocaleString()})`;
+ 
+          // ── SMART ALERT: 2× average STT size of last 50 whales ───────────────────
+          const avgSizeSTT = getAverageWhaleSizeSTT();
+          if (avgSizeSTT > 0 && sttAmount >= avgSizeSTT * 2) {
+            const reason = `${sttAmount.toFixed(4)} STT is 2× larger than recent average (${avgSizeSTT.toFixed(4)} STT)`;
             push({
               type: "alert", receivedAt: Date.now(),
               raw: {
@@ -886,24 +891,24 @@ async function startBlockWatcher(
           }
 
           // ──  SMART MOMENTUM (count + optional volume) ──────────────────────
-          const MOMENTUM_WINDOW = 60 * 1000; // 60 seconds
-          const MOMENTUM_VOLUME_THRESHOLD = 50000; // $50k (optional)
-
+          const MOMENTUM_WINDOW = 60 * 1000;
+          const MOMENTUM_VOLUME_THRESHOLD_STT = 10; // 10 STT total volume threshold
+ 
           const recentWhales = alertCache.filter(e =>
             e.type === "whale" &&
             e.raw.from === from &&
             Date.now() - e.receivedAt <= MOMENTUM_WINDOW
           );
-
-          const totalVolume = recentWhales.reduce((sum, w) => {
-            const amount = Number(BigInt(w.raw.amount)) / 1e18;
-            return sum + (amount * currentEthUsd);
-          }, 0) + usdEstimate;
-
+ 
+          const totalVolumeSTT = recentWhales.reduce((sum, w) => {
+            try { return sum + Number(BigInt(w.raw.amount)) / 1e18; }
+            catch { return sum; }
+          }, 0) + sttAmount;
+ 
           if (recentWhales.length >= 2) {
             let reason = `${recentWhales.length + 1} whale txns from ${from.slice(0,10)} in 60s`;
-            if (totalVolume >= MOMENTUM_VOLUME_THRESHOLD) {
-              reason += `, total volume ~$${Math.round(totalVolume).toLocaleString()}`;
+            if (totalVolumeSTT >= MOMENTUM_VOLUME_THRESHOLD_STT) {
+              reason += `, total ${totalVolumeSTT.toFixed(4)} STT`;
             }
             push({
               type: "momentum", receivedAt: Date.now(),
@@ -937,6 +942,200 @@ async function startBlockWatcher(
 
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempts = 0;
+
+async function backfillContractEvents() {
+  const HANDLER  = process.env.HANDLER_CONTRACT_ADDRESS as `0x${string}`;
+  const CONTRACT = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS as `0x${string}`;
+  if (!HANDLER || !CONTRACT) return;
+ 
+  const pub = createPublicClient({
+    chain: somniaTestnet,
+    transport: http("https://dream-rpc.somnia.network"),
+  });
+ 
+  try {
+    const latest   = await pub.getBlockNumber();
+    const LOOKBACK = 36_000n;
+    const fromBlock = latest > LOOKBACK ? latest - LOOKBACK : 0n;
+ 
+    console.log(`📜 Backfilling contract events from block #${fromBlock} → #${latest}…`);
+ 
+    // Block timestamp cache — avoids duplicate getBlock() calls for same block
+    const blockTsCache = new Map<string, number>();
+    async function getBlockTs(blockNumber: bigint | null): Promise<number> {
+      if (!blockNumber) return Date.now();
+      const key = blockNumber.toString();
+      if (blockTsCache.has(key)) return blockTsCache.get(key)!;
+      try {
+        const block = await pub.getBlock({ blockNumber });
+        const ts = Number(block.timestamp) * 1000;
+        blockTsCache.set(key, ts);
+        return ts;
+      } catch { return Date.now(); }
+    }
+ 
+    // ── 1. ReactedToWhaleTransfer ────────────────────────────────────────────
+    let reactionLogs: any[] = [];
+    try {
+      reactionLogs = await pub.getLogs({
+        address: HANDLER,
+        event: {
+          name: "ReactedToWhaleTransfer", type: "event",
+          inputs: [
+            { name: "emitter", type: "address", indexed: true  },
+            { name: "topic0",  type: "bytes32", indexed: false },
+            { name: "from",    type: "address", indexed: false },
+            { name: "to",      type: "address", indexed: false },
+            { name: "count",   type: "uint256", indexed: false },
+          ],
+        },
+        fromBlock,
+        toBlock: latest,
+      });
+      console.log(`📜 Found ${reactionLogs.length} ReactedToWhaleTransfer logs`);
+    } catch (e: any) {
+      console.warn("⚠ getLogs ReactedToWhaleTransfer failed:", e.message?.split("\n")[0]);
+    }
+ 
+    const insertEvent = db.prepare(`
+      INSERT OR IGNORE INTO whale_events
+      (id, type, from_addr, to_addr, amount, timestamp, block_timestamp, token,
+       tx_hash, block_number, block_hash, tx_fee, linked_tx_hash, signal_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+ 
+    let reactions = 0;
+    for (const log of reactionLogs) {
+      const a = log.args as any;
+      const txHash = log.transactionHash ?? "";
+      const contentKey = `reaction:${a.from}:${a.to}:${a.count}`;
+      if (!markBlockSeen(contentKey)) continue;
+ 
+      const blockTs = await getBlockTs(log.blockNumber ?? null);
+ 
+      // Find the closest preceding whale in cache to link to
+      const linkedWhale = [...alertCache]
+        .reverse()
+        .find(e => e.type === "whale" && e.receivedAt <= blockTs);
+ 
+      try {
+        insertEvent.run(
+          `backfill-reaction-${txHash}-${a.count}`,
+          "reaction",
+          a.from ?? "", a.to ?? "", "0x0",
+          blockTs, blockTs, "",
+          txHash,
+          log.blockNumber?.toString() ?? null,
+          log.blockHash ?? null,
+          "0",
+          linkedWhale?.raw.txHash ?? null,
+          `WhaleHandler reacted to whale transfer — reaction #${a.count}`,
+        );
+        reactions++;
+      } catch {} // IGNORE duplicate
+    }
+ 
+    // ── 2. WhaleMomentumDetected ─────────────────────────────────────────────
+    let momentumLogs: any[] = [];
+    try {
+      momentumLogs = await pub.getLogs({
+        address: CONTRACT,
+        event: {
+          name: "WhaleMomentumDetected", type: "event",
+          inputs: [
+            { name: "burstCount",  type: "uint256", indexed: false },
+            { name: "blockNumber", type: "uint256", indexed: false },
+          ],
+        },
+        fromBlock,
+        toBlock: latest,
+      });
+      console.log(`📜 Found ${momentumLogs.length} WhaleMomentumDetected logs`);
+    } catch (e: any) {
+      console.warn("⚠ getLogs WhaleMomentumDetected failed:", e.message?.split("\n")[0]);
+    }
+ 
+    let momentums = 0;
+    for (const log of momentumLogs) {
+      const a = log.args as any;
+      const txHash = log.transactionHash ?? "";
+      if (!markBlockSeen(`momentum:${txHash}`)) continue;
+ 
+      const blockTs = await getBlockTs(log.blockNumber ?? null);
+ 
+      try {
+        insertEvent.run(
+          `backfill-momentum-${txHash}`,
+          "momentum",
+          "", "", "0x0",
+          blockTs, blockTs, "",
+          txHash,
+          log.blockNumber?.toString() ?? null,
+          log.blockHash ?? null,
+          "0", null,
+          `On-chain burst: ${a.burstCount} whale transfers in 10 blocks`,
+        );
+        momentums++;
+      } catch {} // IGNORE duplicate
+    }
+ 
+    // ── 3. AlertThresholdCrossed ─────────────────────────────────────────────
+    let alertLogs: any[] = [];
+    try {
+      alertLogs = await pub.getLogs({
+        address: HANDLER,
+        event: {
+          name: "AlertThresholdCrossed", type: "event",
+          inputs: [
+            { name: "reactionCount", type: "uint256", indexed: false },
+            { name: "blockNumber",   type: "uint256", indexed: false },
+          ],
+        },
+        fromBlock,
+        toBlock: latest,
+      });
+      console.log(`📜 Found ${alertLogs.length} AlertThresholdCrossed logs`);
+    } catch (e: any) {
+      console.warn("⚠ getLogs AlertThresholdCrossed failed:", e.message?.split("\n")[0]);
+    }
+ 
+    let alerts = 0;
+    for (const log of alertLogs) {
+      const a = log.args as any;
+      const txHash = log.transactionHash ?? "";
+      if (!markBlockSeen(`alert:${txHash}`)) continue;
+ 
+      const blockTs = await getBlockTs(log.blockNumber ?? null);
+ 
+      try {
+        insertEvent.run(
+          `backfill-alert-${txHash}`,
+          "alert",
+          "", "", "0x0",
+          blockTs, blockTs, "",
+          txHash,
+          log.blockNumber?.toString() ?? null,
+          log.blockHash ?? null,
+          "0", null,
+          `Alert threshold crossed — ${a.reactionCount} reactions recorded`,
+        );
+        alerts++;
+      } catch {} // IGNORE duplicate
+    }
+ 
+    const total = reactions + momentums + alerts;
+    if (total > 0) {
+      console.log(`📜 Contract backfill complete: ${reactions} reactions, ${momentums} momentum, ${alerts} alerts inserted`);
+      // Re-seed cache so newly inserted events are included in next broadcastFullInit
+      seedWhaleEventsFromDb();
+      nonBlockTxCount = alertCache.filter(e => e.type !== "block_tx").length;
+    } else {
+      console.log(`📜 Contract backfill: no new events found in range`);
+    }
+  } catch (e: any) {
+    console.warn("⚠ Contract event backfill failed (non-critical):", e.message?.split("\n")[0]);
+  }
+}
 
 async function scheduleReconnect() {
   if (reconnectTimer) return;
@@ -977,6 +1176,9 @@ async function ensureSubscriptions() {
   if (!backfillRunning) {
     setTimeout(() => loadRecentBlockTxs().catch(() => {}), 10_000);
   }
+  // Backfill historical contract events (reactions, momentum, alerts) via getLogs()
+  // Runs 5s after startup so clients receive initial data first
+  setTimeout(() => backfillContractEvents().catch(() => {}), 5_000);
   
   const CONTRACT = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS  as `0x${string}`;
   const HANDLER  = process.env.HANDLER_CONTRACT_ADDRESS      as `0x${string}`;
@@ -1170,21 +1372,24 @@ export async function GET(req: NextRequest) {
         ORDER BY received_at DESC
       `).all(Date.now() - BLOCK_TX_WINDOW_MS) as any[];
       
-      const blockTxAlerts = blockTxRows.map((row: any) => ({
-        type: "block_tx",
-        receivedAt: row.received_at,
-        raw: {
-          from: row.from_addr,
-          to: row.to_addr,
-          amount: row.amount,
-          timestamp: `0x${Math.floor(row.received_at / 1000).toString(16)}`,
-          token: "STT",
-          txHash: row.tx_hash,
-          blockNumber: row.block_number,
-          blockHash: row.block_hash,
-          txFee: row.tx_fee || "0",
-        }
-      }));
+      const blockTxAlerts = blockTxRows.map((row: any) => {
+        const blockTsMs = row.block_timestamp ?? row.received_at;
+        return {
+          type: "block_tx",
+          receivedAt: row.received_at,
+          raw: {
+            from: row.from_addr,
+            to: row.to_addr,
+            amount: row.amount,
+            timestamp: `0x${Math.floor(blockTsMs / 1000).toString(16)}`,
+            token: "STT",
+            txHash: row.tx_hash,
+            blockNumber: row.block_number,
+            blockHash: row.block_hash,
+            txFee: row.tx_fee || "0",
+          }
+        };
+      });
 
       const dbTimestamp = db.prepare(`
         SELECT MAX(block_timestamp) as latest FROM whale_events
@@ -1199,6 +1404,8 @@ export async function GET(req: NextRequest) {
         serverTime: Date.now(),
         totalBlockTxsSeen,
         networkLargestSTT,
+        whaleThresholdSTT: Number(dynamicWhaleThreshold) / 1e18,
+        whalePercentile:   WHALE_PERCENTILE,
       })}\n\n`));
 
       controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "connected" })}\n\n`));
