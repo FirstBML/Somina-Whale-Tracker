@@ -79,7 +79,9 @@ const DEFAULT_METRICS: LiveMetrics = {
   whaleVolumeStt: 0, avgWhaleSizeStt: 0,
   largestWhaleStt: 0, whaleFees: 0, whaleFeeEstimated: false,
   alerts24h: 0, momentum24h: 0, reactions24h: 0,
-  whaleTxRate: 0, whaleThresholdStt: 0.5, whalePercentile: 90,
+  whaleTxRate: 0,
+  whaleTxRateRaw: 0,  // ← Add this
+  whaleThresholdStt: 0.5, whalePercentile: 90,
   updatedAt: 0,
 };
 
