@@ -7,6 +7,10 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { enqueue as enqueueLeaderboard } from "../streams-leaderboard/route";
 import Database from 'better-sqlite3';
+import {
+  processEvent, seedFromHistory, setThresholdMeta,
+  getMetrics, getShockData,
+} from "../../../lib/analyticsEngine";
 
 const somniaTestnet = defineChain({
   id: 50312,
@@ -151,7 +155,7 @@ const AGGREGATOR_ABI = [{
   inputs: [], outputs: [{ type: "uint8" }],
 }] as const;
 
-const WHALE_PERCENTILE  = 90;   // top 10% of STT transfers = whale
+const WHALE_PERCENTILE  = 75;   // top 25% of STT transfers = whale
 const MIN_WHALE_STT     = 0.5;  // absolute floor — ignore dust below 0.5 STT
 let dynamicWhaleThreshold: bigint = parseEther("0.5"); // safe default until computed
 
@@ -185,6 +189,7 @@ function computePercentileThreshold(): number {
 function refreshWhaleThreshold() {
   const stt = computePercentileThreshold();
   dynamicWhaleThreshold = BigInt(Math.round(stt * 1e18));
+  setThresholdMeta(stt, WHALE_PERCENTILE); // keep analytics engine in sync
   try {
     const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
     const n = (db.prepare(
@@ -347,6 +352,22 @@ function broadcast(entry: CacheEntry) {
   controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
 }
 
+// Broadcast pre-computed metrics to all clients — called every ~2 seconds via interval
+// so the frontend never needs to compute anything from raw arrays
+let _metricsInterval: ReturnType<typeof setInterval> | null = null;
+function startMetricsBroadcast() {
+  if (_metricsInterval) return;
+  _metricsInterval = setInterval(() => {
+    if (!controllers.size) return;
+    const msg = encoder.encode(`data: ${JSON.stringify({
+      type:    "metrics_update",
+      metrics: getMetrics(),
+      shock:   getShockData(),
+    })}\n\n`);
+    controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
+  }, 2_000);
+}
+
 function push(entry: CacheEntry) {
   if (entry.type === "block_tx") {
     totalBlockTxsSeen++;
@@ -387,6 +408,9 @@ function push(entry: CacheEntry) {
   }
   alertCache.push(entry);
   broadcast(entry);
+
+  // Update analytics engine — O(1) incremental update, no array scanning
+  processEvent(entry.type, entry.raw, entry.receivedAt);
 
   // Persist confirmed whales to database
   if (entry.type === "whale" && entry.raw.txHash) {
@@ -1171,6 +1195,15 @@ async function ensureSubscriptions() {
   nonBlockTxCount = alertCache.filter(e => e.type !== "block_tx").length;
   refreshWhaleThreshold(); // compute dynamic threshold from loaded block_tx data
   setInterval(refreshWhaleThreshold, 5 * 60_000); // refresh every 5 min
+
+  // Seed analytics engine from loaded history so metrics are correct immediately
+  // Uses the already-loaded alertCache — no extra DB query needed
+  seedFromHistory(
+    alertCache.map(e => ({ type: e.type, raw: e.raw, receivedAt: e.receivedAt })),
+  );
+  console.log(`📊 Analytics engine seeded from ${alertCache.length} cached entries`);
+  startMetricsBroadcast(); // push pre-computed metrics to all clients every 2s
+
   cacheReadyResolve?.();
   
   if (!backfillRunning) {
@@ -1243,7 +1276,7 @@ async function ensureSubscriptions() {
           });
           const a = decoded.args as any;
 
-          const contentKey = `reaction:${a.from}:${a.to}:${a.count}`;
+           const contentKey = `reaction:${a.from}:${a.to}:${a.count}`;
           if (!markBlockSeen(contentKey)) return;
 
           const latestWhale = [...alertCache].reverse().find(e => e.type === "whale");
@@ -1406,6 +1439,8 @@ export async function GET(req: NextRequest) {
         networkLargestSTT,
         whaleThresholdSTT: Number(dynamicWhaleThreshold) / 1e18,
         whalePercentile:   WHALE_PERCENTILE,
+        metrics:           getMetrics(),
+        shock:             getShockData(),
       })}\n\n`));
 
       controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "connected" })}\n\n`));

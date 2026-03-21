@@ -189,10 +189,11 @@ function Speedometer({value,t}:{value:number|null;t:typeof T.dark}){
 
 // ── SpeedometerLarge — full SVG arc gauge for sidebar ────────────────────────
 function SpeedometerLarge({value,t}:{value:number|null;t:typeof T.dark}){
-  const pct = Math.min(100,(value??0)*20);
+  // value is already 0–100 (whaleTxRate is a percentage, not a 0–5 ratio)
+  const pct = Math.min(100, value ?? 0);
   const color = pct>=80?"#ef4444":pct>=50?"#f97316":pct>=20?"#f59e0b":"#4ade80";
   const label = pct>=80?"HIGH":pct>=50?"ELEVATED":pct>=20?"MODERATE":"LOW";
-  const displayVal = value!=null?`${value.toFixed(2)}%`:"—";
+  const displayVal = value!=null?`${(value/20).toFixed(3)}%`:"—";
   // cy=100 gives enough room below hub for value text + label badge within height=165
   const cx=130,cy=100,r=88;
   const startDeg=210,sweep=240;
@@ -253,7 +254,7 @@ function SpeedometerLarge({value,t}:{value:number|null;t:typeof T.dark}){
           const a=startDeg-(sweep*(p/100));
           const [ox,oy]=pt(96,a); const [ix,iy]=pt(88,a);
           const [lx,ly]=pt(104,a);
-          const tickLabels=["0","1.25","2.5","3.75","5%"];
+         const tickLabels=["0","1.25%","2.5%","3.75%","5%"];
           return(<g key={i}>
             <line x1={ox} y1={oy} x2={ix} y2={iy} stroke="rgba(255,255,255,0.5)" strokeWidth="1.5"/>
             <text x={lx} y={ly} textAnchor="middle" dominantBaseline="middle" fill="rgba(103,184,204,0.6)" fontSize="7" fontFamily="monospace">{tickLabels[i]}</text>
@@ -707,7 +708,7 @@ function MyWalletTab({alerts,connectedAddr,t}:{alerts:WhaleAlert[];connectedAddr
   </div>);}
 
 // ── Analytics Tab (with Shock Score / Network Impact) ─────────────────────────
-function AnalyticsTab({alerts,t,oraclePrices,blockTxs}:{alerts:WhaleAlert[];t:typeof T.dark;oraclePrices:Record<string,OraclePrice>;blockTxs:BlockTx[]}){
+function AnalyticsTab({alerts,t,oraclePrices,shockData}:{alerts:WhaleAlert[];t:typeof T.dark;oraclePrices:Record<string,OraclePrice>;shockData:import("../lib/useWhaleAlerts").ShockDataPoint[];}){
   const whales      = useMemo(()=>alerts.filter(a=>a.type==="whale"),[alerts]);
   const alertEvents = useMemo(()=>alerts.filter(a=>a.type==="alert"),[alerts]);
   const totalVol    = useMemo(()=>whales.reduce((s,a)=>s+num(a.amount),0),[whales]);
@@ -764,36 +765,7 @@ function AnalyticsTab({alerts,t,oraclePrices,blockTxs}:{alerts:WhaleAlert[];t:ty
     return Object.entries(b).slice(-30).map(([time,volume])=>({time:time.slice(11),volume:Math.round(volume)}));
   },[whales]);
 
-  const shockData = useMemo(()=>{
-    if(!whales.length || !blockTxs.length) return [];
-    const WINDOW = 30_000; // 30 seconds
-    return whales
-      .slice(-20) // last 20 whale events — enough for a meaningful chart
-      .map(whale=>{
-        const after = blockTxs.filter(tx=>tx.timestamp>whale.timestamp && tx.timestamp<=whale.timestamp+WINDOW);
-        const txCount = after.length;
-        const uniqueWalletSet = new Set<string>();
-        after.forEach(tx=>{ if(tx.from) uniqueWalletSet.add(tx.from); if(tx.to) uniqueWalletSet.add(tx.to); });
-        const uniqueWalletCount = uniqueWalletSet.size;
-        const followupWhales = whales.filter(w=>w.id!==whale.id && w.timestamp>whale.timestamp && w.timestamp<=whale.timestamp+WINDOW).length;
-        const score = Math.min(100, Math.round(txCount*2 + uniqueWalletCount*1.5 + followupWhales*10));
-        const label = score>=81?"EXTREME":score>=51?"HIGH":score>=21?"ELEVATED":"NORMAL";
-        const scoreColor = score>=81?"#ef4444":score>=51?"#f97316":score>=21?"#f59e0b":t.muted;
-        return {
-          time: new Date(whale.timestamp).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit",second:"2-digit"}),
-          score,
-          txCount,
-          uniqueWallets: uniqueWalletCount,
-          followups: followupWhales,
-          label,
-          scoreColor,
-          amount: Math.round(num(whale.amount)),
-          token: whale.token,
-        };
-      })
-      .filter(d=>d.txCount>0); // only show events that had measurable network reaction
-  },[whales,blockTxs]);
-
+  // shockData is pre-computed by analyticsEngine on the server — no frontend computation
   const avgShock = shockData.length>0 ? Math.round(shockData.reduce((s,d)=>s+d.score,0)/shockData.length) : 0;
   const peakShock = shockData.length>0 ? Math.max(...shockData.map(d=>d.score)) : 0;
   const highImpactCount = shockData.filter(d=>d.score>=51).length;
@@ -1294,7 +1266,7 @@ function LeaderboardTab({
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function WhaleDashboard(){
- const { alerts, blockTxs, totalBlockTxsSeen, connected, error, whaleThresholdSTT, whalePercentile } = useWhaleAlerts();
+ const { alerts, blockTxs, blockTxTotal, totalBlockTxsSeen, connected, error, whaleThresholdSTT, whalePercentile, metrics, shockData } = useWhaleAlerts();
   const{address:walletAddr,isConnected}=useAccount();
   const{prices:oraclePrices,loading:pricesLoading,lastFetchedAt}=useOraclePrices(10_000);
   const[simulating,setSimulating]=useState(false);
@@ -1342,70 +1314,44 @@ export default function WhaleDashboard(){
 
   // Live clock — updates every 1s for smooth buffered time display
   const[now,setNow]=useState(()=>Date.now());
-  useEffect(()=>{const id=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(id);},[]);
+  useEffect(()=>{const id=setInterval(()=>setNow(Date.now()),5000);return()=>clearInterval(id);},[]);
 
   const prevLen=useRef(0);
   useEffect(()=>{if(alerts.length>prevLen.current&&soundEnabled&&prevLen.current>0)playPing();prevLen.current=alerts.length;},[alerts.length,soundEnabled]);
 
   const whales    = useMemo(()=>alerts.filter(a=>a.type==="whale"),[alerts]);
   const reactions = useMemo(()=>alerts.filter(a=>a.type==="reaction"),[alerts]);
-  const alertCount = useMemo(()=>alerts.filter(a=>a.type==="alert").length,[alerts]);
-  const momentumCount = useMemo(()=>alerts.filter(a=>a.type==="momentum").length,[alerts]);
-  const totalVol  = useMemo(()=>whales.reduce((s,a)=>s+num(a.amount),0),[whales]);
-  const largestTransfer = useMemo(()=>whales.reduce((max,a)=>Math.max(max,num(a.amount)),0),[whales]);
 
-  // Time-windowed counts for KPI cards — respect selected filter window
+  // ── All KPI values come from analyticsEngine (pre-computed, O(1) reads) ──
+  // No more reducing/filtering 92k arrays in React on every render.
   const windowCutoff = timePreset>0 ? now-timePreset : 0;
-  const windowedWhales      = useMemo(()=>whales.filter(a=>!windowCutoff||a.timestamp>=windowCutoff),[whales,windowCutoff]);
-  const windowedReactions   = useMemo(()=>reactions.filter(a=>!windowCutoff||a.timestamp>=windowCutoff),[reactions,windowCutoff]);
-  const windowedAlertCount  = useMemo(()=>alerts.filter(a=>a.type==="alert"&&(!windowCutoff||a.timestamp>=windowCutoff)).length,[alerts,windowCutoff]);
-  const windowedMomentumCount=useMemo(()=>alerts.filter(a=>a.type==="momentum"&&(!windowCutoff||a.timestamp>=windowCutoff)).length,[alerts,windowCutoff]);
-  const windowedVol         = useMemo(()=>windowedWhales.reduce((s,a)=>s+num(a.amount),0),[windowedWhales]);
-  const windowedLargest     = useMemo(()=>windowedWhales.reduce((max,a)=>Math.max(max,num(a.amount)),0),[windowedWhales]);
-  // Total fees paid by whale transactions (actual where receipt available, estimated otherwise)
-  const whaleTotalFees      = useMemo(()=>windowedWhales.reduce((s,a)=>{
-    if(!a.txFee) return s;
-    const f=parseFloat(a.txFee.replace("~",""));
-    return s+(isNaN(f)?0:f);
-  },0),[windowedWhales]);
-  const whaleFeeEstimated   = useMemo(()=>windowedWhales.some(a=>a.txFee?.startsWith("~")),[windowedWhales]);
 
-  // Time-windowed network txns for KPI — available at top level
+  // windowedWhales is still needed for the alerts table display and filtered views
+  // but alerts array is small (whale events only, not raw block_txs)
+  const windowedWhales = useMemo(()=>whales.filter(a=>!windowCutoff||a.timestamp>=windowCutoff),[whales,windowCutoff]);
+  const windowedReactions = useMemo(()=>reactions.filter(a=>!windowCutoff||a.timestamp>=windowCutoff),[reactions,windowCutoff]);
+
+  // KPIs — direct reads from server metrics, zero computation
+  const displayTxnCount       = blockTxTotal ?? metrics.totalTx24h;
+  const whaleTxRate           = metrics.whaleTxRate;
+  const windowedVol           = metrics.whaleVolumeStt;
+  const windowedLargest       = metrics.largestWhaleStt;
+  const whaleTotalFees        = metrics.whaleFees;
+  const whaleFeeEstimated     = metrics.whaleFeeEstimated;
+  const windowedAlertCount    = metrics.alerts24h;
+  const windowedMomentumCount = metrics.momentum24h;
+  const totalVolUSD = { sum: 0, partial: false }; // STT testnet — no oracle price
+  const largestUSD: number | null = null;          // STT testnet — no oracle price
+  
+  // windowedBlockTxs still needed for Network Activity table (capped 5k)
   const windowedBlockTxs = useMemo(()=>!windowCutoff?blockTxs:blockTxs.filter(tx=>tx.timestamp>=windowCutoff),[blockTxs,windowCutoff]);
-  // Whale Tx Rate = whale txns / STT transfers (not all txns — contract calls are irrelevant)
-  // Answers: "Of all actual STT value transfers, what % were whale-sized?"
-  const whaleTxRate = useMemo(()=>{
-    const total = windowedBlockTxs.length;
-    if(!total) return null;
-    // Whales as % of ALL network transactions — more meaningful metric
-    return Math.min(100,(windowedWhales.length/total)*100);
-  },[windowedWhales.length,windowedBlockTxs]);
 
-  // Dynamic token list from actual events — always current, no hardcoding
+  // Token list — still derived from alerts (small array)
   const tokenList = useMemo(()=>{
     const seen = new Set<string>();
     whales.forEach(a=>{ if(a.token) seen.add(a.token); });
     return ["All", ...Array.from(seen).sort()];
   },[whales]);
-
-  // USD totals — use windowed whales so KPIs respond to time filter
-  const totalVolUSD = useMemo(()=>{
-    let sum=0; let partial=false;
-    windowedWhales.forEach(a=>{
-      const key=TOKEN_PRICE_MAP[a.token];
-      if(key&&oraclePrices[key]?.price){sum+=num(a.amount)*oraclePrices[key].price;}
-      else partial=true;
-    });
-    return {sum,partial};
-  },[windowedWhales,oraclePrices]);
-
-  const largestUSD = useMemo(()=>{
-    if(!windowedWhales.length) return null;
-    const top=windowedWhales.reduce((max,a)=>num(a.amount)>num(max.amount)?a:max,windowedWhales[0]);
-    const key=TOKEN_PRICE_MAP[top.token];
-    if(!key||!oraclePrices[key]?.price) return null;
-    return num(top.amount)*oraclePrices[key].price;
-  },[windowedWhales,oraclePrices]);
 
   // ── Burst detection (≥3 whale events in 60s) ─────────────────────────────
   const burst: Burst = useMemo(()=>{
@@ -1450,19 +1396,20 @@ export default function WhaleDashboard(){
 
   const btn:React.CSSProperties={fontSize:11,fontFamily:"monospace",padding:"7px 13px",borderRadius:8,cursor:"pointer",transition:"all 0.15s",fontWeight:600,whiteSpace:"nowrap"};
   
-  return(<div style={{height:"100vh",display:"flex",flexDirection:"row",background:t.pageBg,color:t.text,overflow:"hidden"}}>
-    <style>{`
-      @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
-      @keyframes eventPulse{0%{transform:scale(1);opacity:1}40%{transform:scale(2.2);opacity:0.9}100%{transform:scale(1);opacity:1}}
-      @keyframes burstPulse{0%,100%{box-shadow:0 0 0 0 rgba(249,115,22,0.15)}50%{box-shadow:0 0 0 10px rgba(249,115,22,0)}}
-      @keyframes tickerScroll{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
-      @keyframes sidebarGlow{0%,100%{box-shadow:inset 0 0 30px rgba(6,182,212,0.03)}50%{box-shadow:inset 0 0 30px rgba(6,182,212,0.07)}}
-      input,select{color-scheme:dark}
-      ::-webkit-scrollbar{width:4px;height:4px}
-      ::-webkit-scrollbar-thumb{background:rgba(6,182,212,0.25);border-radius:3px}
-    `}</style>
+  return(
+    <div style={{height:"100vh",display:"flex",flexDirection:"row",background:t.pageBg,color:t.text,overflow:"hidden"}}>
+      <style>{`
+        @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+        @keyframes eventPulse{0%{transform:scale(1);opacity:1}40%{transform:scale(2.2);opacity:0.9}100%{transform:scale(1);opacity:1}}
+        @keyframes burstPulse{0%,100%{box-shadow:0 0 0 0 rgba(249,115,22,0.15)}50%{box-shadow:0 0 0 10px rgba(249,115,22,0)}}
+        @keyframes tickerScroll{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+        @keyframes sidebarGlow{0%,100%{box-shadow:inset 0 0 30px rgba(6,182,212,0.03)}50%{box-shadow:inset 0 0 30px rgba(6,182,212,0.07)}}
+        input,select{color-scheme:dark}
+        ::-webkit-scrollbar{width:4px;height:4px}
+        ::-webkit-scrollbar-thumb{background:rgba(6,182,212,0.25);border-radius:3px}
+      `}</style>
 
-    {/* ── LEFT SIDEBAR ────────────────────────────────────────────────── */}
+      {/* ── LEFT SIDEBAR ────────────────────────────────────────────────── */}
     <div style={{
     width: 280, flexShrink: 0,
     background: "linear-gradient(180deg, #0A1A2F 0%, #0D1E36 40%, #0F2340 100%)", // Lighter, more vibrant
@@ -1528,7 +1475,7 @@ export default function WhaleDashboard(){
       </div>
 
       {/* Txn Count + STT Transfers */}
-      {/* Txn Count + STT Transfers - Redesigned */}
+      
 <div style={{padding:"12px 12px",borderBottom:`1px solid ${t.border}`,flexShrink:0}}>
   <div style={{fontSize:8,fontFamily:"monospace",color:t.accent,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:12,display:"flex",alignItems:"center",gap:5}}>
     <span style={{fontSize:11}}>🌐</span> Network Activity
@@ -1549,12 +1496,13 @@ export default function WhaleDashboard(){
         letterSpacing:"-0.02em",
         textShadow:"0 0 20px rgba(103,232,249,0.3)"
       }}>
-        {windowedBlockTxs.length.toLocaleString()}
+        {displayTxnCount.toLocaleString()}
       </div>
       <div style={{color:t.muted,fontSize:8,fontFamily:"monospace",marginTop:4}}>
         {timePreset<3600_000?`${Math.round(timePreset/60_000)}m`:timePreset<86400_000?`${Math.round(timePreset/3600_000)}h`:`${Math.ceil(timePreset/86400_000)}d`} window
       </div>
-    </div>
+    </div>  { }
+
     {/* STT TXN COUNT */}
     <div style={{textAlign:"center",padding:"4px 0",borderLeft:`1px solid ${t.border}`}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:4,marginBottom:4}}>
@@ -1570,18 +1518,15 @@ export default function WhaleDashboard(){
         letterSpacing:"-0.02em",
         textShadow:"0 0 20px rgba(103,232,249,0.3)"
       }}>
-        {windowedBlockTxs.filter(tx=>tx.isTransfer).length.toLocaleString()}
+        {metrics.sttTx24h.toLocaleString()}
       </div>
       <div style={{color:t.muted,fontSize:8,fontFamily:"monospace",marginTop:4}}>
-        {(()=>{
-          if(!blockTxs.length)return"live";
-          const a=now-blockTxs.reduce((m,tx)=>Math.min(m,tx.timestamp),Date.now());
-          return a<3600_000?`${Math.round(a/60_000)}m buf`:a<86400_000?`${(a/3600_000).toFixed(1)}h buf`:`${(a/86400_000).toFixed(1)}d buf`;
-        })()}
+        24h total
       </div>
     </div>
   </div>
-</div>
+</div>  { }
+
       {/* Filters */}
       <div style={{padding:"10px 12px",flex:1}}>
         <div style={{fontSize:8,fontFamily:"monospace",color:t.muted,textTransform:"uppercase",letterSpacing:"0.15em",marginBottom:8}}>⚙ Filters</div>
@@ -1660,15 +1605,15 @@ export default function WhaleDashboard(){
               <KpiCard t={t} label="Reactions"       value={windowedReactions.length}  />
               <KpiCard t={t} label="Alerts"          value={windowedAlertCount}         />
               <KpiCard t={t} label="🔥 Momentum"
-                value={windowedMomentumCount>0 ? windowedMomentumCount : burst?.count ?? 0}
+                value={windowedMomentumCount>0 ? windowedMomentumCount : (burst?.count ?? 0)}
                 color="#ef4444"
-                sub={windowedMomentumCount>0 ? "on-chain bursts" : burst ? burst.count+" in "+burst.windowSec+"s · live" : "on-chain bursts"}/>
+                sub={windowedMomentumCount>0 ? "on-chain bursts" : burst != null ? `${burst.count} in ${burst.windowSec}s · live` : "on-chain bursts"}/>
               <KpiCard t={t} label="🐋 Whale Volume"
                 value={totalVolUSD.sum>0 ? (totalVolUSD.sum>=1e9?`$${(totalVolUSD.sum/1e9).toFixed(2)}B`:totalVolUSD.sum>=1e6?`$${(totalVolUSD.sum/1e6).toFixed(2)}M`:`$${Math.round(totalVolUSD.sum).toLocaleString()}`) : Math.round(windowedVol).toLocaleString()}
                 sub={totalVolUSD.sum>0 ? (totalVolUSD.partial?"~USD partial":"~USD est.") : "tokens"}/>
               <KpiCard t={t} label="🐋 Whale Largest"
-                value={largestUSD!=null ? (largestUSD>=1e9?`$${(largestUSD/1e9).toFixed(2)}B`:largestUSD>=1e6?`$${(largestUSD/1e6).toFixed(2)}M`:`$${Math.round(largestUSD).toLocaleString()}`) : windowedLargest>0?Math.round(windowedLargest).toLocaleString():"—"}
-                sub={largestUSD!=null?"~USD est.":"tokens"}/>
+                value={windowedLargest>0?Math.round(windowedLargest).toLocaleString():"—"}
+                sub="tokens"/>
               <KpiCard t={t} label="💸 Whale Fees"
                 value={whaleTotalFees>0 ? (whaleTotalFees>=1000?`${Math.round(whaleTotalFees).toLocaleString()} STT`:`${whaleTotalFees.toFixed(8)} STT`) : "—"}
                 color="#f59e0b"
@@ -1691,7 +1636,7 @@ export default function WhaleDashboard(){
         <div style={{padding:"8px 12px"}}>
           <div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:14,overflow:"hidden"}}>
             {tab==="feed"        && <LiveFeedTab    alerts={filtered} t={t} connectedAddr={walletAddr} burst={burst} oraclePrices={oraclePrices} blockTxs={windowedBlockTxs} totalBlockTxsSeen={totalBlockTxsSeen} timePreset={timePreset} feedSubTab={feedSubTab} setFeedSubTab={setFeedSubTab} netMinAmt={netMinAmt} setNetMinAmt={setNetMinAmt} netMaxAmt={netMaxAmt} setNetMaxAmt={setNetMaxAmt}/>}
-                       {tab==="analytics" && <AnalyticsTab alerts={filtered} t={t} oraclePrices={oraclePrices} blockTxs={blockTxs.slice(0,5000)}/>}
+                       {tab==="analytics" && <AnalyticsTab alerts={filtered} t={t} oraclePrices={oraclePrices} shockData={shockData}/>}
 
             {tab==="charts"      && <ChartsTab      alerts={filtered} t={t}/>}
             {tab==="leaderboard" && <LeaderboardTab alerts={filtered} t={t} persistedEntries={persistedEntries} timePreset={timePreset}/>}
@@ -1713,8 +1658,7 @@ export default function WhaleDashboard(){
                 </div>
               </div>
             )}
-            {tab==="mywallet"&&isConnected&&walletAddr&&<MyWalletTab alerts={alerts} connectedAddr={walletAddr} t={t}/>}
-            {tab==="mywallet"&&!isConnected&&<div style={{padding:40,textAlign:"center",color:t.muted,fontFamily:"monospace",fontSize:12}}>Connect your wallet to view your transactions.</div>}
+            
           </div>
           <div style={{marginTop:10,display:"flex",justifyContent:"space-between",color:t.muted,fontSize:9,fontFamily:"monospace"}}>
             <span>Contract: <a href={addrUrl(process.env.NEXT_PUBLIC_CONTRACT_ADDRESS||"")} target="_blank" rel="noreferrer" style={{color:t.accent,textDecoration:"none"}}>{short(process.env.NEXT_PUBLIC_CONTRACT_ADDRESS||"0x0000000000000000000000000000000000000000")}</a></span>
@@ -1723,4 +1667,5 @@ export default function WhaleDashboard(){
         </div>
       </div>
     </div>
-  </div>);}
+  </div>);
+}

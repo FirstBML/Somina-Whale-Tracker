@@ -328,9 +328,10 @@ async function main() {
   } else {
     lastBlock = chainHead;
   }
-
+ 
+  saveLastBlock(); // ← save immediately so next run knows where to resume from
   console.log(`✅ Ready — watching from block #${lastBlock}\n`);
-
+ 
   setInterval(saveLastBlock, 30_000);
   startStatsLogger();
 

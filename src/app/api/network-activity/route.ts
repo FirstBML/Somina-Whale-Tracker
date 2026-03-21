@@ -19,7 +19,8 @@ const VALID_SORTS: Record<string, string> = {
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
-  const page   = Math.max(0, parseInt(searchParams.get("page") ?? "0"));
+  const rawPage = Math.max(0, parseInt(searchParams.get("page") ?? "0"));
+  const page = Math.min(rawPage, 100_000); // hard cap at 100k pages
   const minAmt = parseFloat(searchParams.get("min") ?? "0") || 0;
   const maxAmt = parseFloat(searchParams.get("max") ?? "0") || null;
   const sortKey = searchParams.get("sort") ?? "time";

@@ -41,6 +41,48 @@ export type BlockTx = {
   txFee:       string;
 };
 
+// Mirror of analyticsEngine.ts types — kept in sync manually
+export type LiveMetrics = {
+  totalTx24h:        number;
+  sttTx24h:          number;
+  whaleTx24h:        number;
+  whaleVolumeStt:    number;
+  avgWhaleSizeStt:   number;
+  largestWhaleStt:   number;
+  whaleFees:         number;
+  whaleFeeEstimated: boolean;
+  alerts24h:         number;
+  momentum24h:       number;
+  reactions24h:      number;
+  whaleTxRateRaw:    number;
+  whaleTxRate:       number;
+  whaleThresholdStt: number;
+  whalePercentile:   number;
+  updatedAt:         number;
+};
+
+export type ShockDataPoint = {
+  time:          string;
+  score:         number;
+  txCount:       number;
+  uniqueWallets: number;
+  followups:     number;
+  label:         string;
+  scoreColor:    string;
+  amount:        number;
+  token:         string;
+  whaleTxHash:   string;
+};
+
+const DEFAULT_METRICS: LiveMetrics = {
+  totalTx24h: 0, sttTx24h: 0, whaleTx24h: 0,
+  whaleVolumeStt: 0, avgWhaleSizeStt: 0,
+  largestWhaleStt: 0, whaleFees: 0, whaleFeeEstimated: false,
+  alerts24h: 0, momentum24h: 0, reactions24h: 0,
+  whaleTxRate: 0, whaleThresholdStt: 0.5, whalePercentile: 90,
+  updatedAt: 0,
+};
+
 function parseEntry(raw: any): WhaleAlert | null {
   try {
     const r    = raw?.raw ?? raw;
@@ -106,6 +148,7 @@ const ALERTS_CACHE_KEY  = "wt_alerts_cache";
 const BLOCKTX_CACHE_KEY = "wt_blocktx_cache";
 const CACHE_TTL_MS      = 24 * 60 * 60_000;
 const isBrowser         = typeof window !== "undefined";
+const MAX_BLOCKTX_STATE = 5_000; // cap in React state — full data in SQLite via /api/network-activity
 
 function loadCached<T>(key: string): T[] {
   if (!isBrowser) return [];
@@ -135,6 +178,8 @@ export function useWhaleAlerts() {
   const [currentThreshold,    setCurrentThreshold]    = useState<number | null>(null);
   const [whaleThresholdSTT,   setWhaleThresholdSTT]   = useState<number | null>(null);
   const [whalePercentile,     setWhalePercentile]     = useState<number>(95);
+  const [metrics,   setMetrics]   = useState<LiveMetrics>(DEFAULT_METRICS);
+  const [shockData, setShockData] = useState<ShockDataPoint[]>([]);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
@@ -188,9 +233,9 @@ export function useWhaleAlerts() {
               .map(parseBlockTx).filter(Boolean) as BlockTx[];
 
             setAlerts(parsedAlerts);
-            setBlockTxs(parsedBlockTxs);
+            setBlockTxs(parsedBlockTxs.slice(0, MAX_BLOCKTX_STATE)); // cap — full data in SQLite
             saveCache(ALERTS_CACHE_KEY, parsedAlerts);
-            saveCache(BLOCKTX_CACHE_KEY, parsedBlockTxs);
+            saveCache(BLOCKTX_CACHE_KEY, parsedBlockTxs.slice(0, 500)); // localStorage cap
 
             // Pre-seed dedup set so live messages don't duplicate loaded history
             if (!window._processedTxHashes) window._processedTxHashes = new Set();
@@ -201,7 +246,14 @@ export function useWhaleAlerts() {
           if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
           if (msg.whaleThresholdSTT) setWhaleThresholdSTT(msg.whaleThresholdSTT);
           if (msg.whalePercentile)   setWhalePercentile(msg.whalePercentile);
+          if (msg.metrics)           setMetrics(msg.metrics);
+          if (msg.shock)             setShockData(msg.shock);
         }
+
+          if (msg.type === "metrics_update") {
+            if (msg.metrics) setMetrics(msg.metrics);
+            if (msg.shock)   setShockData(msg.shock);
+          }
           
           if (msg.type === "connected") { setConnected(true); setError(null); }
           if (msg.type === "error") setError(msg.message);
@@ -234,8 +286,8 @@ export function useWhaleAlerts() {
             if (tx) {
               setBlockTxs(prev => {
                 if (prev.some(t => t.txHash === tx.txHash)) return prev;
-                const next = [tx, ...prev];
-                saveCache(BLOCKTX_CACHE_KEY, next);
+                const next = [tx, ...prev].slice(0, MAX_BLOCKTX_STATE);
+                saveCache(BLOCKTX_CACHE_KEY, next.slice(0, 500));
                 return next;
               });
             }
@@ -280,7 +332,8 @@ export function useWhaleAlerts() {
 
   return {
     alerts,
-    blockTxs,
+    blockTxs,               // capped at 5000 — for display only
+    blockTxTotal: totalBlockTxsSeen,
     sttTransfers,
     contractCalls,
     totalBlockTxsSeen,
@@ -288,6 +341,8 @@ export function useWhaleAlerts() {
     currentThreshold,
     whaleThresholdSTT,
     whalePercentile,
+    metrics,    // pre-computed by analyticsEngine — no frontend math needed
+    shockData,  // pre-computed shock scores per whale event
     connected,
     error,
   };
