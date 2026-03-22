@@ -1,7 +1,5 @@
 import dotenv from "dotenv";
 dotenv.config({ path: ".env.local" });
-import { EventEmitter } from "events";
-const eventHub = new EventEmitter();
 
 import {
   createPublicClient, createWalletClient, http, defineChain, parseEther,
@@ -34,31 +32,34 @@ const TRACKER_ABI = [
   },
 ] as const;
 
-const POLLING_MS    = 500;
-const REPORT_DELAY  = 300;
-const MAX_QUEUE     = 50;
-const LOG_INTERVAL  = 60_000;
+const POLLING_MS   = 500;
+const REPORT_DELAY = 500;   // ms between submissions
+const MAX_QUEUE    = 50;
+const LOG_INTERVAL = 60_000;
 const MAX_BACKFILL = 90_000n;
-const WHALE_THRESHOLD_STT = parseEther("0.5"); // 0.5 STT threshold
 
-let lastBlock      = 0n;
-let totalSeen      = 0;
-let totalReported  = 0;
-let totalSkipped   = 0;
-let totalErrors    = 0;
-let totalBlockTxsSeen = 0;  
-let totalSttTxns    = 0;    
-let nonce          = -1;
-let reporting      = false;
+// ── FIX 1: Checkpoint granularity inside backfillGap ─────────────────────────
+// Save progress every CHECKPOINT_EVERY blocks during backfill so a crash/stop
+// never loses more than that many blocks. Previously saveLastBlock() was only
+// called after the entire backfill finished — which never happened because nonce
+// errors crashed it first, causing the permanent "Resuming from #336304780" loop.
+const CHECKPOINT_EVERY = 500n;    // save to disk every 500 blocks
+const CHECKPOINT_LOG   = 10_000n; // only print a log line every 10,000 blocks
 
-// Update the reportQueue type to include timestamp
-const reportQueue: { 
-  from: `0x${string}`; 
-  to: `0x${string}`; 
-  val: bigint; 
-  stt: number; 
-  key: string;
-  timestamp: number;  // ← ADD timestamp field
+let lastBlock     = 0n;
+let totalSeen     = 0;
+let totalReported = 0;
+let totalSkipped  = 0;
+let totalErrors   = 0;
+let nonce         = -1;
+let reporting     = false;
+
+const reportQueue: {
+  from: `0x${string}`;
+  to:   `0x${string}`;
+  val:  bigint;
+  stt:  number;
+  key:  string;
 }[] = [];
 const queuedKeys = new Set<string>();
 
@@ -82,16 +83,13 @@ function saveLastBlock() {
 function makeClients() {
   const CONTRACT    = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS as `0x${string}`;
   const PRIVATE_KEY = process.env.PRIVATE_KEY as `0x${string}`;
-
   if (!CONTRACT || !PRIVATE_KEY) {
     console.error("❌ Missing NEXT_PUBLIC_CONTRACT_ADDRESS or PRIVATE_KEY in .env.local");
     process.exit(1);
   }
-
   const account = privateKeyToAccount(PRIVATE_KEY);
   const pub = createPublicClient({ chain: somniaTestnet, transport: http() });
   const wal = createWalletClient({ account, chain: somniaTestnet, transport: http() });
-
   return { CONTRACT, account, pub, wal };
 }
 
@@ -104,6 +102,8 @@ async function getNextNonce(pub: ReturnType<typeof createPublicClient>, address:
 }
 
 async function resetNonce(pub: ReturnType<typeof createPublicClient>, address: `0x${string}`) {
+  // Wait 1s before re-reading nonce — gives the RPC time to propagate the last tx
+  await new Promise(r => setTimeout(r, 1_000));
   nonce = await pub.getTransactionCount({ address, blockTag: "pending" });
   console.log(`🔄 Nonce reset to: ${nonce}`);
 }
@@ -117,9 +117,12 @@ async function processQueue(
   if (reporting || reportQueue.length === 0) return;
   reporting = true;
 
+  let nonceResetAttempts = 0;
+
   while (reportQueue.length > 0) {
     const item = reportQueue.shift()!;
     queuedKeys.delete(item.key);
+
     try {
       const txNonce = await getNextNonce(pub, address);
       const hash = await wal.writeContract({
@@ -132,6 +135,7 @@ async function processQueue(
         nonce: txNonce,
       });
       totalReported++;
+      nonceResetAttempts = 0; // reset backoff on success
       console.log(
         `🐋 Whale reported: ${item.stt.toFixed(4)} STT` +
         `  ${item.from.slice(0, 8)}→${item.to.slice(0, 8)}` +
@@ -142,11 +146,14 @@ async function processQueue(
       const msg = e?.shortMessage ?? e?.message ?? "";
 
       if (msg.includes("nonce") || msg.includes("replacement")) {
-        console.warn(`⚠ Nonce error — resetting and requeueing`);
+        nonceResetAttempts++;
+        // Exponential backoff: 1s, 2s, 4s … capped at 8s
+        const backoff = Math.min(1_000 * Math.pow(2, nonceResetAttempts - 1), 8_000);
+        console.warn(`⚠ Nonce error (attempt ${nonceResetAttempts}) — backing off ${Math.round(backoff/1000)}s then resetting`);
         queuedKeys.add(item.key);
         reportQueue.unshift(item);
+        await new Promise(r => setTimeout(r, backoff));
         await resetNonce(pub, address);
-        await new Promise(r => setTimeout(r, 500));
         continue;
       }
 
@@ -175,29 +182,18 @@ async function processBlock(
 ) {
   if (!block?.transactions?.length) return;
 
-  // KPI 1: Every single transaction on the network
-  totalBlockTxsSeen += block.transactions.length;
-
   for (const tx of block.transactions as any[]) {
     if (typeof tx !== "object" || !tx.hash) continue;
 
     const val = tx.value ?? 0n;
-
-    // KPI 2: Only transactions that are moving STT (Value > 0)
-    if (val > 0n) {
-      totalSttTxns++;  // ← NOW WORKS (variable declared)
-    }
-
-    // --- WHALE FILTERING ---
     if (val < threshold) continue;
     if (tx.from?.toLowerCase() === address.toLowerCase()) continue;
 
     const key = `${tx.from?.toLowerCase()}:${(tx.to ?? "0x0")?.toLowerCase()}:${val.toString()}`;
     if (queuedKeys.has(key)) continue;
 
-    // KPI 3: Whale Event counter
     const stt = Number(val) / 1e18;
-    totalSeen++; 
+    totalSeen++;
 
     if (reportQueue.length >= MAX_QUEUE) {
       console.warn(`⚠ Report queue full — dropping oldest`);
@@ -208,11 +204,8 @@ async function processBlock(
     queuedKeys.add(key);
     reportQueue.push({
       from: tx.from as `0x${string}`,
-      to: (tx.to ?? "0x0000000000000000000000000000000000000000") as `0x${string}`,
-      val, 
-      stt, 
-      key,
-      timestamp: Number(block.timestamp) 
+      to:   (tx.to ?? "0x0000000000000000000000000000000000000000") as `0x${string}`,
+      val, stt, key,
     });
   }
 
@@ -238,9 +231,7 @@ function startStatsLogger() {
       `  | reported: ${totalReported}` +
       `  | skipped: ${totalSkipped}` +
       `  | errors: ${totalErrors}` +
-      `  | queue: ${reportQueue.length}` +
-      `  | total txs: ${totalBlockTxsSeen}` +  // ← ADDED to stats
-      `  | STT txns: ${totalSttTxns}`          // ← ADDED to stats
+      `  | queue: ${reportQueue.length}`
     );
   }, LOG_INTERVAL);
 }
@@ -256,7 +247,6 @@ async function backfillGap(
 ) {
   const gap = toBlock - fromBlock;
   if (gap <= 0n) return;
-
   const capped = gap > MAX_BACKFILL ? MAX_BACKFILL : gap;
   const startBlock = toBlock - capped;
   console.log(`🔍 Backfilling gap: blocks #${startBlock} → #${toBlock} (${capped.toLocaleString()} blocks)`);
@@ -264,6 +254,7 @@ async function backfillGap(
   const BATCH = 50n;
   let cursor = startBlock;
   let found = 0;
+  let blocksSinceCheckpoint = 0n; // ← FIX 1 counter
 
   while (cursor < toBlock) {
     const end = cursor + BATCH < toBlock ? cursor + BATCH : toBlock;
@@ -275,27 +266,65 @@ async function backfillGap(
       blockNums.map(n => pub.getBlock({ blockNumber: n, includeTransactions: true }))
     );
 
+    // ── FIX 2: Collect ALL whale txns from this batch into the queue first ──
+    // The original code called processBlock() for each block result, and
+    // processBlock() called processQueue() at its end — meaning up to 50
+    // concurrent processQueue() calls raced past the `reporting = false` guard
+    // before the first one could set it to true. This caused parallel tx
+    // submissions with duplicate nonces. Now we inline the enqueue logic here
+    // and call processQueue() exactly ONCE after the full batch is collected.
     for (const r of results) {
       if (r.status !== "fulfilled" || !r.value?.transactions?.length) continue;
-      
-      const prevCount = totalSeen;
-      // processBlock analyzes the block and identifies whales
-      await processBlock(r.value, threshold, CONTRACT, pub, wal, address);
-      
-      // If the count increased, it means a whale was found in this block
-      if (totalSeen > prevCount) {
-        // We pass r.value (the block) because that is what the 
-        // frontend/stream expects to parse for whale events.
-        eventHub.emit('whale_event', r.value);
+      const block = r.value;
+      for (const tx of block.transactions as any[]) {
+        if (typeof tx !== "object" || !tx.hash) continue;
+        const val = tx.value ?? 0n;
+        if (val < threshold) continue;
+        if (tx.from?.toLowerCase() === address.toLowerCase()) continue;
+        const key = `${tx.from?.toLowerCase()}:${(tx.to ?? "0x0")?.toLowerCase()}:${val.toString()}`;
+        if (queuedKeys.has(key)) continue;
+        const stt = Number(val) / 1e18;
+        totalSeen++;
+        found++;
+        if (reportQueue.length >= MAX_QUEUE) {
+          console.warn(`⚠ Report queue full — dropping oldest`);
+          const dropped = reportQueue.shift()!;
+          queuedKeys.delete(dropped.key);
+        }
+        queuedKeys.add(key);
+        reportQueue.push({
+          from: tx.from as `0x${string}`,
+          to:   (tx.to ?? "0x0000000000000000000000000000000000000000") as `0x${string}`,
+          val, stt, key,
+        });
       }
-      
-      found += (totalSeen - prevCount);
+    }
+
+    // ── FIX 2: Single awaited processQueue call per batch ────────────────────
+    // Runs serially to completion — all nonces sequential, no collisions.
+    await processQueue(CONTRACT, pub, wal, address);
+
+    // ── FIX 1: Checkpoint inside the backfill loop ────────────────────────────
+    // Update lastBlock and save to disk every CHECKPOINT_EVERY blocks so a crash
+    // or Ctrl+C resumes from here rather than restarting the full 90k gap.
+    lastBlock = cursor;
+    blocksSinceCheckpoint += BATCH;
+    if (blocksSinceCheckpoint >= CHECKPOINT_EVERY) {
+      saveLastBlock();
+      // Only print a log line every CHECKPOINT_LOG blocks to avoid terminal spam
+      if (blocksSinceCheckpoint >= CHECKPOINT_LOG) {
+        console.log(`💾 Checkpoint saved at block #${lastBlock} (${found} whales queued so far)`);
+        blocksSinceCheckpoint = 0n;
+      }
     }
 
     await new Promise(r => setTimeout(r, 200));
   }
 
-  console.log(`✅ Gap backfill complete — ${found} whale transfers queued from missed blocks`);
+  // Final save after backfill completes
+  lastBlock = toBlock;
+  saveLastBlock();
+  console.log(`✅ Gap backfill complete — ${found} whale transfers queued`);
 }
 
 async function main() {
@@ -328,10 +357,11 @@ async function main() {
   } else {
     lastBlock = chainHead;
   }
- 
-  saveLastBlock(); // ← save immediately so next run knows where to resume from
+
+  saveLastBlock();
   console.log(`✅ Ready — watching from block #${lastBlock}\n`);
- 
+
+  // Save progress every 30s during live watching
   setInterval(saveLastBlock, 30_000);
   startStatsLogger();
 
@@ -351,7 +381,7 @@ async function main() {
       const delay = Math.min(2000 * Math.pow(2, rpcErrorCount - 1), 30_000);
       console.error(`⚠ Block watcher error (attempt ${rpcErrorCount}): ${e.message?.split("\n")[0]}`);
       if (rpcErrorCount > 1) {
-        console.warn(`   Backing off ${Math.round(delay/1000)}s before next poll…`);
+        console.warn(`   Backing off ${Math.round(delay/1000)}s...`);
         await new Promise(r => setTimeout(r, delay));
       }
     },

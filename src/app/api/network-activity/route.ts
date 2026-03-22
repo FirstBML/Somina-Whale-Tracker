@@ -1,10 +1,12 @@
-// Server-side paginated network activity 
+// Server-side paginated network activity
+// FIX: accepts ?window=ms so the table respects the dashboard time filter
 
 import { NextRequest } from "next/server";
 import Database from "better-sqlite3";
 
 const db = new Database("whales.db");
-const BLOCK_TX_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+const DEFAULT_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h default
 const PAGE_SIZE = 20;
 
 // Valid sort columns — whitelist to prevent SQL injection
@@ -20,20 +22,25 @@ const VALID_SORTS: Record<string, string> = {
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const rawPage = Math.max(0, parseInt(searchParams.get("page") ?? "0"));
-  const page = Math.min(rawPage, 100_000); // hard cap at 100k pages
-  const minAmt = parseFloat(searchParams.get("min") ?? "0") || 0;
-  const maxAmt = parseFloat(searchParams.get("max") ?? "0") || null;
+  const page    = Math.min(rawPage, 100_000); // hard cap at 100k pages
+  const minAmt  = parseFloat(searchParams.get("min") ?? "0") || 0;
+  const maxAmt  = parseFloat(searchParams.get("max") ?? "0") || null;
   const sortKey = searchParams.get("sort") ?? "time";
-  const dir    = searchParams.get("dir") === "asc" ? "ASC" : "DESC";
-  const col    = VALID_SORTS[sortKey] ?? "received_at";
-  const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
+  const dir     = searchParams.get("dir") === "asc" ? "ASC" : "DESC";
+  const col     = VALID_SORTS[sortKey] ?? "received_at";
+
+  // FIX: respect the window filter from the dashboard
+  const windowMs = parseInt(searchParams.get("window") ?? String(DEFAULT_WINDOW_MS), 10);
+  const safeWindow = Math.min(Math.max(windowMs, 60_000), DEFAULT_WINDOW_MS); // clamp 1m–24h
+  const cutoff = Date.now() - safeWindow;
+
   const offset = page * PAGE_SIZE;
 
   try {
     // Build WHERE clause
     const conditions = [`received_at >= ${cutoff}`];
-    if (minAmt > 0) conditions.push(`CAST(amount AS REAL) >= ${minAmt}`);
-    if (maxAmt !== null) conditions.push(`CAST(amount AS REAL) <= ${maxAmt}`);
+    if (minAmt > 0)       conditions.push(`CAST(amount AS REAL) >= ${minAmt}`);
+    if (maxAmt !== null)  conditions.push(`CAST(amount AS REAL) <= ${maxAmt}`);
     const where = conditions.join(" AND ");
 
     const rows = db.prepare(`
@@ -73,7 +80,7 @@ export async function GET(req: NextRequest) {
       total,
       sttCount,
       page,
-      pages: Math.max(1, Math.ceil(total / PAGE_SIZE)),
+      pages:    Math.max(1, Math.ceil(total / PAGE_SIZE)),
       pageSize: PAGE_SIZE,
     });
   } catch (e: any) {

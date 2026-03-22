@@ -9,10 +9,10 @@ import { enqueue as enqueueLeaderboard } from "../streams-leaderboard/route";
 import Database from 'better-sqlite3';
 import {
   processEvent as analyticsProcessEvent,
-  seedFromHistory   as analyticsSeed,
-  setThresholdMeta  as analyticsSetThreshold,
-  getMetrics        as analyticsGetMetrics,
-  getShockData      as analyticsGetShock,
+  seedFromHistory as analyticsSeed,
+  setThresholdMeta as analyticsSetThreshold,
+  getMetrics as analyticsGetMetrics,
+  getShockData as analyticsGetShock,
 } from "../../../lib/analyticsEngine";
 
 const somniaTestnet = defineChain({
@@ -21,7 +21,7 @@ const somniaTestnet = defineChain({
   nativeCurrency: { name: "STT", symbol: "STT", decimals: 18 },
   rpcUrls: {
     default: {
-      http:      ["https://dream-rpc.somnia.network"],
+      http: ["https://dream-rpc.somnia.network"],
       webSocket: ["wss://dream-rpc.somnia.network/ws"],
     },
   },
@@ -32,38 +32,38 @@ const db = new Database('whales.db');
 
 // Create tables on startup
 db.exec(`
-  CREATE TABLE IF NOT EXISTS whale_events (
-    id TEXT PRIMARY KEY,
-    type TEXT,
-    from_addr TEXT,
-    to_addr TEXT,
-    amount TEXT,
-    timestamp INTEGER,
-    block_timestamp INTEGER,
-    token TEXT,
-    tx_hash TEXT,
-    block_number INTEGER,
-    block_hash TEXT
-  );
-  CREATE INDEX IF NOT EXISTS idx_timestamp ON whale_events(timestamp);
-  CREATE INDEX IF NOT EXISTS idx_block_timestamp ON whale_events(block_timestamp);
-
-  CREATE TABLE IF NOT EXISTS block_tx_events (
-    id TEXT PRIMARY KEY,
-    from_addr TEXT,
-    to_addr TEXT,
-    amount TEXT,
-    is_transfer INTEGER,
-    tx_hash TEXT UNIQUE,
-    block_number TEXT,
-    block_hash TEXT,
-    tx_fee TEXT,
-    received_at INTEGER
-  );
-  CREATE INDEX IF NOT EXISTS idx_block_tx_received_at ON block_tx_events(received_at);
+CREATE TABLE IF NOT EXISTS whale_events (
+  id TEXT PRIMARY KEY,
+  type TEXT,
+  from_addr TEXT,
+  to_addr TEXT,
+  amount TEXT,
+  timestamp INTEGER,
+  block_timestamp INTEGER,
+  token TEXT,
+  tx_hash TEXT,
+  block_number INTEGER,
+  block_hash TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_timestamp ON whale_events(timestamp);
+CREATE INDEX IF NOT EXISTS idx_block_timestamp ON whale_events(block_timestamp);
+CREATE TABLE IF NOT EXISTS block_tx_events (
+  id TEXT PRIMARY KEY,
+  from_addr TEXT,
+  to_addr TEXT,
+  amount TEXT,
+  is_transfer INTEGER,
+  tx_hash TEXT UNIQUE,
+  block_number TEXT,
+  block_hash TEXT,
+  tx_fee TEXT,
+  received_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_block_tx_received_at ON block_tx_events(received_at);
 `);
 
-// ── Migrations — safe to run on existing DB ───────────────────────────────────
+// ── Migrations — safe to run on existing DB ─────────────────────────────────
+
 try { db.exec(`ALTER TABLE whale_events ADD COLUMN block_timestamp INTEGER`); } catch {}
 try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_whale_tx_hash ON whale_events(tx_hash) WHERE tx_hash IS NOT NULL AND tx_hash != ''`); } catch {}
 
@@ -74,30 +74,30 @@ try {
   if (schema.includes("tx_hash TEXT UNIQUE")) {
     console.log("🔧 Migrating whale_events: removing old tx_hash UNIQUE constraint...");
     db.exec(`
-      BEGIN;
-      CREATE TABLE IF NOT EXISTS whale_events_new (
-        id TEXT PRIMARY KEY,
-        type TEXT,
-        from_addr TEXT,
-        to_addr TEXT,
-        amount TEXT,
-        timestamp INTEGER,
-        block_timestamp INTEGER,
-        token TEXT,
-        tx_hash TEXT,
-        block_number INTEGER,
-        block_hash TEXT,
-        tx_fee TEXT,
-        linked_tx_hash TEXT,
-        signal_reason TEXT
-      );
-      INSERT OR IGNORE INTO whale_events_new SELECT * FROM whale_events;
-      DROP TABLE whale_events;
-      ALTER TABLE whale_events_new RENAME TO whale_events;
-      CREATE INDEX IF NOT EXISTS idx_timestamp ON whale_events(timestamp);
-      CREATE INDEX IF NOT EXISTS idx_block_timestamp ON whale_events(block_timestamp);
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_whale_tx_hash ON whale_events(tx_hash) WHERE tx_hash IS NOT NULL AND tx_hash != '';
-      COMMIT;
+BEGIN;
+CREATE TABLE IF NOT EXISTS whale_events_new (
+  id TEXT PRIMARY KEY,
+  type TEXT,
+  from_addr TEXT,
+  to_addr TEXT,
+  amount TEXT,
+  timestamp INTEGER,
+  block_timestamp INTEGER,
+  token TEXT,
+  tx_hash TEXT,
+  block_number INTEGER,
+  block_hash TEXT,
+  tx_fee TEXT,
+  linked_tx_hash TEXT,
+  signal_reason TEXT
+);
+INSERT OR IGNORE INTO whale_events_new SELECT * FROM whale_events;
+DROP TABLE whale_events;
+ALTER TABLE whale_events_new RENAME TO whale_events;
+CREATE INDEX IF NOT EXISTS idx_timestamp ON whale_events(timestamp);
+CREATE INDEX IF NOT EXISTS idx_block_timestamp ON whale_events(block_timestamp);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_whale_tx_hash ON whale_events(tx_hash) WHERE tx_hash IS NOT NULL AND tx_hash != '';
+COMMIT;
     `);
     console.log("✅ Migration complete — whale_events tx_hash UNIQUE constraint removed");
   }
@@ -106,35 +106,35 @@ try {
 const WHALE_ABI = [{
   name: "WhaleTransfer", type: "event",
   inputs: [
-    { name: "from",      type: "address", indexed: true  },
-    { name: "to",        type: "address", indexed: true  },
-    { name: "amount",    type: "uint256", indexed: false },
+    { name: "from", type: "address", indexed: true },
+    { name: "to", type: "address", indexed: true },
+    { name: "amount", type: "uint256", indexed: false },
     { name: "timestamp", type: "uint256", indexed: false },
-    { name: "token",     type: "string",  indexed: false },
+    { name: "token", type: "string", indexed: false },
   ],
 }] as const;
 
 const HANDLER_ABI = [{
   name: "ReactedToWhaleTransfer", type: "event",
   inputs: [
-    { name: "emitter", type: "address", indexed: true  },
-    { name: "topic0",  type: "bytes32", indexed: false },
-    { name: "from",    type: "address", indexed: false },
-    { name: "to",      type: "address", indexed: false },
-    { name: "count",   type: "uint256", indexed: false },
+    { name: "emitter", type: "address", indexed: true },
+    { name: "topic0", type: "bytes32", indexed: false },
+    { name: "from", type: "address", indexed: false },
+    { name: "to", type: "address", indexed: false },
+    { name: "count", type: "uint256", indexed: false },
   ],
 }, {
   name: "AlertThresholdCrossed", type: "event",
   inputs: [
     { name: "reactionCount", type: "uint256", indexed: false },
-    { name: "blockNumber",   type: "uint256", indexed: false },
+    { name: "blockNumber", type: "uint256", indexed: false },
   ],
 }] as const;
 
 const MOMENTUM_ABI = [{
   name: "WhaleMomentumDetected", type: "event",
   inputs: [
-    { name: "burstCount",  type: "uint256", indexed: false },
+    { name: "burstCount", type: "uint256", indexed: false },
     { name: "blockNumber", type: "uint256", indexed: false },
   ],
 }] as const;
@@ -143,10 +143,10 @@ const TRACKER_ABI = [
   {
     name: "reportTransfer", type: "function", stateMutability: "nonpayable",
     inputs: [
-      { name: "from",   type: "address" },
-      { name: "to",     type: "address" },
+      { name: "from", type: "address" },
+      { name: "to", type: "address" },
       { name: "amount", type: "uint256" },
-      { name: "token",  type: "string"  },
+      { name: "token", type: "string" },
     ],
     outputs: [],
   },
@@ -168,14 +168,15 @@ const TRACKER_ABI = [
 ] as const;
 
 const ETH_USD_FEED = "0xd9132c1d762D432672493F640a63B758891B449e" as const;
+
 const AGGREGATOR_ABI = [{
   name: "latestRoundData", type: "function", stateMutability: "view",
   inputs: [], outputs: [
-    { name: "roundId",         type: "uint80"  },
-    { name: "answer",          type: "int256"  },
-    { name: "startedAt",       type: "uint256" },
-    { name: "updatedAt",       type: "uint256" },
-    { name: "answeredInRound", type: "uint80"  },
+    { name: "roundId", type: "uint80" },
+    { name: "answer", type: "int256" },
+    { name: "startedAt", type: "uint256" },
+    { name: "updatedAt", type: "uint256" },
+    { name: "answeredInRound", type: "uint80" },
   ],
 }, {
   name: "decimals", type: "function", stateMutability: "view",
@@ -199,11 +200,12 @@ export type CacheEntry = {
     txFee?: string;
     // For derived signals: links back to the confirmed whale tx that triggered this
     linkedTxHash?: string;
-    signalReason?: string; // human-readable explanation: "5 txns >1 STT in 30s from same wallet"
+    signalReason?: string; // human-readable explanation
   };
 };
 
-// ── In-memory leaderboard ───────────────────────────────────────────────────
+// ── In-memory leaderboard ────────────────────────────────────────────────────
+
 type LeaderEntry = { totalVolume: bigint; txCount: number; lastSeen: number };
 const leaderMap = new Map<string, LeaderEntry>();
 
@@ -212,8 +214,8 @@ function updateLeaderMap(from: string, to: string, amount: bigint, ts: number) {
     const existing = leaderMap.get(addr) ?? { totalVolume: 0n, txCount: 0, lastSeen: 0 };
     leaderMap.set(addr, {
       totalVolume: existing.totalVolume + amount,
-      txCount:     existing.txCount + 1,
-      lastSeen:    Math.max(existing.lastSeen, ts),
+      txCount: existing.txCount + 1,
+      lastSeen: Math.max(existing.lastSeen, ts),
     });
   }
 }
@@ -223,38 +225,43 @@ function persistLeaderEntry(wallet: string, entry: LeaderEntry) {
     enqueueLeaderboard({
       wallet,
       totalVolume: entry.totalVolume.toString(),
-      txCount:     entry.txCount,
-      lastSeen:    entry.lastSeen,
+      txCount: entry.txCount,
+      lastSeen: entry.lastSeen,
     });
   } catch (e) {
     console.error("streams persist error:", e);
   }
 }
 
-// ── Server state ──────────────────────────────────────────────────────────────
+// ── Server state ─────────────────────────────────────────────────────────────
+
 const MAX_CACHE = 5000;
 const alertCache: CacheEntry[] = [];
 let totalBlockTxsSeen = 0;
 let networkLargestSTT = 0;
 const BLOCK_TX_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
-let trackerSub:   { unsubscribe: () => Promise<any> } | null = null;
-let handlerSub:   { unsubscribe: () => Promise<any> } | null = null;
-let momentumSub:  { unsubscribe: () => Promise<any> } | null = null;
+
+let trackerSub: { unsubscribe: () => Promise<any> } | null = null;
+let handlerSub: { unsubscribe: () => Promise<any> } | null = null;
+let momentumSub: { unsubscribe: () => Promise<any> } | null = null;
 let blockWatcher: (() => void) | null = null;
 let backfillRunning = false;
-const encoder     = new TextEncoder();
+
+const encoder = new TextEncoder();
 const controllers = new Set<ReadableStreamDefaultController>();
 let nonBlockTxCount = 0;
 
 export type ExplorerStats = {
-  txCount24h:   number;
+  txCount24h: number;
   totalFees24h: number;
-  avgFee24h:    number;
-  fetchedAt:    number;
+  avgFee24h: number;
+  fetchedAt: number;
 };
+
 let explorerStats: ExplorerStats | null = null;
 
-// ============= FIX 2: Separate dedup sets for SDK vs block watcher =============
+// ── Dedup sets for SDK vs block watcher ──────────────────────────────────────
+
 const seenBlockTxHashes = new Set<string>();
 const seenSDKContentKeys = new Set<string>();
 const MAX_SEEN_HASHES = 10_000;
@@ -281,11 +288,42 @@ function markSDKSeen(key: string): boolean {
   return true;
 }
 
+// ── FIX 2 (Backend): Dedup set for derived signals (reactions/alerts/momentum) ──
+// Previously, push() would broadcast every reaction/alert/momentum even if an
+// identical one had already been sent. This set prevents that.
+const seenSignalKeys = new Set<string>();
+const MAX_SEEN_SIGNALS = 5_000;
+const signalKeyQueue: string[] = [];
+
+function markSignalSeen(key: string): boolean {
+  if (seenSignalKeys.has(key)) return false;
+  if (signalKeyQueue.length >= MAX_SEEN_SIGNALS) {
+    seenSignalKeys.delete(signalKeyQueue.shift()!);
+  }
+  seenSignalKeys.add(key);
+  signalKeyQueue.push(key);
+  return true;
+}
+
+function getSignalKey(entry: CacheEntry): string {
+  if (entry.type === "reaction") {
+    // ── FIX: Key on linkedTxHash only — one reaction per whale ──────────────
+    // The Reactivity precompile delivers 3 separate ReactedToWhaleTransfer
+    // events per whale (each with an incrementing `count`). Using reactionCount
+    // in the key meant all three passed dedup since each count is unique.
+    // We only want to show ONE reaction per whale tx on the frontend.
+    return `reaction:${entry.raw.linkedTxHash ?? entry.receivedAt}`;
+  }
+  // alert, momentum — linked to a specific whale tx + type
+  return `${entry.type}:${entry.raw.linkedTxHash ?? ""}:${Math.floor(entry.receivedAt / 5000)}`; // 5s bucket
+}
+
 // ── SQLite-backed block_tx persistence ───────────────────────────────────────
+
 const insertBlockTx = db.prepare(`
-  INSERT OR IGNORE INTO block_tx_events
-  (id, from_addr, to_addr, amount, is_transfer, tx_hash, block_number, block_hash, tx_fee, received_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT OR IGNORE INTO block_tx_events
+(id, from_addr, to_addr, amount, is_transfer, tx_hash, block_number, block_hash, tx_fee, received_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 function loadBlockTxFromDb() {
@@ -293,12 +331,13 @@ function loadBlockTxFromDb() {
   for (let i = alertCache.length - 1; i >= 0; i--) {
     if (alertCache[i].type === "block_tx") alertCache.splice(i, 1);
   }
-
   const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
   const rows = db.prepare(
     `SELECT * FROM block_tx_events WHERE received_at >= ? ORDER BY received_at ASC`
   ).all(cutoff) as any[];
+
   if (!rows.length) return;
+
   for (const row of rows) {
     const amountRaw = parseFloat(row.amount ?? "0");
     if (amountRaw > networkLargestSTT) networkLargestSTT = amountRaw;
@@ -307,15 +346,15 @@ function loadBlockTxFromDb() {
       type: "block_tx",
       receivedAt: row.received_at,
       raw: {
-        from:        row.from_addr,
-        to:          row.to_addr,
-        amount:      row.amount,
-        timestamp:   `0x${Math.floor(blockTsMs / 1000).toString(16)}`,
-        token:       "STT",
-        txHash:      row.tx_hash,
+        from: row.from_addr,
+        to: row.to_addr,
+        amount: row.amount,
+        timestamp: `0x${Math.floor(blockTsMs / 1000).toString(16)}`,
+        token: "STT",
+        txHash: row.tx_hash,
         blockNumber: row.block_number,
-        blockHash:   row.block_hash,
-        txFee:       row.tx_fee ?? "0",
+        blockHash: row.block_hash,
+        txFee: row.tx_fee ?? "0",
       },
     });
   }
@@ -342,12 +381,10 @@ function push(entry: CacheEntry) {
     totalBlockTxsSeen++;
     const amt = parseFloat((entry.raw as any)?.amount ?? "0");
     if (amt > networkLargestSTT) networkLargestSTT = amt;
-
     const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
     let i = 0;
     while (i < alertCache.length && alertCache[i].type === "block_tx" && alertCache[i].receivedAt < cutoff) i++;
     if (i > 0) alertCache.splice(0, i);
-
     try {
       insertBlockTx.run(
         `btx-${entry.receivedAt}-${Math.random()}`,
@@ -363,12 +400,26 @@ function push(entry: CacheEntry) {
       );
     } catch {} // IGNORE duplicate tx_hash
   } else {
+    // ── FIX 2: Dedup reactions/alerts/momentum BEFORE adding to cache ────────
+    // Without this, the same reaction is broadcast every time the block watcher
+    // fires or the backfill re-processes the same block. The INSERT OR IGNORE
+    // in SQLite stops DB duplicates but the in-memory broadcast happened before
+    // that check, causing the frontend flood.
+    if (entry.type === "reaction" || entry.type === "alert" || entry.type === "momentum") {
+      const signalKey = getSignalKey(entry);
+      if (!markSignalSeen(signalKey)) {
+        // Already broadcast — skip entirely (don't add to cache, don't broadcast)
+        return;
+      }
+    }
+
     if (nonBlockTxCount >= MAX_CACHE) {
       const idx = alertCache.findIndex(e => e.type !== "block_tx");
       if (idx !== -1) { alertCache.splice(idx, 1); nonBlockTxCount--; }
     }
     nonBlockTxCount++;
   }
+
   alertCache.push(entry);
   analyticsProcessEvent(entry.type, entry.raw, entry.receivedAt);
   broadcast(entry);
@@ -379,12 +430,11 @@ function push(entry: CacheEntry) {
       try { const t = Number(BigInt(entry.raw.timestamp ?? "0x0")) * 1000; return t > 0 ? t : entry.receivedAt; }
       catch { return entry.receivedAt; }
     })();
-    
     db.prepare(`
-      INSERT OR IGNORE INTO whale_events
-      (id, type, from_addr, to_addr, amount, timestamp, block_timestamp, token, tx_hash, block_number, block_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
+INSERT OR IGNORE INTO whale_events
+(id, type, from_addr, to_addr, amount, timestamp, block_timestamp, token, tx_hash, block_number, block_hash, tx_fee, linked_tx_hash, signal_reason)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`).run(
       `${entry.receivedAt}-${Math.random()}`,
       entry.type,
       entry.raw.from,
@@ -396,7 +446,40 @@ function push(entry: CacheEntry) {
       entry.raw.txHash,
       entry.raw.blockNumber || null,
       entry.raw.blockHash || null,
+      entry.raw.txFee || null,
+      entry.raw.linkedTxHash || null,
+      entry.raw.signalReason || null,
     );
+  }
+
+  // Persist reactions/alerts/momentum so they survive server restart
+  if ((entry.type === "reaction" || entry.type === "alert" || entry.type === "momentum") && entry.raw.linkedTxHash) {
+    const sigTs = (() => {
+      try { const t = Number(BigInt(entry.raw.timestamp ?? "0x0")) * 1000; return t > 0 ? t : entry.receivedAt; }
+      catch { return entry.receivedAt; }
+    })();
+    try {
+      db.prepare(`
+INSERT OR IGNORE INTO whale_events
+(id, type, from_addr, to_addr, amount, timestamp, block_timestamp, token, tx_hash, block_number, block_hash, tx_fee, linked_tx_hash, signal_reason)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`).run(
+        `${entry.type}-${entry.receivedAt}-${Math.random()}`,
+        entry.type,
+        entry.raw.from,
+        entry.raw.to,
+        entry.raw.amount || "0x0",
+        entry.receivedAt,
+        sigTs,
+        entry.raw.token || "",
+        entry.raw.txHash || null,
+        entry.raw.blockNumber || null,
+        entry.raw.blockHash || null,
+        entry.raw.txFee || null,
+        entry.raw.linkedTxHash,
+        entry.raw.signalReason || null,
+      );
+    } catch {} // IGNORE duplicates
   }
 }
 
@@ -406,54 +489,75 @@ function getHistoricalEvents(timeRangeMs: number): CacheEntry[] {
   // This handles old rows (only have `timestamp`), new rows (have `block_timestamp`),
   // and migrated rows (have both). Also covers NULL values safely.
   const rows = db.prepare(`
-    SELECT *,
-      COALESCE(block_timestamp, timestamp) AS display_ts
-    FROM whale_events 
-    WHERE (timestamp > ? OR block_timestamp > ?)
-    ORDER BY COALESCE(block_timestamp, timestamp) DESC
-    LIMIT 1000
-  `).all(cutoff, cutoff);
-  
+SELECT *,
+COALESCE(block_timestamp, timestamp) AS display_ts
+FROM whale_events
+WHERE (timestamp > ? OR block_timestamp > ?)
+ORDER BY COALESCE(block_timestamp, timestamp) DESC
+LIMIT 1000
+`).all(cutoff, cutoff);
+
   return rows.map((row: any) => ({
     type: row.type,
     receivedAt: row.timestamp,
     raw: {
-      from:        row.from_addr ?? "",
-      to:          row.to_addr ?? "",
-      amount:      row.amount ?? "0x0",
-      timestamp:   `0x${Math.floor(((row.display_ts as number) ?? row.timestamp) / 1000).toString(16)}`,
-      token:       row.token ?? "",
-      txHash:      row.tx_hash ?? "",
+      from: row.from_addr ?? "",
+      to: row.to_addr ?? "",
+      amount: row.amount ?? "0x0",
+      timestamp: `0x${Math.floor(((row.display_ts as number) ?? row.timestamp) / 1000).toString(16)}`,
+      token: row.token ?? "",
+      txHash: row.tx_hash ?? "",
       blockNumber: row.block_number?.toString() ?? "",
-      blockHash:   row.block_hash ?? "",
-      txFee:       "0",
+      blockHash: row.block_hash ?? "",
+      txFee: row.tx_fee ?? "0",
+      linkedTxHash: row.linked_tx_hash ?? "",
+      signalReason: row.signal_reason ?? "",
     }
   })) as CacheEntry[];
 }
 
+// ── FIX 1 (Backend): seedWhaleEventsFromDb seeds ALL event types (including reactions) ──
+// The original code only deduped by txHash, which caused reaction/alert/momentum entries
+// (which have no txHash) to be skipped. Now uses a composite key that works for all types.
 function seedWhaleEventsFromDb() {
-  const dbWhales = getHistoricalEvents(BLOCK_TX_WINDOW_MS); // 24h — matches block_tx retention window
+  const dbEvents = getHistoricalEvents(BLOCK_TX_WINDOW_MS); // 24h window
 
   // Diagnostic: count total rows in whale_events regardless of filter
   const totalRows = (db.prepare(`SELECT COUNT(*) as n FROM whale_events`).get() as any)?.n ?? 0;
-  console.log(`📊 whale_events total rows: ${totalRows}, visible in 24h window: ${dbWhales.length}`);
+  console.log(`📊 whale_events total rows: ${totalRows}, visible in 24h window: ${dbEvents.length}`);
 
-  if (!dbWhales.length) {
+  if (!dbEvents.length) {
     console.log("No historical whale events found in database");
     return;
   }
-  const seenHashes = new Set(alertCache.map(e => e.raw.txHash).filter(Boolean));
+
+  // Build dedup key that works for all event types (not just tx-hash-based whales)
+  function seedKey(e: CacheEntry): string {
+    if (e.type === "whale" && e.raw.txHash) return `whale:${e.raw.txHash}`;
+    if (e.type === "reaction") return `reaction:${e.raw.linkedTxHash ?? e.receivedAt}`;
+    return `${e.type}:${e.raw.linkedTxHash ?? ""}:${e.receivedAt}`;
+  }
+
+  const seenKeys = new Set(alertCache.map(seedKey));
   let seeded = 0;
-  for (const entry of dbWhales) {
-    if (entry.raw.txHash && seenHashes.has(entry.raw.txHash)) continue;
+
+  for (const entry of dbEvents) {
+    const key = seedKey(entry);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+
     alertCache.push(entry);
-    if (entry.raw.txHash) {
-      seenHashes.add(entry.raw.txHash);
-      markBlockSeen(entry.raw.txHash);
+
+    // Pre-seed the backend dedup sets so live events don't re-broadcast seeded history
+    if (entry.raw.txHash) markBlockSeen(entry.raw.txHash);
+    if (entry.type === "reaction" || entry.type === "alert" || entry.type === "momentum") {
+      markSignalSeen(getSignalKey(entry));
     }
+
     seeded++;
   }
-  if (seeded > 0) console.log(`📂 Seeded ${seeded} whale events from SQLite`);
+
+  if (seeded > 0) console.log(`📂 Seeded ${seeded} events from SQLite (whales + reactions + alerts + momentum)`);
 }
 
 // ── Promote qualifying block_tx_events → whale_events ────────────────────────
@@ -463,22 +567,23 @@ function seedWhaleEventsFromDb() {
 function promoteBlockTxToWhaleEvents() {
   const threshold = Number(WHALE_DISPLAY_THRESHOLD) / 1e18; // e.g. 1.0 STT
   const cutoff = Date.now() - BLOCK_TX_WINDOW_MS; // 24h — matches block_tx retention window
+
   const candidates = db.prepare(`
-    SELECT * FROM block_tx_events
-    WHERE is_transfer = 1
-      AND CAST(amount AS REAL) >= ?
-      AND tx_hash IS NOT NULL AND tx_hash != ''
-      AND received_at >= ?
-    ORDER BY received_at ASC
-  `).all(threshold, cutoff) as any[];
+SELECT * FROM block_tx_events
+WHERE is_transfer = 1
+AND CAST(amount AS REAL) >= ?
+AND tx_hash IS NOT NULL AND tx_hash != ''
+AND received_at >= ?
+ORDER BY received_at ASC
+`).all(threshold, cutoff) as any[];
 
   if (!candidates.length) return;
 
   const insertWhale = db.prepare(`
-    INSERT OR IGNORE INTO whale_events
-    (id, type, from_addr, to_addr, amount, timestamp, block_timestamp, token, tx_hash, block_number, block_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
+INSERT OR IGNORE INTO whale_events
+(id, type, from_addr, to_addr, amount, timestamp, block_timestamp, token, tx_hash, block_number, block_hash)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
 
   let promoted = 0;
   for (const row of candidates) {
@@ -489,8 +594,8 @@ function promoteBlockTxToWhaleEvents() {
         "whale",
         row.from_addr, row.to_addr,
         sttWei,
-        row.received_at,      // timestamp (push time)
-        row.received_at,      // block_timestamp — received_at approximates block time for backfill
+        row.received_at,
+        row.received_at,
         "STT",
         row.tx_hash,
         row.block_number || null,
@@ -499,6 +604,7 @@ function promoteBlockTxToWhaleEvents() {
       promoted++;
     } catch {} // IGNORE = already exists
   }
+
   if (promoted > 0) console.log(`🐋 Promoted ${promoted} historical block_tx → whale_events (threshold: ${threshold} STT)`);
 }
 
@@ -536,14 +642,17 @@ async function fetchExplorerStats(): Promise<void> {
 
     if (feeRes.status === "fulfilled" && feeRes.value.ok) {
       const data = await feeRes.value.json();
-      const txCount  = data.transactions_today ?? data.transaction_count_today ?? 0;
-      const gasUsed  = BigInt(data.gas_used_today ?? "0");
+      const txCount = data.transactions_today ?? data.transaction_count_today ?? 0;
+      const gasUsed = BigInt(data.gas_used_today ?? "0");
       const AVG_GAS_PRICE = 6_000_000_000n;
-      const totalFeesWei  = gasUsed * AVG_GAS_PRICE;
-      const totalFees24h  = Number(totalFeesWei) / 1e18;
-      const avgFee24h     = txCount > 0 ? totalFees24h / txCount : 0;
+      const totalFeesWei = gasUsed * AVG_GAS_PRICE;
+      const totalFees24h = Number(totalFeesWei) / 1e18;
+      const avgFee24h = txCount > 0 ? totalFees24h / txCount : 0;
       explorerStats = { txCount24h: txCount, totalFees24h, avgFee24h, fetchedAt: Date.now() };
-      console.log(`📡 Explorer stats: ${txCount.toLocaleString()} txns/24h · ${totalFees24h.toFixed(2)} STT fees`);
+      // ── Only log when value actually changes — suppress the 60s spam ────────
+      if (!explorerStats || explorerStats.txCount24h !== txCount) {
+        console.log(`📡 Explorer stats updated: ${txCount.toLocaleString()} txns/24h · ${totalFees24h.toFixed(2)} STT fees`);
+      }
       broadcastExplorerStats();
       return;
     }
@@ -553,14 +662,14 @@ async function fetchExplorerStats(): Promise<void> {
     );
     if (blockTxs24h.length > 0) {
       const totalFees24h = blockTxs24h.reduce((s, e) => {
-        const f = parseFloat(e.raw.txFee?.replace("~","") ?? "0");
+        const f = parseFloat(e.raw.txFee?.replace("~", "") ?? "0");
         return s + (isNaN(f) ? 0 : f);
       }, 0);
       explorerStats = {
-        txCount24h:   totalBlockTxsSeen,
+        txCount24h: totalBlockTxsSeen,
         totalFees24h,
-        avgFee24h:    blockTxs24h.length > 0 ? totalFees24h / blockTxs24h.length : 0,
-        fetchedAt:    Date.now(),
+        avgFee24h: blockTxs24h.length > 0 ? totalFees24h / blockTxs24h.length : 0,
+        fetchedAt: Date.now(),
       };
       broadcastExplorerStats();
     }
@@ -575,9 +684,6 @@ function broadcastExplorerStats() {
   controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
 }
 
-// Re-broadcast full init payload to all connected clients.
-// Called after backfill completes so clients that connected during startup
-// get the complete dataset without needing to reconnect.
 let metricsBroadcastTimer: ReturnType<typeof setInterval> | null = null;
 
 function startMetricsBroadcast() {
@@ -585,43 +691,51 @@ function startMetricsBroadcast() {
   metricsBroadcastTimer = setInterval(() => {
     if (!controllers.size) return;
     const msg = encoder.encode(`data: ${JSON.stringify({
-      type:    "metrics_update",
+      type: "metrics_update",
       metrics: analyticsGetMetrics(),
-      shock:   analyticsGetShock(),
+      shock: analyticsGetShock(),
     })}\n\n`);
     controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
   }, 2_000);
 }
 
+// Re-broadcast full init payload to all connected clients.
+// Called after backfill completes so clients that connected during startup
+// get the complete dataset without needing to reconnect.
 function broadcastFullInit() {
   if (!controllers.size) return;
+
   const whaleAlerts = alertCache
     .filter(e => e.type !== "block_tx")
     .sort((a, b) => b.receivedAt - a.receivedAt)
     .slice(0, 500);
+
   const blockTxAlerts = alertCache
     .filter(e => e.type === "block_tx")
     .sort((a, b) => b.receivedAt - a.receivedAt);
+
   const dbLatestBlock = (() => {
     try {
       const row = db.prepare(`SELECT MAX(block_number) as n FROM whale_events`).get() as any;
       return row?.n ? Number(row.n) : 0;
     } catch { return 0; }
   })();
+
   const msg = encoder.encode(`data: ${JSON.stringify({
     type: "init",
     alerts: [...whaleAlerts, ...blockTxAlerts],
     totalBlockTxsSeen,
     networkLargestSTT,
     explorerStats,
-    metrics:          analyticsGetMetrics(),
-    shock:            analyticsGetShock(),
+    metrics: analyticsGetMetrics(),
+    shock: analyticsGetShock(),
     whaleThresholdSTT: Number(WHALE_DISPLAY_THRESHOLD) / 1e18,
-    whalePercentile:  75,
+    whalePercentile: 75,
     dbLatestBlock,
   })}\n\n`);
+
   controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
-  console.log(`📡 Re-broadcast init: ${whaleAlerts.length} whale events, ${blockTxAlerts.length} block_txs to ${controllers.size} client(s)`);
+  console.log(`📡 Re-broadcast init: ${whaleAlerts.length} whale/reaction/signal events, ${blockTxAlerts.length} block_txs to ${controllers.size} client(s)`);
 }
 
 async function loadRecentBlockTxs() {
@@ -632,19 +746,19 @@ async function loadRecentBlockTxs() {
   backfillRunning = true;
   const pub = createPublicClient({ chain: somniaTestnet, transport: http("https://dream-rpc.somnia.network") });
   try {
-    const latest  = await pub.getBlockNumber();
+    const latest = await pub.getBlockNumber();
     const LOOKBACK = 36_000n;
-    const oldest   = latest > LOOKBACK ? latest - LOOKBACK : 0n;
-    const BATCH    = 10;
-    const DELAY    = 200;
+    const oldest = latest > LOOKBACK ? latest - LOOKBACK : 0n;
+    const BATCH = 10;
+    const DELAY = 200;
 
     const cachedHashes = new Set(
       alertCache.filter(e => e.type === "block_tx").map(e => e.raw.txHash)
     );
 
-    let loaded  = 0;
+    let loaded = 0;
     let scanned = 0;
-    let cursor  = latest;
+    let cursor = latest;
 
     console.log(`📊 Backfilling block_tx (1h window, ${cachedHashes.size} already cached)…`);
 
@@ -656,6 +770,7 @@ async function loadRecentBlockTxs() {
       const results = await Promise.allSettled(
         batch.map(n => pub.getBlock({ blockNumber: n, includeTransactions: true }))
       );
+
       for (const r of results) {
         if (r.status !== "fulfilled" || !r.value?.transactions?.length) continue;
         const block = r.value;
@@ -665,25 +780,24 @@ async function loadRecentBlockTxs() {
           if (typeof tx !== "object" || !tx.hash) continue;
           if (cachedHashes.has(tx.hash)) continue;
 
-          const val       = tx.value ?? 0n;
+          const val = tx.value ?? 0n;
           const sttAmount = Number(val) / 1e18;
           const gasP = (tx as any).gasPrice ?? (tx as any).maxFeePerGas ?? 0n;
           const gasL = (tx as any).gas ?? 21000n;
           const feeSTT = (typeof gasP === "bigint" ? Number(gasP * gasL) : 0) / 1e18;
 
           cachedHashes.add(tx.hash);
-
           push({
             type: "block_tx", receivedAt: Date.now(),
             raw: {
-              from:        (tx.from ?? "") as string,
-              to:          (tx.to  ?? "0x0000000000000000000000000000000000000000") as string,
-              amount:      sttAmount > 0 ? sttAmount.toFixed(8) : "0",
-              timestamp:   `0x${Math.floor(blockTs / 1000).toString(16)}`,
-              token:       "STT", txHash: tx.hash,
+              from: (tx.from ?? "") as string,
+              to: (tx.to ?? "0x0000000000000000000000000000000000000000") as string,
+              amount: sttAmount > 0 ? sttAmount.toFixed(8) : "0",
+              timestamp: `0x${Math.floor(blockTs / 1000).toString(16)}`,
+              token: "STT", txHash: tx.hash,
               blockNumber: block.number?.toString() ?? "",
-              blockHash:   block.hash ?? "",
-              txFee:       feeSTT > 0 ? `~${feeSTT.toFixed(8)}` : "0",
+              blockHash: block.hash ?? "",
+              txFee: feeSTT > 0 ? `~${feeSTT.toFixed(8)}` : "0",
             },
           });
           loaded++;
@@ -697,7 +811,7 @@ async function loadRecentBlockTxs() {
                 type: "whale", receivedAt: blockTs, // use block time as receivedAt for correct window filtering
                 raw: {
                   from: (tx.from ?? "") as string,
-                  to:   (tx.to ?? "0x0000000000000000000000000000000000000000") as string,
+                  to: (tx.to ?? "0x0000000000000000000000000000000000000000") as string,
                   amount: `0x${val.toString(16)}`,
                   timestamp: ts,
                   token: "STT", txHash: tx.hash,
@@ -713,9 +827,11 @@ async function loadRecentBlockTxs() {
       if (scanned % 1000 === 0) console.log(`📊 Scanned ${scanned} blocks, loaded ${loaded} new txns…`);
       await new Promise(r => setTimeout(r, DELAY));
     }
+
     console.log(`✅ Block_tx backfill: ${loaded} new txns loaded (${scanned} blocks scanned)`);
     promoteBlockTxToWhaleEvents();
     seedWhaleEventsFromDb();
+
     // Broadcast updated init to all connected clients so they get the full backfilled dataset
     broadcastFullInit();
   } catch (e: any) {
@@ -742,11 +858,10 @@ async function startBlockWatcher(
   pubClient: ReturnType<typeof createPublicClient>,
 ) {
   const httpPub = createPublicClient({ chain: somniaTestnet, transport: http("https://dream-rpc.somnia.network") });
-
   let ethUsd = await getEthUsdPrice(httpPub);
   setInterval(async () => { ethUsd = await getEthUsdPrice(httpPub) || ethUsd; }, 120_000);
-  console.log(`💰 ETH/USD oracle price: $${ethUsd.toFixed(2)} (Protofire)`);
 
+  console.log(`💰 ETH/USD oracle price: $${ethUsd.toFixed(2)} (Protofire)`);
   setInterval(() => fetchExplorerStats().catch(() => {}), 60_000);
 
   const unwatch = httpPub.watchBlocks({
@@ -754,11 +869,12 @@ async function startBlockWatcher(
     pollingInterval: 500,
     onBlock: async (block) => {
       if (!block?.transactions) return;
+
       for (const tx of block.transactions) {
         if (typeof tx !== "object") continue;
-        const val  = tx.value ?? 0n;
+        const val = tx.value ?? 0n;
         const from = tx.from as `0x${string}`;
-        const to   = (tx.to ?? "0x0000000000000000000000000000000000000000") as `0x${string}`;
+        const to = (tx.to ?? "0x0000000000000000000000000000000000000000") as `0x${string}`;
         const sttAmount = Number(val) / 1e18;
         const txHash = tx.hash ?? "";
         const blockNum = block.number?.toString() ?? "";
@@ -798,7 +914,7 @@ async function startBlockWatcher(
           push(entry);
 
           const label = `${sttAmount.toFixed(4)} STT`;
-          console.log(`🌊 Confirmed whale: ${label}  ${from.slice(0,8)}→${to.slice(0,8)}  block:${blockNum}  tx:${txHash.slice(0,10)}`);
+          console.log(`🌊 Confirmed whale: ${label} ${from.slice(0,8)}→${to.slice(0,8)} block:${blockNum} tx:${txHash.slice(0,10)}`);
 
           // Resolve actual fee asynchronously
           fetchActualFee(httpPub, txHash as `0x${string}`).then(actualFee => {
@@ -806,12 +922,14 @@ async function startBlockWatcher(
             const idx = alertCache.findIndex(e => e.type === "whale" && e.raw.txHash === txHash);
             if (idx !== -1) {
               alertCache[idx].raw.txFee = actualFee;
-              const msg = encoder.encode(`data: ${JSON.stringify({ ...alertCache[idx], type: "whale_fee_update", txHash, txFee: actualFee })}\n\n`);
+              const msg = encoder.encode(`data: ${JSON.stringify({
+                ...alertCache[idx], type: "whale_fee_update", txHash, txFee: actualFee })}\n\n`);
               controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
             }
           }).catch(() => {});
 
           // ── DERIVED SIGNALS from confirmed whale ─────────────────────────────
+
           // Momentum: ≥3 confirmed whale txns from same wallet within 60s
           const MOMENTUM_WINDOW = 60_000;
           const recentFromSame = alertCache.filter(e =>
@@ -819,6 +937,7 @@ async function startBlockWatcher(
             e.raw.from === from &&
             Date.now() - e.receivedAt <= MOMENTUM_WINDOW
           );
+
           if (recentFromSame.length >= 2) { // this tx makes it 3+
             const burstCount = recentFromSame.length + 1;
             const reason = `${burstCount} confirmed txns ≥${Number(WHALE_DISPLAY_THRESHOLD)/1e18} STT from ${from.slice(0,10)} within ${MOMENTUM_WINDOW/1000}s`;
@@ -872,7 +991,6 @@ async function startBlockWatcher(
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempts = 0;
 
-// ============= FIX 3: Add 'async' keyword here =============
 async function scheduleReconnect() {
   if (reconnectTimer) return;
   const delay = Math.min(3000 * Math.pow(2, reconnectAttempts), 30_000);
@@ -899,11 +1017,30 @@ async function ensureSubscriptions() {
     if (alertCache[i].type !== "block_tx") alertCache.splice(i, 1);
   }
 
+  // Reset the signal dedup set on reconnect so historical events re-seed correctly
+  seenSignalKeys.clear();
+  signalKeyQueue.length = 0;
+
   loadBlockTxFromDb();
   evictExpiredEntries();
   promoteBlockTxToWhaleEvents();
-  seedWhaleEventsFromDb();
+  seedWhaleEventsFromDb(); // ✅ Now seeds ALL types: whale + reaction + alert + momentum
   nonBlockTxCount = alertCache.filter(e => e.type !== "block_tx").length;
+
+  // ── Pre-seed SDK dedup set from loaded reactions ──────────────────────────
+  // On reconnect the SDK re-delivers all recent reactions. Without this,
+  // seenSDKContentKeys is empty and every re-delivered reaction passes through
+  // (causing duplicate #2458, #2459, #2460 entries visible in terminal/frontend).
+  // We reconstruct the contentKey that the SDK handler uses: "reaction:from:to:count"
+  seenSDKContentKeys.clear();
+  sdkKeyQueue.length = 0;
+  for (const entry of alertCache) {
+    if (entry.type === "reaction") {
+      // Reconstruct SDK content key format: reaction:from:to:reactionCount
+      const contentKey = `reaction:${entry.raw.from}:${entry.raw.to}:${entry.raw.reactionCount ?? ""}`;
+      markSDKSeen(contentKey);
+    }
+  }
 
   // Seed analytics engine from loaded history + set threshold meta
   analyticsSeed(alertCache);
@@ -912,25 +1049,24 @@ async function ensureSubscriptions() {
 
   // Start 2s metrics broadcast to all SSE clients
   startMetricsBroadcast();
-
   cacheReadyResolve?.();
+
   // Only start backfill if not already running
   if (!backfillRunning) {
     setTimeout(() => loadRecentBlockTxs().catch(() => {}), 10_000);
   }
+
   fetchExplorerStats().catch(() => {});
 
-  const CONTRACT = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS  as `0x${string}`;
-  const HANDLER  = process.env.HANDLER_CONTRACT_ADDRESS      as `0x${string}`;
-  const account  = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
+  const CONTRACT = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS as `0x${string}`;
+  const HANDLER = process.env.HANDLER_CONTRACT_ADDRESS as `0x${string}`;
+  const account = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
   const pubClient = createPublicClient({ chain: somniaTestnet, transport: webSocket("wss://dream-rpc.somnia.network/ws") });
   const walClient = createWalletClient({ account, chain: somniaTestnet, transport: http("https://dream-rpc.somnia.network") });
-  const sdk       = new SDK({ public: pubClient, wallet: walClient });
+  const sdk = new SDK({ public: pubClient, wallet: walClient });
 
-  const WHALE_TOPIC     = keccak256(toBytes("WhaleTransfer(address,address,uint256,uint256,string)"));
-  const REACTED_TOPIC   = keccak256(toBytes("ReactedToWhaleTransfer(address,bytes32,address,address,uint256)"));
-  const ALERT_TOPIC     = keccak256(toBytes("AlertThresholdCrossed(uint256,uint256)"));
-  const MOMENTUM_TOPIC  = keccak256(toBytes("WhaleMomentumDetected(uint256,uint256)"));
+  const WHALE_TOPIC = keccak256(toBytes("WhaleTransfer(address,address,uint256,uint256,string)"));
+  const REACTED_TOPIC = keccak256(toBytes("ReactedToWhaleTransfer(address,bytes32,address,address,uint256)"));
   const THRESHOLD_TOPIC = keccak256(toBytes("ThresholdUpdated(uint256,uint256)"));
 
   // ── SDK WhaleTransfer: leaderboard + dedup signal only ───────────────────
@@ -953,6 +1089,7 @@ async function ensureSubscriptions() {
           const a = decoded.args as any;
           const amount = BigInt(a.amount);
           const ts = Number(BigInt(a.timestamp)) * 1000;
+
           // Leaderboard update only — block watcher owns DB writes
           updateLeaderMap(a.from, a.to, amount, ts);
           for (const wallet of [a.from as string, a.to as string]) {
@@ -963,9 +1100,12 @@ async function ensureSubscriptions() {
       },
       onError: (e: Error) => {
         console.error("Tracker SDK error:", (e as any).shortMessage ?? e.message);
-        if (e.message?.includes("socket") || e.message?.includes("closed")) { trackerSub = null; handlerSub = null; momentumSub = null; scheduleReconnect(); }
+        if (e.message?.includes("socket") || e.message?.includes("closed")) {
+          trackerSub = null; handlerSub = null; momentumSub = null; scheduleReconnect();
+        }
       },
     });
+
     if (r1 instanceof Error) throw r1;
     trackerSub = r1;
     console.log("✅ SDK WhaleTransfer subscription (leaderboard only):", r1.subscriptionId);
@@ -974,20 +1114,16 @@ async function ensureSubscriptions() {
   // ── SDK Reaction: on-chain event from WhaleHandler.sol ───────────────────
   // ReactedToWhaleTransfer is emitted by WhaleHandler._onEvent() — it IS a real
   // on-chain transaction. We keep it but enforce integrity: must have txHash + blockNumber.
-  // We attach the most recent confirmed whale as linkedTxHash for traceability.
+  // ── FIX 5: Only trigger reaction when there's a confirmed whale with a valid txHash ──
   if (!handlerSub && HANDLER) {
     const r2 = await sdk.subscribe({
       ethCalls: [], eventContractSources: [HANDLER], topicOverrides: [REACTED_TOPIC],
       onData: (data: any) => {
         try {
           const r = data?.result ?? data;
-          const txHash     = r?.transactionHash ?? "";
+          const txHash = r?.transactionHash ?? "";
           const blockNumber = r?.blockNumber ? BigInt(r.blockNumber).toString() : "";
 
-          // Relaxed gate: reactions from the Reactivity precompile are real on-chain events
-          // but the SDK often omits transactionHash/blockNumber on delivery (testnet SDK limitation).
-          // We accept them regardless, linking to the most recent confirmed whale as proof of context.
-          // The linked whale tx IS the verifiable on-chain anchor for this reaction.
           const decoded = decodeEventLog({
             abi: HANDLER_ABI, data: r?.data as `0x${string}`,
             topics: r?.topics as [`0x${string}`, ...`0x${string}`[]],
@@ -998,10 +1134,16 @@ async function ensureSubscriptions() {
           const contentKey = `reaction:${a.from}:${a.to}:${a.count}`;
           if (!markSDKSeen(contentKey)) return;
 
-          const latestWhale = [...alertCache].reverse().find(e => e.type === "whale");
+          // ── FIX 5: Only link reaction to a whale that has a confirmed txHash ──
+          // Previously: latestWhale could have an empty txHash ("no sdk txHash" flood)
+          // Now: we require a non-empty txHash on the whale before accepting the reaction.
+          const latestWhale = [...alertCache].reverse().find(e =>
+            e.type === "whale" && e.raw.txHash && e.raw.txHash.length > 0
+          );
+
           if (!latestWhale) {
-            // No confirmed whale in cache yet — reaction has no anchor, drop it
-            console.log(`⚠ Reaction dropped — no confirmed whale in cache to link`);
+            // No confirmed whale with txHash in cache yet — reaction has no verifiable anchor
+            console.log(`⚠ Reaction dropped — no confirmed whale with txHash in cache to link`);
             return;
           }
 
@@ -1017,12 +1159,14 @@ async function ensureSubscriptions() {
               signalReason: `WhaleHandler reacted to whale transfer${txHash ? "" : " (tx id pending SDK delivery)"} — reaction #${a.count}`,
             },
           });
-          console.log(`⚡ Reaction accepted: #${a.count} linked to whale ${latestWhale.raw.txHash.slice(0,10)}${txHash ? "" : " (no sdk txHash)"}`);
+          console.log(`⚡ Reaction accepted: #${a.count} linked to whale ${latestWhale.raw.txHash.slice(0, 10)}`);
         } catch (e) { console.error("Reaction parse error:", e); }
       },
       onError: (e: Error) => {
         console.error("Handler SDK error:", (e as any).shortMessage ?? e.message);
-        if (e.message?.includes("socket") || e.message?.includes("closed")) { trackerSub = null; handlerSub = null; momentumSub = null; scheduleReconnect(); }
+        if (e.message?.includes("socket") || e.message?.includes("closed")) {
+          trackerSub = null; handlerSub = null; momentumSub = null; scheduleReconnect();
+        }
       },
     });
 
@@ -1033,7 +1177,7 @@ async function ensureSubscriptions() {
       console.log("✅ SDK Reaction subscription (on-chain, integrity-gated):", r2.subscriptionId);
     }
 
-    // ── SDK Alert/Momentum subscriptions: REMOVED ────────────────────────
+    // ── SDK Alert/Momentum subscriptions: REMOVED ────────────────────────────
     // Alert and Momentum are now derived locally from confirmed block_watcher whales.
     // This eliminates the "Reactions: 46, Whales: 1" credibility problem entirely.
     // The SDK versions are unreliable (no txHash, disconnects from confirmed data).
@@ -1054,12 +1198,14 @@ async function ensureSubscriptions() {
           console.log(`⚙ Threshold updated: ${oldVal} → ${newVal} STT`);
           broadcast({
             type: "threshold_update", receivedAt: Date.now(),
-            raw: { from:"", to:"", amount:"0", timestamp:"0x0", token:"", txHash:"", blockNumber:"", blockHash:"", oldValue: oldVal.toString(), newValue: newVal.toString() },
+            raw: { from:"", to:"", amount:"0", timestamp:"0x0", token:"",
+              txHash:"", blockNumber:"", blockHash:"", oldValue: oldVal.toString(), newValue: newVal.toString() },
           });
         } catch (e) { console.error("ThresholdUpdated parse error:", e); }
       },
       onError: (e: Error) => console.error("Threshold SDK error:", e.message),
     });
+
   } else if (!HANDLER) {
     console.log("ℹ HANDLER_CONTRACT_ADDRESS not set — skipping Phase 2 subscriptions");
   }
@@ -1097,7 +1243,14 @@ export async function GET(req: NextRequest) {
     start(controller) {
       controllers.add(controller);
 
-      // Send all whale events (newest first, max 500)
+      // ── FIX 1 (SSE init): Send ALL event types in init payload ───────────
+      // Previously: alertCache was sorted/sliced only for "non-block_tx" which
+      // included reactions/alerts/momentum — BUT seedWhaleEventsFromDb() only
+      // seeded whales (by txHash), so reactions never made it into alertCache
+      // and therefore never appeared in the init payload.
+      // Now: seedWhaleEventsFromDb uses composite keys so ALL types are in cache.
+
+      // Send all whale/reaction/alert/momentum events (newest first, max 500)
       const whaleAlerts = alertCache
         .filter(e => e.type !== "block_tx")
         .sort((a, b) => b.receivedAt - a.receivedAt)
@@ -1114,10 +1267,10 @@ export async function GET(req: NextRequest) {
         totalBlockTxsSeen,
         networkLargestSTT,
         explorerStats,
-        metrics:           analyticsGetMetrics(),
-        shock:             analyticsGetShock(),
+        metrics: analyticsGetMetrics(),
+        shock: analyticsGetShock(),
         whaleThresholdSTT: Number(WHALE_DISPLAY_THRESHOLD) / 1e18,
-        whalePercentile:   75,
+        whalePercentile: 75,
         dbLatestBlock: (() => {
           try {
             const row = db.prepare(`SELECT MAX(block_number) as n FROM whale_events`).get() as any;
@@ -1143,9 +1296,9 @@ export async function GET(req: NextRequest) {
 
   return new Response(stream, {
     headers: {
-      "Content-Type":  "text/event-stream",
+      "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
-      "Connection":    "keep-alive",
+      "Connection": "keep-alive",
     },
   });
 }
