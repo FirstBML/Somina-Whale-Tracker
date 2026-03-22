@@ -80,7 +80,7 @@ const DEFAULT_METRICS: LiveMetrics = {
   largestWhaleStt: 0, whaleFees: 0, whaleFeeEstimated: false,
   alerts24h: 0, momentum24h: 0, reactions24h: 0,
   whaleTxRate: 0,
-  whaleTxRateRaw: 0,  // ← Add this
+  whaleTxRateRaw: 0,
   whaleThresholdStt: 0.5, whalePercentile: 90,
   updatedAt: 0,
 };
@@ -220,37 +220,46 @@ export function useWhaleAlerts() {
           const msg = JSON.parse(e.data);
           
           if (msg.type === "init") {
-          if (msg.dbLatestBlock > lastKnownBlock) {
-            lastKnownBlock = msg.dbLatestBlock;
+            if (msg.dbLatestBlock > lastKnownBlock) {
+              lastKnownBlock = msg.dbLatestBlock;
 
-            const allAlerts = msg.alerts || [];
+              const allAlerts = msg.alerts || [];
 
-            // ✅ Separate whale events from block_tx — parseEntry ignores block_tx type
-            const parsedAlerts = allAlerts
-              .filter((a: any) => a.type !== "block_tx")
-              .map(parseEntry).filter(Boolean) as WhaleAlert[];
+              // ✅ Separate whale events from block_tx — parseEntry ignores block_tx type
+              const rawAlerts = allAlerts
+                .filter((a: any) => a.type !== "block_tx")
+                .map(parseEntry).filter(Boolean) as WhaleAlert[];
+              
+              // ✅ Dedup by txHash+type on initial load — prevents duplicates from historical data
+              const seen = new Set<string>();
+              const parsedAlerts = rawAlerts.filter(a => {
+                const key = a.txHash ? `${a.type}:${a.txHash}` : `${a.type}:${a.timestamp}:${a.from}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+              });
 
-            const parsedBlockTxs = allAlerts
-              .filter((a: any) => a.type === "block_tx")
-              .map(parseBlockTx).filter(Boolean) as BlockTx[];
+              const parsedBlockTxs = allAlerts
+                .filter((a: any) => a.type === "block_tx")
+                .map(parseBlockTx).filter(Boolean) as BlockTx[];
 
-            setAlerts(parsedAlerts);
-            setBlockTxs(parsedBlockTxs.slice(0, MAX_BLOCKTX_STATE)); // cap — full data in SQLite
-            saveCache(ALERTS_CACHE_KEY, parsedAlerts);
-            saveCache(BLOCKTX_CACHE_KEY, parsedBlockTxs.slice(0, 500)); // localStorage cap
+              setAlerts(parsedAlerts);
+              setBlockTxs(parsedBlockTxs.slice(0, MAX_BLOCKTX_STATE)); // cap — full data in SQLite
+              saveCache(ALERTS_CACHE_KEY, parsedAlerts);
+              saveCache(BLOCKTX_CACHE_KEY, parsedBlockTxs.slice(0, 500)); // localStorage cap
 
-            // Pre-seed dedup set so live messages don't duplicate loaded history
-            if (!window._processedTxHashes) window._processedTxHashes = new Set();
-            parsedBlockTxs.forEach(tx => { if (tx.txHash) window._processedTxHashes!.add(tx.txHash); });
+              // Pre-seed dedup set so live messages don't duplicate loaded history
+              if (!window._processedTxHashes) window._processedTxHashes = new Set();
+              parsedBlockTxs.forEach(tx => { if (tx.txHash) window._processedTxHashes!.add(tx.txHash); });
+            }
+
+            if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
+            if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
+            if (msg.whaleThresholdSTT) setWhaleThresholdSTT(msg.whaleThresholdSTT);
+            if (msg.whalePercentile)   setWhalePercentile(msg.whalePercentile);
+            if (msg.metrics)           setMetrics(msg.metrics);
+            if (msg.shock)             setShockData(msg.shock);
           }
-
-           if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
-          if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
-          if (msg.whaleThresholdSTT) setWhaleThresholdSTT(msg.whaleThresholdSTT);
-          if (msg.whalePercentile)   setWhalePercentile(msg.whalePercentile);
-          if (msg.metrics)           setMetrics(msg.metrics);
-          if (msg.shock)             setShockData(msg.shock);
-        }
 
           if (msg.type === "metrics_update") {
             if (msg.metrics) setMetrics(msg.metrics);
@@ -260,9 +269,14 @@ export function useWhaleAlerts() {
           if (msg.type === "connected") { setConnected(true); setError(null); }
           if (msg.type === "error") setError(msg.message);
 
+          // ✅ Dedup check for live events
           if (["whale","reaction","alert","momentum"].includes(msg.type)) {
             const a = parseEntry(msg);
             if (a) setAlerts(prev => {
+              // Dedup: skip if same txHash + type already exists
+              if (a.txHash && prev.some(e => e.txHash === a.txHash && e.type === a.type)) {
+                return prev;
+              }
               const next = [a, ...prev];
               saveCache(ALERTS_CACHE_KEY, next);
               return next;

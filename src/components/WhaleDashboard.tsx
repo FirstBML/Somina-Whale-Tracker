@@ -193,7 +193,7 @@ function SpeedometerLarge({value,t}:{value:number|null;t:typeof T.dark}){
   const pct = Math.min(100, value ?? 0);
   const color = pct>=80?"#ef4444":pct>=50?"#f97316":pct>=20?"#f59e0b":"#4ade80";
   const label = pct>=80?"HIGH":pct>=50?"ELEVATED":pct>=20?"MODERATE":"LOW";
-  const displayVal = value!=null?`${(value/20).toFixed(3)}%`:"—";
+  const displayVal = value!=null?`${value.toFixed(2)}%`:"—";
   // cy=100 gives enough room below hub for value text + label badge within height=165
   const cx=130,cy=100,r=88;
   const startDeg=210,sweep=240;
@@ -254,7 +254,7 @@ function SpeedometerLarge({value,t}:{value:number|null;t:typeof T.dark}){
           const a=startDeg-(sweep*(p/100));
           const [ox,oy]=pt(96,a); const [ix,iy]=pt(88,a);
           const [lx,ly]=pt(104,a);
-         const tickLabels=["0","1.25%","2.5%","3.75%","5%"];
+          const tickLabels=["0","1.25","2.5","3.75","5%"];
           return(<g key={i}>
             <line x1={ox} y1={oy} x2={ix} y2={iy} stroke="rgba(255,255,255,0.5)" strokeWidth="1.5"/>
             <text x={lx} y={ly} textAnchor="middle" dominantBaseline="middle" fill="rgba(103,184,204,0.6)" fontSize="7" fontFamily="monospace">{tickLabels[i]}</text>
@@ -1342,7 +1342,7 @@ export default function WhaleDashboard(){
   const windowedMomentumCount = metrics.momentum24h;
   const totalVolUSD = { sum: 0, partial: false }; // STT testnet — no oracle price
   const largestUSD: number | null = null;          // STT testnet — no oracle price
-  
+
   // windowedBlockTxs still needed for Network Activity table (capped 5k)
   const windowedBlockTxs = useMemo(()=>!windowCutoff?blockTxs:blockTxs.filter(tx=>tx.timestamp>=windowCutoff),[blockTxs,windowCutoff]);
 
@@ -1396,20 +1396,19 @@ export default function WhaleDashboard(){
 
   const btn:React.CSSProperties={fontSize:11,fontFamily:"monospace",padding:"7px 13px",borderRadius:8,cursor:"pointer",transition:"all 0.15s",fontWeight:600,whiteSpace:"nowrap"};
   
-  return(
-    <div style={{height:"100vh",display:"flex",flexDirection:"row",background:t.pageBg,color:t.text,overflow:"hidden"}}>
-      <style>{`
-        @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
-        @keyframes eventPulse{0%{transform:scale(1);opacity:1}40%{transform:scale(2.2);opacity:0.9}100%{transform:scale(1);opacity:1}}
-        @keyframes burstPulse{0%,100%{box-shadow:0 0 0 0 rgba(249,115,22,0.15)}50%{box-shadow:0 0 0 10px rgba(249,115,22,0)}}
-        @keyframes tickerScroll{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
-        @keyframes sidebarGlow{0%,100%{box-shadow:inset 0 0 30px rgba(6,182,212,0.03)}50%{box-shadow:inset 0 0 30px rgba(6,182,212,0.07)}}
-        input,select{color-scheme:dark}
-        ::-webkit-scrollbar{width:4px;height:4px}
-        ::-webkit-scrollbar-thumb{background:rgba(6,182,212,0.25);border-radius:3px}
-      `}</style>
+  return(<div style={{height:"100vh",display:"flex",flexDirection:"row",background:t.pageBg,color:t.text,overflow:"hidden"}}>
+    <style>{`
+      @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+      @keyframes eventPulse{0%{transform:scale(1);opacity:1}40%{transform:scale(2.2);opacity:0.9}100%{transform:scale(1);opacity:1}}
+      @keyframes burstPulse{0%,100%{box-shadow:0 0 0 0 rgba(249,115,22,0.15)}50%{box-shadow:0 0 0 10px rgba(249,115,22,0)}}
+      @keyframes tickerScroll{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+      @keyframes sidebarGlow{0%,100%{box-shadow:inset 0 0 30px rgba(6,182,212,0.03)}50%{box-shadow:inset 0 0 30px rgba(6,182,212,0.07)}}
+      input,select{color-scheme:dark}
+      ::-webkit-scrollbar{width:4px;height:4px}
+      ::-webkit-scrollbar-thumb{background:rgba(6,182,212,0.25);border-radius:3px}
+    `}</style>
 
-      {/* ── LEFT SIDEBAR ────────────────────────────────────────────────── */}
+    {/* ── LEFT SIDEBAR ────────────────────────────────────────────────── */}
     <div style={{
     width: 280, flexShrink: 0,
     background: "linear-gradient(180deg, #0A1A2F 0%, #0D1E36 40%, #0F2340 100%)", // Lighter, more vibrant
@@ -1475,7 +1474,7 @@ export default function WhaleDashboard(){
       </div>
 
       {/* Txn Count + STT Transfers */}
-      
+      {/* Txn Count + STT Transfers - Redesigned */}
 <div style={{padding:"12px 12px",borderBottom:`1px solid ${t.border}`,flexShrink:0}}>
   <div style={{fontSize:8,fontFamily:"monospace",color:t.accent,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:12,display:"flex",alignItems:"center",gap:5}}>
     <span style={{fontSize:11}}>🌐</span> Network Activity
@@ -1501,8 +1500,7 @@ export default function WhaleDashboard(){
       <div style={{color:t.muted,fontSize:8,fontFamily:"monospace",marginTop:4}}>
         {timePreset<3600_000?`${Math.round(timePreset/60_000)}m`:timePreset<86400_000?`${Math.round(timePreset/3600_000)}h`:`${Math.ceil(timePreset/86400_000)}d`} window
       </div>
-    </div>  { }
-
+    </div>
     {/* STT TXN COUNT */}
     <div style={{textAlign:"center",padding:"4px 0",borderLeft:`1px solid ${t.border}`}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:4,marginBottom:4}}>
@@ -1525,8 +1523,7 @@ export default function WhaleDashboard(){
       </div>
     </div>
   </div>
-</div>  { }
-
+</div>
       {/* Filters */}
       <div style={{padding:"10px 12px",flex:1}}>
         <div style={{fontSize:8,fontFamily:"monospace",color:t.muted,textTransform:"uppercase",letterSpacing:"0.15em",marginBottom:8}}>⚙ Filters</div>
@@ -1605,15 +1602,15 @@ export default function WhaleDashboard(){
               <KpiCard t={t} label="Reactions"       value={windowedReactions.length}  />
               <KpiCard t={t} label="Alerts"          value={windowedAlertCount}         />
               <KpiCard t={t} label="🔥 Momentum"
-                value={windowedMomentumCount>0 ? windowedMomentumCount : (burst?.count ?? 0)}
+                value={windowedMomentumCount>0 ? windowedMomentumCount : burst?.count ?? 0}
                 color="#ef4444"
-                sub={windowedMomentumCount>0 ? "on-chain bursts" : burst != null ? `${burst.count} in ${burst.windowSec}s · live` : "on-chain bursts"}/>
+                sub={windowedMomentumCount>0 ? "on-chain bursts" : burst ? burst.count+" in "+burst.windowSec+"s · live" : "on-chain bursts"}/>
               <KpiCard t={t} label="🐋 Whale Volume"
                 value={totalVolUSD.sum>0 ? (totalVolUSD.sum>=1e9?`$${(totalVolUSD.sum/1e9).toFixed(2)}B`:totalVolUSD.sum>=1e6?`$${(totalVolUSD.sum/1e6).toFixed(2)}M`:`$${Math.round(totalVolUSD.sum).toLocaleString()}`) : Math.round(windowedVol).toLocaleString()}
                 sub={totalVolUSD.sum>0 ? (totalVolUSD.partial?"~USD partial":"~USD est.") : "tokens"}/>
               <KpiCard t={t} label="🐋 Whale Largest"
-                value={windowedLargest>0?Math.round(windowedLargest).toLocaleString():"—"}
-                sub="tokens"/>
+                value={largestUSD!=null ? (largestUSD>=1e9?`$${(largestUSD/1e9).toFixed(2)}B`:largestUSD>=1e6?`$${(largestUSD/1e6).toFixed(2)}M`:`$${Math.round(largestUSD).toLocaleString()}`) : windowedLargest>0?Math.round(windowedLargest).toLocaleString():"—"}
+                sub={largestUSD!=null?"~USD est.":"tokens"}/>
               <KpiCard t={t} label="💸 Whale Fees"
                 value={whaleTotalFees>0 ? (whaleTotalFees>=1000?`${Math.round(whaleTotalFees).toLocaleString()} STT`:`${whaleTotalFees.toFixed(8)} STT`) : "—"}
                 color="#f59e0b"
@@ -1658,7 +1655,8 @@ export default function WhaleDashboard(){
                 </div>
               </div>
             )}
-            
+            {tab==="mywallet"&&isConnected&&walletAddr&&<MyWalletTab alerts={alerts} connectedAddr={walletAddr} t={t}/>}
+            {tab==="mywallet"&&!isConnected&&<div style={{padding:40,textAlign:"center",color:t.muted,fontFamily:"monospace",fontSize:12}}>Connect your wallet to view your transactions.</div>}
           </div>
           <div style={{marginTop:10,display:"flex",justifyContent:"space-between",color:t.muted,fontSize:9,fontFamily:"monospace"}}>
             <span>Contract: <a href={addrUrl(process.env.NEXT_PUBLIC_CONTRACT_ADDRESS||"")} target="_blank" rel="noreferrer" style={{color:t.accent,textDecoration:"none"}}>{short(process.env.NEXT_PUBLIC_CONTRACT_ADDRESS||"0x0000000000000000000000000000000000000000")}</a></span>
@@ -1667,5 +1665,4 @@ export default function WhaleDashboard(){
         </div>
       </div>
     </div>
-  </div>);
-}
+  </div>);}
