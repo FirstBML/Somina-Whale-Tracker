@@ -175,10 +175,22 @@ function Speedometer({value,t}:{value:number|null;t:typeof T.dark}){
 }
 
 function SpeedometerLarge({value,t}:{value:number|null;t:typeof T.dark}){
-  const pct = Math.min(100, value ?? 0);
+  // CRITICAL FIX: Validate the rate
+  // A valid rate must be:
+  // 1. Not null/undefined
+  // 2. Between 0 and 100
+  // 3. Not NaN
+  const isValidRate = value !== null && value !== undefined && !isNaN(value) && value >= 0 && value <= 100;
+  
+  // If invalid, display 0% but show warning
+  const displayValue = isValidRate ? value : 0;
+  const showWarning = value !== null && !isValidRate;
+  
+  const pct = Math.min(100, Math.max(0, displayValue ?? 0));
   const color = pct>=80?"#ef4444":pct>=50?"#f97316":pct>=20?"#f59e0b":"#4ade80";
   const label = pct>=80?"HIGH":pct>=50?"ELEVATED":pct>=20?"MODERATE":"LOW";
-  const displayVal = value!=null?`${value.toFixed(2)}%`:"—";
+  const displayVal = isValidRate ? `${(value ?? 0).toFixed(2)}%` : "—";
+  
   const cx=130,cy=100,r=88;
   const startDeg=210,sweep=240;
   const toRad=(d:number)=>(d*Math.PI)/180;
@@ -211,8 +223,28 @@ function SpeedometerLarge({value,t}:{value:number|null;t:typeof T.dark}){
   const needleAngle=startDeg-(sweep*(pct/100));
   const [nx,ny]=pt(62,needleAngle);
   const ticks=[0,25,50,75,100];
+  
   return(
     <div style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
+      {/* Warning message when rate is invalid */}
+      {showWarning && (
+        <div style={{
+          background:"rgba(249,115,22,0.15)",
+          border:"1px solid rgba(249,115,22,0.3)",
+          borderRadius:6,
+          padding:"4px 8px",
+          marginBottom:8,
+          fontSize:9,
+          fontFamily:"monospace",
+          color:"#f97316",
+          textAlign:"center"
+        }}>
+          ⚠ Rate unavailable (data syncing)
+          <br />
+          <span style={{fontSize:7, opacity:0.8}}>STT TXN &lt; Whale Events</span>
+        </div>
+      )}
+      
       <svg width={260} height={165} viewBox="0 0 260 165">
         <defs>
           <filter id="lgGlow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
@@ -221,14 +253,43 @@ function SpeedometerLarge({value,t}:{value:number|null;t:typeof T.dark}){
             <stop offset="0%" stopColor="rgba(6,182,212,0.08)"/>
             <stop offset="100%" stopColor="rgba(6,182,212,0)"/>
           </radialGradient>
+          {/* Add warning pattern for invalid state */}
+          {showWarning && (
+            <pattern id="warningPattern" patternUnits="userSpaceOnUse" width="4" height="4">
+              <rect width="4" height="4" fill="rgba(249,115,22,0.2)"/>
+              <path d="M0 0 L4 4 M4 0 L0 4" stroke="rgba(249,115,22,0.5)" strokeWidth="0.5"/>
+            </pattern>
+          )}
         </defs>
+        
+        {/* Dial background */}
         <path d={arcPath(58,96,100)} fill="url(#dialBg)"/>
+        
+        {/* Track */}
         <path d={arcPath(68,92,100)} fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.05)" strokeWidth="0.5"/>
+        
+        {/* Colored bands */}
         {bands.map((b,i)=>(
           <path key={i} d={bandPath(b.from,b.to)} fill={b.color} opacity="0.75"/>
         ))}
-        {pct>0&&<path d={arcPath(70,88,pct)} fill={color} opacity="0.35" filter="url(#lgGlow)"/>}
-        {pct>0&&<path d={arcPath(86,90,pct)} fill={color} opacity="0.9" filter="url(#lgGlow)"/>}
+        
+        {/* Active fill overlay */}
+        {pct>0 && !showWarning && (
+          <>
+            <path d={arcPath(70,88,pct)} fill={color} opacity="0.35" filter="url(#lgGlow)"/>
+            <path d={arcPath(86,90,pct)} fill={color} opacity="0.9" filter="url(#lgGlow)"/>
+          </>
+        )}
+        
+        {/* Show warning pattern instead of fill when invalid */}
+        {showWarning && (
+          <>
+            <path d={arcPath(70,88,100)} fill="url(#warningPattern)" opacity="0.6"/>
+            <path d={arcPath(86,90,100)} fill="url(#warningPattern)" opacity="0.8"/>
+          </>
+        )}
+        
+        {/* Tick marks */}
         {ticks.map((p,i)=>{
           const a=startDeg-(sweep*(p/100));
           const [ox,oy]=pt(96,a); const [ix,iy]=pt(88,a);
@@ -239,20 +300,48 @@ function SpeedometerLarge({value,t}:{value:number|null;t:typeof T.dark}){
             <text x={lx} y={ly} textAnchor="middle" dominantBaseline="middle" fill="rgba(103,184,204,0.6)" fontSize="7" fontFamily="monospace">{tickLabels[i]}</text>
           </g>);
         })}
+        
+        {/* Minor ticks */}
         {Array.from({length:21},(_,i)=>{
           if([0,5,10,15,20].includes(i)) return null;
           const a=startDeg-(sweep*(i/20));
           const [ox,oy]=pt(93,a); const [ix,iy]=pt(88,a);
           return <line key={i} x1={ox} y1={oy} x2={ix} y2={iy} stroke="rgba(255,255,255,0.2)" strokeWidth="0.8"/>;
         })}
-        <line x1={cx} y1={cy} x2={nx} y2={ny} stroke={color} strokeWidth="2.5" strokeLinecap="round" filter="url(#needleGlow)"/>
+        
+        {/* Needle - show at 0% when invalid */}
+        <line x1={cx} y1={cy} x2={nx} y2={ny} stroke={showWarning ? "#f97316" : color} strokeWidth="2.5" strokeLinecap="round" filter="url(#needleGlow)"/>
         <line x1={cx} y1={cy} x2={nx} y2={ny} stroke="rgba(255,255,255,0.6)" strokeWidth="1" strokeLinecap="round"/>
-        <circle cx={cx} cy={cy} r={7} fill="#0a1628" stroke={color} strokeWidth="2"/>
-        <circle cx={cx} cy={cy} r={3} fill={color} filter="url(#needleGlow)"/>
-        <text x={cx} y={cy+32} textAnchor="middle" fill={color} fontSize="20" fontWeight="800" fontFamily="monospace" filter="url(#needleGlow)">{displayVal}</text>
-        <rect x={cx-22} y={cy+46} width={44} height={14} rx={4} fill={`${color}22`} stroke={`${color}44`} strokeWidth="1"/>
-        <text x={cx} y={cy+57} textAnchor="middle" fill={color} fontSize="8" fontWeight="700" fontFamily="monospace" letterSpacing="0.1em">{label}</text>
+        
+        {/* Center hub */}
+        <circle cx={cx} cy={cy} r={7} fill="#0a1628" stroke={showWarning ? "#f97316" : color} strokeWidth="2"/>
+        <circle cx={cx} cy={cy} r={3} fill={showWarning ? "#f97316" : color} filter="url(#needleGlow)"/>
+        
+        {/* Value display */}
+        <text x={cx} y={cy+32} textAnchor="middle" fill={showWarning ? "#f97316" : color} fontSize="20" fontWeight="800" fontFamily="monospace" filter="url(#needleGlow)">
+          {displayVal}
+        </text>
+        
+        {/* Label badge */}
+        <rect x={cx-22} y={cy+46} width={44} height={14} rx={4} fill={`${showWarning ? "#f97316" : color}22`} stroke={`${showWarning ? "#f97316" : color}44`} strokeWidth="1"/>
+        <text x={cx} y={cy+57} textAnchor="middle" fill={showWarning ? "#f97316" : color} fontSize="8" fontWeight="700" fontFamily="monospace" letterSpacing="0.1em">
+          {showWarning ? "SYNC" : label}
+        </text>
       </svg>
+      
+      {/* Additional helper text */}
+      {showWarning && (
+        <div style={{
+          marginTop: 8,
+          fontSize: 8,
+          fontFamily: "monospace",
+          color: t.muted,
+          textAlign: "center",
+          maxWidth: 200
+        }}>
+          Rate calculation pending data sync
+        </div>
+      )}
     </div>
   );
 }
@@ -1101,109 +1190,106 @@ useEffect(() => {
   // Result: instant KPI updates with zero API latency, same as the table filtering.
 
   const filteredMetrics: LiveMetrics = useMemo(() => {
-    // When 24h default filter: use liveMetrics for the bulk counters (totalTx24h, sttTx24h,
-    // whaleFees, etc.) but ALWAYS recompute whaleTxRate client-side from the live alert
-    // and blockTx arrays. This prevents the speedometer from showing 100% when the
-    // server-side _whaleTx24h counter inflates due to hot-reload duplicate push() calls.
-    const isDefault = timePreset === 24*60*60_000 && !minAmt && !maxAmt && tokenFilter === "All" && !search;
+  const isDefault = timePreset === 24*60*60_000 && !minAmt && !maxAmt && tokenFilter === "All" && !search;
 
-    const cutoff    = isDefault ? 0 : Date.now() - timePreset;
-    const walletLow = search.toLowerCase();
-    const minStt    = minAmt ? parseFloat(minAmt) : undefined;
-    const maxStt    = maxAmt ? parseFloat(maxAmt) : undefined;
-    const tokFilter = tokenFilter !== "All" ? tokenFilter : undefined;
+  const cutoff    = isDefault ? 0 : Date.now() - timePreset;
+  const walletLow = search.toLowerCase();
+  const minStt    = minAmt ? parseFloat(minAmt) : undefined;
+  const maxStt    = maxAmt ? parseFloat(maxAmt) : undefined;
+  const tokFilter = tokenFilter !== "All" ? tokenFilter : undefined;
 
-    let totalTx = 0, sttTx = 0, whaleTx = 0;
-    let whaleVol = 0, largestStt = 0, whaleFees = 0;
-    let feeEst = false;
-    let alertCount = 0, momCount = 0, reactCount = 0;
-    const whaleSizes: number[] = [];
+  let totalTx = 0, sttTx = 0, whaleTx = 0;
+  let whaleVol = 0, largestStt = 0, whaleFees = 0;
+  let feeEst = false;
+  let alertCount = 0, momCount = 0, reactCount = 0;
+  const whaleSizes: number[] = [];
 
-    // Count block_txs — for TXN COUNT and STT TXN KPIs and whaleTxRate denominator
-    for (const tx of blockTxs) {
-      if (cutoff > 0 && tx.timestamp < cutoff) continue;
-      if (walletLow && tx.from.toLowerCase() !== walletLow && tx.to.toLowerCase() !== walletLow) continue;
-      totalTx++;
-      if (tx.amountRaw > 0) sttTx++;
-    }
+  // Count block_txs — for TXN COUNT and STT TXN KPIs
+  for (const tx of blockTxs) {
+    if (cutoff > 0 && tx.timestamp < cutoff) continue;
+    if (walletLow && tx.from.toLowerCase() !== walletLow && tx.to.toLowerCase() !== walletLow) continue;
+    totalTx++;
+    if (tx.amountRaw > 0) sttTx++;
+  }
 
-    // Count whale/signal events
-    for (const a of alerts) {
-      if (cutoff > 0 && a.timestamp < cutoff) continue;
-      if (walletLow && a.from.toLowerCase() !== walletLow && a.to.toLowerCase() !== walletLow) continue;
-      if (tokFilter && a.token !== tokFilter) continue;
+  // Count whale/signal events — EXCLUDE simulated whales from metrics
+  for (const a of alerts) {
+    if (cutoff > 0 && a.timestamp < cutoff) continue;
+    if (walletLow && a.from.toLowerCase() !== walletLow && a.to.toLowerCase() !== walletLow) continue;
+    if (tokFilter && a.token !== tokFilter) continue;
 
-      if (a.type === "whale") {
-        if (a.blockNumber === "simulated") continue;
-        const stt = Number(a.amountRaw) / 1e18;
-        if (minStt != null && stt < minStt) continue;
-        if (maxStt != null && stt > maxStt) continue;
-        whaleTx++;
-        whaleVol += stt;
-        if (stt > largestStt) largestStt = stt;
-        const fee = parseFloat((a.txFee ?? "0").replace("~", ""));
-        if (!isNaN(fee) && fee > 0) {
-          whaleFees += fee;
-          if (a.txFee?.startsWith("~")) feeEst = true;
-        }
-        whaleSizes.push(stt);
-      } else if (a.type === "alert")    { alertCount++; }
-      else if (a.type === "momentum")   { momCount++;   }
-      else if (a.type === "reaction")   { reactCount++; }
-    }
+    if (a.type === "whale") {
+      // CRITICAL: Exclude simulated whales from all metrics
+      if (a.blockNumber === "simulated") continue;
+      
+      const stt = Number(a.amountRaw) / 1e18;
+      if (minStt != null && stt < minStt) continue;
+      if (maxStt != null && stt > maxStt) continue;
+      
+      whaleTx++;
+      whaleVol += stt;
+      if (stt > largestStt) largestStt = stt;
+      const fee = parseFloat((a.txFee ?? "0").replace("~", ""));
+      if (!isNaN(fee) && fee > 0) {
+        whaleFees += fee;
+        if (a.txFee?.startsWith("~")) feeEst = true;
+      }
+      whaleSizes.push(stt);
+    } else if (a.type === "alert")    { alertCount++; }
+    else if (a.type === "momentum")   { momCount++;   }
+    else if (a.type === "reaction")   { reactCount++; }
+  }
 
-    const avg = whaleSizes.length > 0 ? whaleSizes.reduce((s,v)=>s+v,0)/whaleSizes.length : 0;
-    // Require at least 50 block_tx data points before computing a meaningful rate.
-    // With fewer samples the denominator is too small and the rate inflates to 100%.
-    // The server-side liveMetrics.whaleTxRate (from full 134k DB counters) is used
-    // as fallback in the 24h default blend below when our sample is too small.
+  const avg = whaleSizes.length > 0 ?
+whaleSizes.reduce((s,v)=>s+v,0)/whaleSizes.length : 0;
+
+    // Whale Rate = whaleTx / sttTx
+    // The blockTxs array is capped at 5k and spans 24h, so for short
+    // windows (30m/1h) the sample is too small to be meaningful.
+    // Use MIN_STT_SAMPLE to guard against inflated/zero rates.
     const MIN_STT_SAMPLE = 50;
     const whaleTxRateRaw = sttTx >= MIN_STT_SAMPLE ? (whaleTx / sttTx) * 100 : 0;
-    const whaleTxRate    = Math.min(100, whaleTxRateRaw);
+    // When sample too small, fall back to server-side rate which uses full DB counters
+    const effectiveRate = sttTx >= MIN_STT_SAMPLE ? Math.min(100, whaleTxRateRaw) : liveMetrics.whaleTxRate;
 
-    // For 24h default: blend client-side whaleTxRate with server-side counters for
-    // accurate TXN COUNT (126k) and STT TXN totals that exceed the 5k blockTxs cache.
+    // For 24h default: use server-side totals for TXN COUNT / STT TXN
+    // (they exceed our 5k blockTxs cap), but use client-side whale counts
     if (isDefault) {
-      // Use server-side whaleTxRate when client sample is too small (avoids 100% bug).
-      // liveMetrics.whaleTxRate is computed from the full 134k block_tx DB counters.
-      const blendedRate = sttTx >= MIN_STT_SAMPLE ? whaleTxRate : liveMetrics.whaleTxRate;
       return {
         ...liveMetrics,
-        // Override only the rate — use server-side totals for everything else
-        whaleTxRate:    blendedRate,
-        whaleTxRateRaw: blendedRate,
-        // Keep whale volume/largest/fees from client-side (immune to counter inflation)
-        whaleTx24h:        whaleTx,
-        whaleVolumeStt:    whaleVol,
-        avgWhaleSizeStt:   avg,
-        largestWhaleStt:   largestStt,
-        whaleFees,
-        whaleFeeEstimated: feeEst,
-        alerts24h:         alertCount,
-        momentum24h:       momCount,
-        reactions24h:      reactCount,
-      };
-    }
-
-    return {
-      totalTx24h:        totalTx,
-      sttTx24h:          sttTx,
-      whaleTx24h:        whaleTx,
-      whaleVolumeStt:    whaleVol,
-      avgWhaleSizeStt:   avg,
-      largestWhaleStt:   largestStt,
+        whaleTxRate: effectiveRate,
+        whaleTxRateRaw: effectiveRate,
+      whaleTx24h: whaleTx,
+      whaleVolumeStt: whaleVol,
+      avgWhaleSizeStt: avg,
+      largestWhaleStt: largestStt,
       whaleFees,
       whaleFeeEstimated: feeEst,
-      alerts24h:         alertCount,
-      momentum24h:       momCount,
-      reactions24h:      reactCount,
-      whaleTxRate,
-      whaleTxRateRaw,
-      whaleThresholdStt: liveMetrics.whaleThresholdStt,
-      whalePercentile:   liveMetrics.whalePercentile,
-      updatedAt:         Date.now(),
+      alerts24h: alertCount,
+      momentum24h: momCount,
+      reactions24h: reactCount,
     };
-  }, [alerts, blockTxs, timePreset, minAmt, maxAmt, tokenFilter, search, liveMetrics]);
+  }
+
+  return {
+      totalTx24h: totalTx,
+      sttTx24h: sttTx,
+      whaleTx24h: whaleTx,
+      whaleVolumeStt: whaleVol,
+      avgWhaleSizeStt: avg,
+      largestWhaleStt: largestStt,
+      whaleFees,
+      whaleFeeEstimated: feeEst,
+      alerts24h: alertCount,
+      momentum24h: momCount,
+      reactions24h: reactCount,
+      whaleTxRate: effectiveRate,
+      whaleTxRateRaw: effectiveRate,
+      whaleThresholdStt: liveMetrics.whaleThresholdStt,
+      whalePercentile: liveMetrics.whalePercentile,
+      updatedAt: Date.now(),
+    };
+}, [alerts, blockTxs, timePreset, minAmt, maxAmt, tokenFilter, search, liveMetrics]);
 
   const isDefaultFilter = timePreset === 24*60*60_000 && !minAmt && !maxAmt && tokenFilter === "All" && !search;
   const metrics = filteredMetrics;
@@ -1295,7 +1381,8 @@ useEffect(() => {
     {/* ── LEFT SIDEBAR ────────────────────────────────────────────────── */}
     <div style={{width:280,flexShrink:0,background:"linear-gradient(180deg, #0A1A2F 0%, #0D1E36 40%, #0F2340 100%)",borderRight:`1px solid ${t.border}`,display:"flex",flexDirection:"column",overflowY:"auto",overflowX:"hidden",boxShadow:"4px 0 20px rgba(0,0,0,0.3)"}}>
       <div style={{height:2,background:"linear-gradient(90deg,transparent,#06b6d4,transparent)",flexShrink:0}}/>
-      {/* ── Somnia branded logo — displayed at natural aspect ratio, no stretch ── */}
+      
+      {/* Somnia branded logo */}
       <div style={{padding:"14px 16px 12px",borderBottom:`1px solid ${t.border}`,flexShrink:0}}>
         <div style={{width:"100%",display:"flex",justifyContent:"center",marginBottom:10}}>
           <img
@@ -1335,23 +1422,33 @@ useEffect(() => {
           <span style={{fontSize:11}}>🌐</span> Network Activity
         </div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+          
+          {/* TXN COUNT - Shows total transactions in selected window */}
           <div style={{textAlign:"center",padding:"4px 0"}}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:4,marginBottom:4}}>
               <span style={{fontSize:9}}>📊</span>
               <span style={{color:t.muted,fontSize:8,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.08em"}}>TXN COUNT</span>
             </div>
-            <div style={{color:t.statVal,fontSize:28,fontWeight:800,fontFamily:"'Courier New', monospace",lineHeight:1,letterSpacing:"-0.02em",textShadow:"0 0 20px rgba(103,232,249,0.3)"}}>{displayTxnCount.toLocaleString()}</div>
+            <div style={{color:t.statVal,fontSize:28,fontWeight:800,fontFamily:"'Courier New', monospace",lineHeight:1,letterSpacing:"-0.02em",textShadow:"0 0 20px rgba(103,232,249,0.3)"}}>
+              {metrics.totalTx24h.toLocaleString()}
+            </div>
             <div style={{color:t.muted,fontSize:8,fontFamily:"monospace",marginTop:4}}>
               {timePreset<3600_000?`${Math.round(timePreset/60_000)}m`:timePreset<86400_000?`${Math.round(timePreset/3600_000)}h`:`${Math.ceil(timePreset/86400_000)}d`} window
             </div>
           </div>
+          
+          {/* STT TXN COUNT - Shows STT transfers in selected window */}
           <div style={{textAlign:"center",padding:"4px 0",borderLeft:`1px solid ${t.border}`}}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:4,marginBottom:4}}>
               <span style={{fontSize:9}}>💸</span>
               <span style={{color:t.muted,fontSize:8,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.08em"}}>STT TXN</span>
             </div>
-            <div style={{color:t.statVal,fontSize:28,fontWeight:800,fontFamily:"'Courier New', monospace",lineHeight:1,letterSpacing:"-0.02em",textShadow:"0 0 20px rgba(103,232,249,0.3)"}}>{metrics.sttTx24h.toLocaleString()}</div>
-            <div style={{color:t.muted,fontSize:8,fontFamily:"monospace",marginTop:4}}>24h total</div>
+            <div style={{color:t.statVal,fontSize:28,fontWeight:800,fontFamily:"'Courier New', monospace",lineHeight:1,letterSpacing:"-0.02em",textShadow:"0 0 20px rgba(103,232,249,0.3)"}}>
+              {metrics.sttTx24h.toLocaleString()}
+            </div>
+            <div style={{color:t.muted,fontSize:8,fontFamily:"monospace",marginTop:4}}>
+              {isDefaultFilter ? "24h total" : `${timePreset<3600_000?`${Math.round(timePreset/60_000)}m`:timePreset<86400_000?`${Math.round(timePreset/3600_000)}h`:`${Math.ceil(timePreset/86400_000)}d`} window`}
+            </div>
           </div>
         </div>
       </div>
@@ -1399,15 +1496,15 @@ useEffect(() => {
             </div>
           </div>
           <button onClick={()=>{
-  setSearch("");
-  setMinAmt("");
-  setMaxAmt("");
-  setTokenFilter("All");
-  setTimePreset(24*60*60_000);
-  setShowTypes(["whale","reaction","alert","momentum"]);
-  setNetMinAmt("");
-  setNetMaxAmt("");
-}} style={{fontSize:9,padding:"5px",borderRadius:6,cursor:"pointer",color:t.errText,background:"rgba(248,113,113,0.05)",border:`1px solid rgba(248,113,113,0.2)`,fontFamily:"monospace",letterSpacing:"0.05em"}}>✕ Clear Filters</button>
+            setSearch("");
+            setMinAmt("");
+            setMaxAmt("");
+            setTokenFilter("All");
+            setTimePreset(24*60*60_000);
+            setShowTypes(["whale","reaction","alert","momentum"]);
+            setNetMinAmt("");
+            setNetMaxAmt("");
+          }} style={{fontSize:9,padding:"5px",borderRadius:6,cursor:"pointer",color:t.errText,background:"rgba(248,113,113,0.05)",border:`1px solid rgba(248,113,113,0.2)`,fontFamily:"monospace",letterSpacing:"0.05em"}}>✕ Clear Filters</button>
         </div>
       </div>
       <div style={{height:2,background:"linear-gradient(90deg,transparent,#06b6d4,transparent)",flexShrink:0}}/>

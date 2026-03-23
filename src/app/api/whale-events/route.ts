@@ -1032,17 +1032,23 @@ async function ensureSubscriptions() {
   seenSignalKeys.clear();
   signalKeyQueue.length = 0;
 
+  // ========== STEP 1: Load block_tx from DB ==========
   loadBlockTxFromDb();
   evictExpiredEntries();
+  
+  // ========== STEP 2: Promote qualifying block_tx to whale_events ==========
   promoteBlockTxToWhaleEvents();
+  
+  // ========== STEP 3: Seed ALL event types from DB (whales, reactions, alerts, momentum) ==========
   seedWhaleEventsFromDb(); // ✅ Now seeds ALL types: whale + reaction + alert + momentum
+  
+  // ========== STEP 4: CRITICAL - Broadcast init AFTER all data is loaded ==========
+  // This ensures frontend that connected during loading receives all historical data
+  broadcastFullInit();
+  
   nonBlockTxCount = alertCache.filter(e => e.type !== "block_tx").length;
 
   // ── Pre-seed SDK dedup set from loaded reactions ──────────────────────────
-  // On reconnect the SDK re-delivers all recent reactions. Without this,
-  // seenSDKContentKeys is empty and every re-delivered reaction passes through
-  // (causing duplicate #2458, #2459, #2460 entries visible in terminal/frontend).
-  // We reconstruct the contentKey that the SDK handler uses: "reaction:from:to:count"
   seenSDKContentKeys.clear();
   sdkKeyQueue.length = 0;
   for (const entry of alertCache) {
@@ -1053,9 +1059,6 @@ async function ensureSubscriptions() {
   }
 
   // ── Pre-seed seenBlockTxHashes from loaded whale entries ──────────────────
-  // After a Next.js hot-reload the new module starts with an empty Set.
-  // Without pre-seeding, the push()-level whale dedup is blind to whales that
-  // were processed by the old module instance → duplicate feed entries again.
   for (const entry of alertCache) {
     if (entry.type === "whale" && entry.raw.txHash) {
       markBlockSeen(entry.raw.txHash as string);
@@ -1090,9 +1093,6 @@ async function ensureSubscriptions() {
   const THRESHOLD_TOPIC = keccak256(toBytes("ThresholdUpdated(uint256,uint256)"));
 
   // ── SDK WhaleTransfer: leaderboard + dedup signal only ───────────────────
-  // Block watcher is the single source of truth for whale entries in the DB.
-  // SDK here is used ONLY to update leaderboard for wallets that the blockWatcher
-  // might have missed (e.g. cross-contract token transfers not carrying native STT value).
   if (!trackerSub) {
     const r1 = await sdk.subscribe({
       ethCalls: [],
@@ -1110,7 +1110,6 @@ async function ensureSubscriptions() {
           const amount = BigInt(a.amount);
           const ts = Number(BigInt(a.timestamp)) * 1000;
 
-          // Leaderboard update only — block watcher owns DB writes
           updateLeaderMap(a.from, a.to, amount, ts);
           for (const wallet of [a.from as string, a.to as string]) {
             const le = leaderMap.get(wallet);
@@ -1132,9 +1131,6 @@ async function ensureSubscriptions() {
   }
 
   // ── SDK Reaction: on-chain event from WhaleHandler.sol ───────────────────
-  // ReactedToWhaleTransfer is emitted by WhaleHandler._onEvent() — it IS a real
-  // on-chain transaction. We keep it but enforce integrity: must have txHash + blockNumber.
-  // ── FIX 5: Only trigger reaction when there's a confirmed whale with a valid txHash ──
   if (!handlerSub && HANDLER) {
     const r2 = await sdk.subscribe({
       ethCalls: [], eventContractSources: [HANDLER], topicOverrides: [REACTED_TOPIC],
@@ -1150,19 +1146,14 @@ async function ensureSubscriptions() {
           });
           const a = decoded.args as any;
 
-          // Dedup: reaction content key — same wallet pair + count shouldn't fire twice
           const contentKey = `reaction:${a.from}:${a.to}:${a.count}`;
           if (!markSDKSeen(contentKey)) return;
 
-          // ── FIX 5: Only link reaction to a whale that has a confirmed txHash ──
-          // Previously: latestWhale could have an empty txHash ("no sdk txHash" flood)
-          // Now: we require a non-empty txHash on the whale before accepting the reaction.
           const latestWhale = [...alertCache].reverse().find(e =>
             e.type === "whale" && e.raw.txHash && e.raw.txHash.length > 0
           );
 
           if (!latestWhale) {
-            // No confirmed whale with txHash in cache yet — reaction has no verifiable anchor
             console.log(`⚠ Reaction dropped — no confirmed whale with txHash in cache to link`);
             return;
           }
@@ -1197,11 +1188,7 @@ async function ensureSubscriptions() {
       console.log("✅ SDK Reaction subscription (on-chain, integrity-gated):", r2.subscriptionId);
     }
 
-    // ── SDK Alert/Momentum subscriptions: REMOVED ────────────────────────────
-    // Alert and Momentum are now derived locally from confirmed block_watcher whales.
-    // This eliminates the "Reactions: 46, Whales: 1" credibility problem entirely.
-    // The SDK versions are unreliable (no txHash, disconnects from confirmed data).
-    momentumSub = { unsubscribe: async () => {} }; // satisfy the guard check
+    momentumSub = { unsubscribe: async () => {} };
 
     await sdk.subscribe({
       ethCalls: [], eventContractSources: [CONTRACT], topicOverrides: [THRESHOLD_TOPIC],
@@ -1309,24 +1296,23 @@ export async function GET(req: NextRequest) {
     start(controller) {
       controllers.add(controller);
 
-      // ── FIX 1 (SSE init): Send ALL event types in init payload ───────────
-      // Send all whale/reaction/alert/momentum events (newest first, max 500)
+      // Send full init payload immediately — alertCache is already seeded before cacheReady resolves
       const whaleAlerts = alertCache
         .filter(e => e.type !== "block_tx")
         .sort((a, b) => b.receivedAt - a.receivedAt)
-        .slice(0, 5000);
+        .slice(0, 500);
 
-      // ── FIX: Cap block_tx to MAX_BLOCKTX_INIT entries ────────────────────
-      // alertCache can hold 134k+ block_tx entries. Sending all of them produces
-      // a ~40MB SSE message that freezes the browser's JS thread while parsing,
-      // preventing whale/alert data from ever rendering. The React state in
-      // useWhaleAlerts caps blockTxs at 5000 anyway, so sending more is pure waste.
-      // Full block_tx history is available via /api/network-activity (SQLite).
-      const MAX_BLOCKTX_INIT = 5_000;
       const blockTxAlerts = alertCache
         .filter(e => e.type === "block_tx")
         .sort((a, b) => b.receivedAt - a.receivedAt)
-        .slice(0, MAX_BLOCKTX_INIT);
+        .slice(0, 5_000);
+
+      const dbLatestBlock = (() => {
+        try {
+          const row = db.prepare(`SELECT MAX(block_number) as n FROM whale_events`).get() as any;
+          return row?.n ? Number(row.n) : 0;
+        } catch { return 0; }
+      })();
 
       controller.enqueue(encoder.encode(`data: ${JSON.stringify({
         type: "init",
@@ -1338,12 +1324,7 @@ export async function GET(req: NextRequest) {
         shock: analyticsGetShock(),
         whaleThresholdSTT: Number(WHALE_DISPLAY_THRESHOLD) / 1e18,
         whalePercentile: 75,
-        dbLatestBlock: (() => {
-          try {
-            const row = db.prepare(`SELECT MAX(block_number) as n FROM whale_events`).get() as any;
-            return row?.n ? Number(row.n) : 0;
-          } catch { return 0; }
-        })(),
+        dbLatestBlock,
       })}\n\n`));
 
       controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "connected" })}\n\n`));

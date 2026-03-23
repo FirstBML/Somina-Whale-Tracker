@@ -92,7 +92,13 @@ function parseEntry(raw: any): WhaleAlert | null {
 
     // Integrity gate: whale entries must have a txHash to be valid
     // blockNumber is NOT required — simulated whales and some old DB rows have no blockNumber
-    if (type === "whale" && !r.txHash) return null;
+    if (type === "whale") {
+    console.log(`🔍 Parsing whale: txHash=${r.txHash?.slice(0,10)}, blockNumber=${r.blockNumber}`);
+    if (!r.txHash) {
+      console.warn(`⚠️ Whale rejected: no txHash`);
+      return null;
+    }
+  }
 
     const amount = BigInt(r?.amount ?? "0x0");
 
@@ -208,12 +214,21 @@ function saveCache<T>(key: string, data: T[]) {
 
 // ── FIX: Dedup key — one reaction per whale (linkedTxHash), not per reactionCount ──
 // The Reactivity precompile fires 3 events per whale with incrementing counts.
-// Keying on reactionCount meant all 3 passed through. Now we key on linkedTxHash.
+// ── FIX: Dedup key with proper whale deduplication ──
+// IMPORTANT: For whales, we MUST use txHash as the primary key.
+// Without this, whales with the same timestamp/from pair get filtered out.
+// The txHash is the only truly unique identifier for an on-chain transaction.
 function getAlertDedupKey(a: WhaleAlert): string {
   if (a.type === "whale") {
-    return a.txHash ? `whale:${a.txHash}` : `whale:${a.timestamp}:${a.from}`;
+    // ALWAYS use txHash for whales - this is the only reliable dedup key
+    if (a.txHash) {
+      return `whale:${a.txHash}`;
+    }
+    // Fallback only for simulated whales (which have no txHash)
+    return `whale:sim:${a.timestamp}:${a.from}`;
   }
   if (a.type === "reaction") {
+    // One reaction per linked whale transaction
     return `reaction:${a.linkedTxHash ?? a.timestamp}`;
   }
   // alert, momentum
@@ -327,21 +342,26 @@ export function useWhaleAlerts() {
           if (msg.type === "error") setError(msg.message);
 
           if (["whale", "reaction", "alert", "momentum"].includes(msg.type)) {
-            const a = parseEntry(msg);
-            if (a) {
-              // ✅ FIX 3: Dedup live-stream alerts by content key
-              if (!window._processedAlertKeys) window._processedAlertKeys = new Set();
-              const key = getAlertDedupKey(a);
-              if (window._processedAlertKeys.has(key)) return;
-              window._processedAlertKeys.add(key);
-
-              setAlerts(prev => {
-                const next = [a, ...prev];
-                saveCache(ALERTS_CACHE_KEY, next);
-                return next;
-              });
+          const a = parseEntry(msg);
+          if (a) {
+            if (!window._processedAlertKeys) window._processedAlertKeys = new Set();
+            const key = getAlertDedupKey(a);
+            
+            // Debug: log whale arrivals
+            if (a.type === "whale") {
+              console.log(`🐋 Whale received in frontend: ${a.txHash?.slice(0,10)} key=${key} alreadySeen=${window._processedAlertKeys.has(key)}`);
             }
+            
+            if (window._processedAlertKeys.has(key)) return;
+            window._processedAlertKeys.add(key);
+
+            setAlerts(prev => {
+              const next = [a, ...prev];
+              saveCache(ALERTS_CACHE_KEY, next);
+              return next;
+            });
           }
+        }
 
           if (msg.type === "block_tx") {
             const txHash = msg.raw?.txHash;
