@@ -264,7 +264,7 @@ let explorerStats: ExplorerStats | null = null;
 
 const seenBlockTxHashes = new Set<string>();
 const seenSDKContentKeys = new Set<string>();
-const MAX_SEEN_HASHES = 10_000;
+const MAX_SEEN_HASHES = 50_000; // covers 24h of whale txns with room to spare
 const blockHashQueue: string[] = [];
 const sdkKeyQueue: string[] = [];
 
@@ -400,6 +400,21 @@ function push(entry: CacheEntry) {
       );
     } catch {} // IGNORE duplicate tx_hash
   } else {
+    // ── Whale txHash dedup inside push() ────────────────────────────────────
+    // The HTTP block watcher can fire onBlock for the same block multiple times
+    // when Next.js hot-reloads (orphaned old watcher + new watcher both polling).
+    // markBlockSeen is also called in the block watcher CALLER, but hot-reload
+    // creates a fresh seenBlockTxHashes Set in the new module instance, making
+    // the caller-side check blind to what the old instance already processed.
+    // This guard inside push() operates on the CURRENT module's Set and catches
+    // duplicates regardless of which code path called push().
+    if (entry.type === "whale") {
+      const whaleTxHash = entry.raw.txHash as string | undefined;
+      if (whaleTxHash) {
+        if (!markBlockSeen(whaleTxHash)) return; // already in cache/DB — skip entirely
+      }
+    }
+
     // ── FIX 2: Dedup reactions/alerts/momentum BEFORE adding to cache ────────
     // Without this, the same reaction is broadcast every time the block watcher
     // fires or the backfill re-processes the same block. The INSERT OR IGNORE
@@ -423,8 +438,6 @@ function push(entry: CacheEntry) {
   alertCache.push(entry);
   analyticsProcessEvent(entry.type, entry.raw, entry.receivedAt);
   broadcast(entry);
-
-  // Only persist confirmed whales (with txHash) to database
   if (entry.type === "whale" && entry.raw.txHash) {
     const blockTs = (() => {
       try { const t = Number(BigInt(entry.raw.timestamp ?? "0x0")) * 1000; return t > 0 ? t : entry.receivedAt; }
@@ -494,7 +507,7 @@ COALESCE(block_timestamp, timestamp) AS display_ts
 FROM whale_events
 WHERE (timestamp > ? OR block_timestamp > ?)
 ORDER BY COALESCE(block_timestamp, timestamp) DESC
-LIMIT 1000
+LIMIT 5000
 `).all(cutoff, cutoff);
 
   return rows.map((row: any) => ({
@@ -581,8 +594,8 @@ ORDER BY received_at ASC
 
   const insertWhale = db.prepare(`
 INSERT OR IGNORE INTO whale_events
-(id, type, from_addr, to_addr, amount, timestamp, block_timestamp, token, tx_hash, block_number, block_hash)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+(id, type, from_addr, to_addr, amount, timestamp, block_timestamp, token, tx_hash, block_number, block_hash, tx_fee)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
   let promoted = 0;
@@ -600,6 +613,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         row.tx_hash,
         row.block_number || null,
         row.block_hash || null,
+        row.tx_fee || null,  // carry fee from block_tx so Whale Fees KPI is populated
       );
       promoted++;
     } catch {} // IGNORE = already exists
@@ -955,8 +969,10 @@ async function startBlockWatcher(
             console.log(`🔥 Momentum derived: ${reason}`);
           }
 
-          // Alert: single whale above notable threshold (≥1 STT on testnet)
-          const ALERT_THRESHOLD = parseEther("1");
+          // Alert: every confirmed whale above the display threshold generates an alert
+          // Previously hardcoded to 1 STT — on testnet where most whales are 0.5 STT
+          // this meant the Alerts KPI was always zero. Now aligned with WHALE_DISPLAY_THRESHOLD.
+          const ALERT_THRESHOLD = WHALE_DISPLAY_THRESHOLD;
           if (val >= ALERT_THRESHOLD) {
             const reason = `${sttAmount.toFixed(4)} STT transfer confirmed in block ${blockNum}`;
             push({
@@ -985,7 +1001,7 @@ async function startBlockWatcher(
   });
 
   blockWatcher = unwatch;
-  console.log(`✅ Block watcher started (whale threshold: ${Number(WHALE_DISPLAY_THRESHOLD)/1e18} STT | alert threshold: 1 STT | ETH/USD: $${ethUsd.toFixed(2)})`);
+  console.log(`✅ Block watcher started (whale threshold: ${Number(WHALE_DISPLAY_THRESHOLD)/1e18} STT | alert threshold: ${Number(WHALE_DISPLAY_THRESHOLD)/1e18} STT | ETH/USD: $${ethUsd.toFixed(2)})`);
 }
 
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1036,9 +1052,18 @@ async function ensureSubscriptions() {
   sdkKeyQueue.length = 0;
   for (const entry of alertCache) {
     if (entry.type === "reaction") {
-      // Reconstruct SDK content key format: reaction:from:to:reactionCount
       const contentKey = `reaction:${entry.raw.from}:${entry.raw.to}:${entry.raw.reactionCount ?? ""}`;
       markSDKSeen(contentKey);
+    }
+  }
+
+  // ── Pre-seed seenBlockTxHashes from loaded whale entries ──────────────────
+  // After a Next.js hot-reload the new module starts with an empty Set.
+  // Without pre-seeding, the push()-level whale dedup is blind to whales that
+  // were processed by the old module instance → duplicate feed entries again.
+  for (const entry of alertCache) {
+    if (entry.type === "whale" && entry.raw.txHash) {
+      markBlockSeen(entry.raw.txHash as string);
     }
   }
 
@@ -1229,6 +1254,52 @@ let cacheReadyResolve: (() => void) | null = null;
     console.error("Subscription init error:", e.message);
   });
 })();
+
+/**
+ * injectSimulatedWhale — called by /api/simulate-whale after a successful contract call.
+ * Pushes a synthetic whale entry directly into alertCache and broadcasts it via SSE
+ * so it appears immediately in the frontend feed.
+ *
+ * The block watcher cannot pick up simulated whales because simulate-whale sends
+ * a contract CALL (no native STT value transferred), so tx.value = 0 and the block
+ * watcher's val >= WHALE_DISPLAY_THRESHOLD gate is never satisfied.
+ * This function bypasses that gate for simulation purposes only.
+ */
+export function injectSimulatedWhale(params: {
+  from: `0x${string}`;
+  to:   `0x${string}`;
+  amountEth: string;   // decimal string e.g. "250000"
+  token: string;
+  txHash: `0x${string}`;
+}) {
+  const now   = Date.now();
+  const ts    = `0x${Math.floor(now / 1000).toString(16)}`;
+  const amtWei = BigInt(Math.round(parseFloat(params.amountEth) * 1e18));
+
+  const entry: CacheEntry = {
+    type: "whale",
+    receivedAt: now,
+    raw: {
+      from:        params.from,
+      to:          params.to,
+      amount:      `0x${amtWei.toString(16)}`,
+      timestamp:   ts,
+      token:       params.token,
+      txHash:      params.txHash,
+      blockNumber: "",   // simulation — no block number yet
+      blockHash:   "",
+      txFee:       "0",
+      signalReason: "Simulated whale transfer",
+    },
+  };
+
+  // Use markBlockSeen to prevent the block watcher from double-emitting if the
+  // tx eventually lands in a block above the on-chain threshold
+  if (params.txHash) markBlockSeen(params.txHash);
+
+  push(entry);
+  console.log(`🎭 Simulated whale injected: ${params.amountEth} ${params.token} ${params.from.slice(0,8)}→${params.to.slice(0,8)} tx:${params.txHash.slice(0,10)}`);
+}
 
 export async function GET(req: NextRequest) {
   if (!initStarted) {

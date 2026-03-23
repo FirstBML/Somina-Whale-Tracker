@@ -94,7 +94,28 @@ function parseEntry(raw: any): WhaleAlert | null {
     if (type === "whale" && (!r.txHash || !r.blockNumber)) return null;
 
     const amount = BigInt(r?.amount ?? "0x0");
-    const timestamp = Number(BigInt(r?.timestamp ?? "0x0")) * 1000 || Date.now();
+
+    // ── Timestamp strategy ────────────────────────────────────────────────────
+    // For WHALE entries: prefer raw.receivedAt (when the server processed the tx).
+    // Using the block's mint time caused two visible bugs:
+    //   1. Backfilled whales showed "55m ago" while their alerts showed "4m ago"
+    //      because alerts always use Date.now() but whales used block timestamp.
+    //   2. Alerts sorted ABOVE whales in the feed (alerts had more recent timestamps).
+    // Using receivedAt fixes both: whale and its derived alert have near-identical
+    // timestamps, so they appear together in the feed in the correct order.
+    // The actual block time is still visible in the expanded row via blockNumber + explorer.
+    let timestamp: number;
+    if (type === "whale") {
+      // raw.receivedAt is set by the server at push() time (top-level CacheEntry field)
+      const receivedAt = typeof raw?.receivedAt === "number" ? raw.receivedAt : 0;
+      timestamp = receivedAt > 0 ? receivedAt : (Number(BigInt(r?.timestamp ?? "0x0")) * 1000 || Date.now());
+    } else {
+      // For reactions/alerts/momentum: use block timestamp if available, else Date.now()
+      let ts = 0;
+      try { ts = Number(BigInt(r?.timestamp ?? "0x0")) * 1000; } catch {}
+      if (ts > 0 && ts <= Date.now()) timestamp = ts;
+      else timestamp = Date.now();
+    }
 
     return {
       id: `${Date.now()}-${Math.random()}`,

@@ -2,7 +2,7 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 import { useAccount } from "wagmi";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { useWhaleAlerts, WhaleAlert, BlockTx, LiveMetrics, clearFrontendCache } from "../lib/useWhaleAlerts";
+import { useWhaleAlerts, WhaleAlert, BlockTx, LiveMetrics } from "../lib/useWhaleAlerts";
 import { useOraclePrices, formatUsd, OraclePrice } from "../lib/useOraclePrices";
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell, RadialBarChart, RadialBar, PolarAngleAxis } from "recharts";
 
@@ -1053,33 +1053,35 @@ export default function WhaleDashboard(){
   // Result: instant KPI updates with zero API latency, same as the table filtering.
 
   const filteredMetrics: LiveMetrics = useMemo(() => {
-    // When 24h default filter: use liveMetrics (pre-computed incremental counters, O(1))
+    // When 24h default filter: use liveMetrics for the bulk counters (totalTx24h, sttTx24h,
+    // whaleFees, etc.) but ALWAYS recompute whaleTxRate client-side from the live alert
+    // and blockTx arrays. This prevents the speedometer from showing 100% when the
+    // server-side _whaleTx24h counter inflates due to hot-reload duplicate push() calls.
     const isDefault = timePreset === 24*60*60_000 && !minAmt && !maxAmt && tokenFilter === "All" && !search;
-    if (isDefault) return liveMetrics;
 
-    const cutoff    = Date.now() - timePreset;
+    const cutoff    = isDefault ? 0 : Date.now() - timePreset;
     const walletLow = search.toLowerCase();
     const minStt    = minAmt ? parseFloat(minAmt) : undefined;
     const maxStt    = maxAmt ? parseFloat(maxAmt) : undefined;
     const tokFilter = tokenFilter !== "All" ? tokenFilter : undefined;
 
-    let totalTx    = 0, sttTx     = 0, whaleTx   = 0;
-    let whaleVol   = 0, largestStt= 0, whaleFees = 0;
-    let feeEst     = false;
-    let alertCount = 0, momCount  = 0, reactCount= 0;
+    let totalTx = 0, sttTx = 0, whaleTx = 0;
+    let whaleVol = 0, largestStt = 0, whaleFees = 0;
+    let feeEst = false;
+    let alertCount = 0, momCount = 0, reactCount = 0;
     const whaleSizes: number[] = [];
 
-    // Count block_txs in window (for TXN COUNT and STT TXN KPIs)
+    // Count block_txs — for TXN COUNT and STT TXN KPIs and whaleTxRate denominator
     for (const tx of blockTxs) {
-      if (tx.timestamp < cutoff) continue;
+      if (cutoff > 0 && tx.timestamp < cutoff) continue;
       if (walletLow && tx.from.toLowerCase() !== walletLow && tx.to.toLowerCase() !== walletLow) continue;
       totalTx++;
       if (tx.amountRaw > 0) sttTx++;
     }
 
-    // Count whale/reaction/alert/momentum events in window
+    // Count whale/signal events
     for (const a of alerts) {
-      if (a.timestamp < cutoff) continue;
+      if (cutoff > 0 && a.timestamp < cutoff) continue;
       if (walletLow && a.from.toLowerCase() !== walletLow && a.to.toLowerCase() !== walletLow) continue;
       if (tokFilter && a.token !== tokFilter) continue;
 
@@ -1103,6 +1105,28 @@ export default function WhaleDashboard(){
 
     const avg = whaleSizes.length > 0 ? whaleSizes.reduce((s,v)=>s+v,0)/whaleSizes.length : 0;
     const whaleTxRateRaw = sttTx > 0 ? (whaleTx / sttTx) * 100 : 0;
+    const whaleTxRate    = Math.min(100, whaleTxRateRaw);
+
+    // For 24h default: blend client-side whaleTxRate with server-side counters for
+    // accurate TXN COUNT (126k) and STT TXN totals that exceed the 5k blockTxs cache.
+    if (isDefault) {
+      return {
+        ...liveMetrics,
+        // Override only the rate — use server-side totals for everything else
+        whaleTxRate,
+        whaleTxRateRaw,
+        // Keep whale volume/largest/fees from client-side (immune to counter inflation)
+        whaleTx24h:        whaleTx,
+        whaleVolumeStt:    whaleVol,
+        avgWhaleSizeStt:   avg,
+        largestWhaleStt:   largestStt,
+        whaleFees,
+        whaleFeeEstimated: feeEst,
+        alerts24h:         alertCount,
+        momentum24h:       momCount,
+        reactions24h:      reactCount,
+      };
+    }
 
     return {
       totalTx24h:        totalTx,
@@ -1116,7 +1140,7 @@ export default function WhaleDashboard(){
       alerts24h:         alertCount,
       momentum24h:       momCount,
       reactions24h:      reactCount,
-      whaleTxRate:       Math.min(100, whaleTxRateRaw),
+      whaleTxRate,
       whaleTxRateRaw,
       whaleThresholdStt: liveMetrics.whaleThresholdStt,
       whalePercentile:   liveMetrics.whalePercentile,
@@ -1222,7 +1246,7 @@ export default function WhaleDashboard(){
             alt="Somnia Testnet"
             style={{
               maxWidth: "100%",
-              maxHeight: 48,
+              maxHeight: 40,
               width: "auto",
               height: "auto",
               objectFit: "contain",
@@ -1231,9 +1255,12 @@ export default function WhaleDashboard(){
           />
         </div>
         <div style={{display:"flex",alignItems:"center",gap:6}}>
-          <div style={{flex:1,height:1,background:"linear-gradient(90deg,transparent,rgba(6,182,212,0.3))"}}/>
-          <span style={{fontSize:10,color:t.muted,fontFamily:"monospace",letterSpacing:"0.1em"}}>🐋 WHALE TRACKER · TESTNET 50312</span>
+          <div style={{flex:1,height:1,background:"linear-gradient(90deg,transparent,rgba(6,182,212,0.3))"}}/> 
+          <span style={{fontSize:12,color:t.muted,fontFamily:"monospace",letterSpacing:"0.1em"}}>🐋 WHALE TRACKER</span>
           <div style={{flex:1,height:1,background:"linear-gradient(90deg,rgba(6,182,212,0.3),transparent)"}}/>
+        </div>
+        <div style={{textAlign:"center",marginTop:4}}>
+          <span style={{fontSize:8,color:t.muted,fontFamily:"monospace",letterSpacing:"0.1em"}}>TESTNET 50312</span>
         </div>
       </div>
 
@@ -1336,17 +1363,6 @@ export default function WhaleDashboard(){
               <ConnectButton showBalance={false} chainStatus="none" accountStatus="address"/>
               <button onClick={()=>{ resumeAudio(); setSoundEnabled(v=>!v); }} style={{...btn,background:soundEnabled?t.accentBg:"transparent",color:soundEnabled?t.accent:t.muted,border:`1px solid ${soundEnabled?t.accent:t.border}`}}>{soundEnabled?"🔊":"🔇"}</button>
               <button onClick={()=>downloadCSV(filtered)} disabled={filtered.length===0} style={{...btn,background:"transparent",color:t.muted,border:`1px solid ${t.border}`,opacity:filtered.length===0?0.4:1}}>↓ CSV</button>
-              {/* Clear Cache — wipes stale localStorage and forces fresh SSE data */}
-              <button
-                onClick={()=>{
-                  clearFrontendCache();
-                  // Force a full page reload so the SSE connection reinitialises
-                  // with no stale cache influencing the initial hydration state.
-                  window.location.reload();
-                }}
-                title="Clear cached data and reload — use when KPIs look stale"
-                style={{...btn,background:"transparent",color:t.muted,border:`1px solid ${t.border}`}}
-              >🗑 Cache</button>
               <button onClick={simulateWhale} disabled={simulating} style={{...btn,background:t.accentBg,color:t.accent,border:`1px solid ${t.accent}`,opacity:simulating?0.6:1}}>{simulating?"⏳":"⚡ SIM"}</button>
             </div>
           </div>
