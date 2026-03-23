@@ -90,8 +90,9 @@ function parseEntry(raw: any): WhaleAlert | null {
     const r = raw?.raw ?? raw;
     const type = (raw?.type ?? "whale") as AlertType;
 
-    // Integrity gate: whale entries must have txHash + blockNumber
-    if (type === "whale" && (!r.txHash || !r.blockNumber)) return null;
+    // Integrity gate: whale entries must have a txHash to be valid
+    // blockNumber is NOT required — simulated whales and some old DB rows have no blockNumber
+    if (type === "whale" && !r.txHash) return null;
 
     const amount = BigInt(r?.amount ?? "0x0");
 

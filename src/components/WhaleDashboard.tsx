@@ -395,6 +395,19 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
     setNetPage(0);
   }
  
+  // Debug: log network filter changes
+  useEffect(() => {
+    if (feedSubTab === "network-activity") {
+      console.log('📊 Network activity filters changed:', {
+        netMinAmt,
+        netMaxAmt,
+        timePreset,
+        netPage,
+        netSort
+      });
+    }
+  }, [netMinAmt, netMaxAmt, timePreset, netPage, netSort, feedSubTab]);
+ 
   useEffect(()=>{
     if(feedSubTab!=="network-activity") return;
     setNetLoading(true);
@@ -402,15 +415,39 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
       page:   String(netPage),
       sort:   netSort.col,
       dir:    netSort.dir,
-      window: String(timePreset),   // FIX: pass active window so table respects filter
+      window: String(timePreset),
       ...(netMinAmt ? {min: netMinAmt} : {}),
       ...(netMaxAmt ? {max: netMaxAmt} : {}),
     });
+    
+    console.log('🔍 Fetching network activity:', {
+      url: `/api/network-activity?${params}`,
+      netMinAmt,
+      netMaxAmt,
+      timePreset,
+      netPage
+    });
+    
     fetch(`/api/network-activity?${params}`)
-      .then(r=>r.json())
-      .then(d=>{ setNetData(d); setNetLoading(false); })
-      .catch(()=>setNetLoading(false));
-  },[netPage, netSort, netMinAmt, netMaxAmt, feedSubTab, timePreset]);  // timePreset added
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then(d => { 
+        console.log('✅ Network activity response:', {
+          rows: d.rows?.length,
+          total: d.total,
+          sttCount: d.sttCount,
+          pages: d.pages
+        });
+        setNetData(d); 
+        setNetLoading(false); 
+      })
+      .catch(err => {
+        console.error('❌ Network activity fetch failed:', err);
+        setNetLoading(false);
+      });
+  },[netPage, netSort, netMinAmt, netMaxAmt, feedSubTab, timePreset]);
  
   const prevBlockTxLen = useRef(0);
   useEffect(()=>{
@@ -436,7 +473,7 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
         {!alerts.length
           ? <div style={{padding:48,textAlign:"center",color:t.muted,fontFamily:"monospace",fontSize:13}}>Waiting for activity...</div>
           : <><div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
-              <thead><tr>
+              <thead>\\
                 <SortTh t={t} active={whaleSort.col==="type"}  dir={whaleSort.dir} onClick={()=>toggleWhaleSort("type")}>Type</SortTh>
                 <Th t={t}>Token</Th>
                 <SortTh t={t} active={whaleSort.col==="amount"} dir={whaleSort.dir} onClick={()=>toggleWhaleSort("amount")}>Amount</SortTh>
@@ -448,7 +485,7 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
                 <SortTh t={t} active={whaleSort.col==="block"} dir={whaleSort.dir} onClick={()=>toggleWhaleSort("block")}>Block</SortTh>
                 <SortTh t={t} active={whaleSort.col==="time"}  dir={whaleSort.dir} onClick={()=>toggleWhaleSort("time")}>Time</SortTh>
                 <Th t={t}></Th>
-              </tr></thead>
+               </thead>
               <tbody>{pageAlerts.map((a,i)=>{
                 const isMyTx=connectedAddr&&(a.from.toLowerCase()===connectedAddr.toLowerCase()||a.to.toLowerCase()===connectedAddr.toLowerCase());
                 const usd=a.type==="whale"?usdVal(num(a.amount),a.token,oraclePrices):null;
@@ -456,7 +493,7 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
                 const sigColor = a.type==="momentum"?"#ef4444":a.type==="alert"?"#f97316":"#a855f7";
                 return(<>
                   <tr key={a.id} style={{background:rowBg(a,i),cursor:"pointer",transition:"background 0.15s"}} onMouseEnter={e=>(e.currentTarget.style.background=t.rowHover)} onMouseLeave={e=>(e.currentTarget.style.background=rowBg(a,i))}>
-                    <Td t={t}><div style={{display:"flex",gap:4,alignItems:"center"}}><TypeBadge type={a.type} t={t}/>{isMyTx&&<span style={{fontSize:8,background:"rgba(74,222,128,0.2)",color:"#4ade80",border:"1px solid rgba(74,222,128,0.4)",borderRadius:3,padding:"1px 5px",fontFamily:"monospace"}}>YOU</span>}</div></Td>
+                    <Td t={t}><div style={{display:"flex",gap:4,alignItems:"center"}}><TypeBadge type={a.type} t={t}/>{isMyTx&&<span style={{fontSize:8,background:"rgba(74,222,128,0.2)",color:"#4ade80",border:"1px solid rgba(74,222,128,0.4)",borderRadius:3,padding:"1px 5px",fontFamily:"monospace"}}>YOU</span>}{a.blockNumber === "simulated" && <span style={{fontSize:8,background:"#f97316",color:"white",borderRadius:3,padding:"1px 5px",fontFamily:"monospace"}}>TEST</span>}</div></Td>
                     <Td t={t}>{a.token?<Badge text={a.token} color={TOKEN_COLORS[a.token]} t={t}/>:<span style={{color:t.muted,fontSize:11}}>—</span>}</Td>
                     <Td t={t} accent bold>{a.type==="whale"?parseFloat(a.amount).toFixed(8):<span style={{color:t.muted}}>—</span>}</Td>
                     <Td t={t}>{
@@ -485,8 +522,8 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
                     }</Td>
                     <Td t={t}><span style={{color:t.subtext,fontSize:11}}>{a.blockNumber||"—"}</span></Td>
                     <Td t={t}><span style={{color:t.muted,fontSize:10}}>{timeAgo(a.timestamp)}</span></Td>
-                    <td style={{padding:"10px 12px",borderBottom:`1px solid ${t.border}`}}><button onClick={()=>setExpanded(expanded===a.id?null:a.id)} style={{fontSize:9,fontFamily:"monospace",padding:"2px 8px",borderRadius:4,cursor:"pointer",background:t.accentBg,color:t.accent,border:`1px solid ${t.border}`}}>{expanded===a.id?"▲":"▼"}</button></td>
-                  </tr>
+                    <td style={{padding:"10px 12px",borderBottom:`1px solid ${t.border}`}}><button onClick={()=>setExpanded(expanded===a.id?null:a.id)} style={{fontSize:9,fontFamily:"monospace",padding:"2px 8px",borderRadius:4,cursor:"pointer",background:t.accentBg,color:t.accent,border:`1px solid ${t.border}`}}>{expanded===a.id?"▲":"▼"}</button> </td>
+                   </tr>
                   {expanded===a.id&&(<tr key={`${a.id}-exp`} style={{background:t.accentBg}}><td colSpan={11} style={{padding:"12px 16px",borderBottom:`1px solid ${t.border}`}}>
                     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(260px, 1fr))",gap:12,fontFamily:"monospace",fontSize:11}}>
                       {a.type==="whale"&&<>
@@ -509,10 +546,10 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
                       <div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Block</span><div style={{color:t.text,marginTop:4}}>{a.blockNumber||"—"}</div></div>
                       <div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Timestamp</span><div style={{color:t.text,marginTop:4}}>{fmtTime(a.timestamp)}</div></div>
                     </div>
-                  </td></tr>)}
+                   </td></tr>)}
                 </>);
               })}</tbody>
-            </table></div>
+             </table></div>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 4px",borderTop:`1px solid ${t.border}`}}>
               <span style={{color:t.muted,fontSize:10,fontFamily:"monospace"}}>{alerts.length} events · page {page+1} of {totalPages}</span>
               <div style={{display:"flex",gap:6}}>
@@ -533,16 +570,22 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(120px, 1fr))",gap:8}}>
             <div><label style={{color:t.subtext,fontSize:9,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",display:"block",marginBottom:4}}>Min Amount (STT)</label><input type="number" value={netMinAmt} onChange={e=>setNetMinAmt(e.target.value)} placeholder="0" style={{background:t.input,border:`1px solid ${t.border}`,borderRadius:7,padding:"7px 10px",fontSize:11,fontFamily:"monospace",color:t.text,outline:"none",width:"100%",boxSizing:"border-box"}}/></div>
             <div><label style={{color:t.subtext,fontSize:9,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",display:"block",marginBottom:4}}>Max Amount (STT)</label><input type="number" value={netMaxAmt} onChange={e=>setNetMaxAmt(e.target.value)} placeholder="∞" style={{background:t.input,border:`1px solid ${t.border}`,borderRadius:7,padding:"7px 10px",fontSize:11,fontFamily:"monospace",color:t.text,outline:"none",width:"100%",boxSizing:"border-box"}}/></div>
-            <div style={{display:"flex",alignItems:"flex-end"}}><button onClick={()=>{setNetMinAmt("");setNetMaxAmt("");}} style={{fontSize:9,fontFamily:"monospace",padding:"6px 12px",borderRadius:6,cursor:"pointer",color:t.errText,background:"transparent",border:"1px solid transparent"}}>✕ Clear</button></div>
+            <div style={{display:"flex",alignItems:"flex-end"}}><button onClick={()=>{
+              setNetMinAmt("");
+              setNetMaxAmt("");
+              setNetPage(0);
+            }} style={{fontSize:9,fontFamily:"monospace",padding:"6px 12px",borderRadius:6,cursor:"pointer",color:t.errText,background:"transparent",border:"1px solid transparent"}}>✕ Clear</button></div>
           </div>
         </div>
         {netLoading && netData.rows.length===0
           ? <div style={{padding:"24px",textAlign:"center",color:t.muted,fontSize:11,fontFamily:"monospace"}}>Loading...</div>
           : netData.total===0
-            ? <div style={{padding:"24px",textAlign:"center",color:t.muted,fontSize:11,fontFamily:"monospace"}}>Waiting for block activity...</div>
+            ? <div style={{padding:"24px",textAlign:"center",color:t.muted,fontSize:11,fontFamily:"monospace"}}>
+                {netLoading ? "Loading..." : "No transactions found with current filters. Try adjusting min/max amounts or time window."}
+              </div>
             : <><div style={{overflowX:"auto",opacity:netLoading?0.6:1,transition:"opacity 0.2s"}}>
                 <table style={{width:"100%",borderCollapse:"collapse"}}>
-                  <thead><tr>
+                  <thead>\\
                     <SortTh t={t} active={netSort.col==="from"}   dir={netSort.dir} onClick={()=>toggleNetSort("from")}>From</SortTh>
                     <SortTh t={t} active={netSort.col==="to"}     dir={netSort.dir} onClick={()=>toggleNetSort("to")}>To</SortTh>
                     <SortTh t={t} active={netSort.col==="amount"} dir={netSort.dir} onClick={()=>toggleNetSort("amount")}>Amount (STT)</SortTh>
@@ -550,7 +593,7 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
                     <Th t={t}>TX Hash</Th>
                     <SortTh t={t} active={netSort.col==="block"}  dir={netSort.dir} onClick={()=>toggleNetSort("block")}>Block</SortTh>
                     <SortTh t={t} active={netSort.col==="time"}   dir={netSort.dir} onClick={()=>toggleNetSort("time")}>Time</SortTh>
-                  </tr></thead>
+                   </thead>
                   <tbody>{netData.rows.map((tx,i)=>(
                     <tr key={tx.id} style={{background:i%2===0?t.tableRow:t.tableAlt}}>
                       <Td t={t}><ExLink href={addrUrl(tx.from)} label={short(tx.from)} t={t}/></Td>
@@ -560,9 +603,9 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
                       <Td t={t}><ExLink href={txUrl(tx.txHash)} label={shortHash(tx.txHash)} t={t}/></Td>
                       <Td t={t}><span style={{color:t.subtext,fontSize:11}}>{tx.blockNumber}</span></Td>
                       <Td t={t}><span style={{color:t.muted,fontSize:10}}>{timeAgo(tx.timestamp)}</span></Td>
-                    </tr>
+                     </tr>
                   ))}</tbody>
-                </table>
+                 </table>
               </div>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 4px",borderTop:`1px solid ${t.border}`}}>
                 <span style={{color:t.muted,fontSize:10,fontFamily:"monospace"}}>
@@ -581,7 +624,6 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
     )}
   </div>);
 }
-
 // ── My Wallet Tab ─────────────────────────────────────────────────────────────
 function MyWalletTab({alerts,connectedAddr,t}:{alerts:WhaleAlert[];connectedAddr:string;t:typeof T.dark}){
   const myTxns    =useMemo(()=>alerts.filter(a=>a.type==="whale"&&(a.from.toLowerCase()===connectedAddr.toLowerCase()||a.to.toLowerCase()===connectedAddr.toLowerCase())),[alerts,connectedAddr]);
@@ -1008,12 +1050,18 @@ export default function WhaleDashboard(){
   const[tab,setTab]=useState<"feed"|"analytics"|"charts"|"leaderboard"|"flow"|"howto"|"mywallet">("feed");
   const[feedSubTab,setFeedSubTab]=useState<"alerts"|"network-activity">("alerts");
   const[filters,setFilters]=useState({
-    search:"", minAmt:"", maxAmt:"",
-    token:"All", timePreset:24*60*60_000,
-    dateFrom:"", dateTo:"",
-    showTypes:["whale","reaction","alert","momentum"] as string[],
-    netMinAmt:"", netMaxAmt:"",
-  });
+  search:"", minAmt:"", maxAmt:"",
+  token:"All", timePreset:24*60*60_000,
+  dateFrom:"", dateTo:"",
+  showTypes:["whale","reaction","alert","momentum"] as string[],
+  netMinAmt:"", netMaxAmt:"",
+});
+
+// Initialize network activity filters on mount
+useEffect(() => {
+  setNetMinAmt("");
+  setNetMaxAmt("");
+}, []);
   const setNetMinAmt  =(v:string)=>setFilters(f=>({...f,netMinAmt:v}));
   const setNetMaxAmt  =(v:string)=>setFilters(f=>({...f,netMaxAmt:v}));
   const{search,minAmt,maxAmt,token:tokenFilter,timePreset,dateFrom,dateTo,showTypes,netMinAmt,netMaxAmt}=filters;
@@ -1086,6 +1134,7 @@ export default function WhaleDashboard(){
       if (tokFilter && a.token !== tokFilter) continue;
 
       if (a.type === "whale") {
+        if (a.blockNumber === "simulated") continue;
         const stt = Number(a.amountRaw) / 1e18;
         if (minStt != null && stt < minStt) continue;
         if (maxStt != null && stt > maxStt) continue;
@@ -1104,17 +1153,25 @@ export default function WhaleDashboard(){
     }
 
     const avg = whaleSizes.length > 0 ? whaleSizes.reduce((s,v)=>s+v,0)/whaleSizes.length : 0;
-    const whaleTxRateRaw = sttTx > 0 ? (whaleTx / sttTx) * 100 : 0;
+    // Require at least 50 block_tx data points before computing a meaningful rate.
+    // With fewer samples the denominator is too small and the rate inflates to 100%.
+    // The server-side liveMetrics.whaleTxRate (from full 134k DB counters) is used
+    // as fallback in the 24h default blend below when our sample is too small.
+    const MIN_STT_SAMPLE = 50;
+    const whaleTxRateRaw = sttTx >= MIN_STT_SAMPLE ? (whaleTx / sttTx) * 100 : 0;
     const whaleTxRate    = Math.min(100, whaleTxRateRaw);
 
     // For 24h default: blend client-side whaleTxRate with server-side counters for
     // accurate TXN COUNT (126k) and STT TXN totals that exceed the 5k blockTxs cache.
     if (isDefault) {
+      // Use server-side whaleTxRate when client sample is too small (avoids 100% bug).
+      // liveMetrics.whaleTxRate is computed from the full 134k block_tx DB counters.
+      const blendedRate = sttTx >= MIN_STT_SAMPLE ? whaleTxRate : liveMetrics.whaleTxRate;
       return {
         ...liveMetrics,
         // Override only the rate — use server-side totals for everything else
-        whaleTxRate,
-        whaleTxRateRaw,
+        whaleTxRate:    blendedRate,
+        whaleTxRateRaw: blendedRate,
         // Keep whale volume/largest/fees from client-side (immune to counter inflation)
         whaleTx24h:        whaleTx,
         whaleVolumeStt:    whaleVol,
@@ -1155,7 +1212,7 @@ export default function WhaleDashboard(){
   const reactions = useMemo(()=>alerts.filter(a=>a.type==="reaction"),[alerts]);
 
   const windowCutoff = timePreset>0 ? now-timePreset : 0;
-  const windowedWhales    = useMemo(()=>whales.filter(a=>!windowCutoff||a.timestamp>=windowCutoff),[whales,windowCutoff]);
+  const windowedWhales    = useMemo(()=>whales.filter(a=> (!windowCutoff||a.timestamp>=windowCutoff) && a.blockNumber !== "simulated"),[whales,windowCutoff]);
   const windowedReactions = useMemo(()=>reactions.filter(a=>!windowCutoff||a.timestamp>=windowCutoff),[reactions,windowCutoff]);
 
   // KPIs — now come from metrics which is filter-aware
@@ -1341,7 +1398,16 @@ export default function WhaleDashboard(){
               ))}
             </div>
           </div>
-          <button onClick={()=>{setSearch("");setMinAmt("");setMaxAmt("");setTokenFilter("All");setTimePreset(24*60*60_000);setShowTypes(["whale","reaction","alert","momentum"]);}} style={{fontSize:9,padding:"5px",borderRadius:6,cursor:"pointer",color:t.errText,background:"rgba(248,113,113,0.05)",border:`1px solid rgba(248,113,113,0.2)`,fontFamily:"monospace",letterSpacing:"0.05em"}}>✕ Clear Filters</button>
+          <button onClick={()=>{
+  setSearch("");
+  setMinAmt("");
+  setMaxAmt("");
+  setTokenFilter("All");
+  setTimePreset(24*60*60_000);
+  setShowTypes(["whale","reaction","alert","momentum"]);
+  setNetMinAmt("");
+  setNetMaxAmt("");
+}} style={{fontSize:9,padding:"5px",borderRadius:6,cursor:"pointer",color:t.errText,background:"rgba(248,113,113,0.05)",border:`1px solid rgba(248,113,113,0.2)`,fontFamily:"monospace",letterSpacing:"0.05em"}}>✕ Clear Filters</button>
         </div>
       </div>
       <div style={{height:2,background:"linear-gradient(90deg,transparent,#06b6d4,transparent)",flexShrink:0}}/>

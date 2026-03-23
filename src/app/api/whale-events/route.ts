@@ -400,21 +400,15 @@ function push(entry: CacheEntry) {
       );
     } catch {} // IGNORE duplicate tx_hash
   } else {
-    // ── Whale txHash dedup inside push() ────────────────────────────────────
-    // The HTTP block watcher can fire onBlock for the same block multiple times
-    // when Next.js hot-reloads (orphaned old watcher + new watcher both polling).
-    // markBlockSeen is also called in the block watcher CALLER, but hot-reload
-    // creates a fresh seenBlockTxHashes Set in the new module instance, making
-    // the caller-side check blind to what the old instance already processed.
-    // This guard inside push() operates on the CURRENT module's Set and catches
-    // duplicates regardless of which code path called push().
-    if (entry.type === "whale") {
-      const whaleTxHash = entry.raw.txHash as string | undefined;
-      if (whaleTxHash) {
-        if (!markBlockSeen(whaleTxHash)) return; // already in cache/DB — skip entirely
-      }
-    }
-
+    // ── Whale txHash dedup — DO NOT re-check markBlockSeen here ──────────────
+    // The block watcher calls markBlockSeen(txHash) BEFORE calling push(), so
+    // calling it again here would always return false and silently drop the whale:
+    //   block watcher → markBlockSeen(hash) → true → push(whale)
+    //   push() → markBlockSeen(hash) → FALSE (already seen!) → return   ← BUG
+    // Hot-reload dedup is handled by pre-seeding seenBlockTxHashes from alertCache
+    // in ensureSubscriptions(). The injectSimulatedWhale path calls markBlockSeen
+    // before push(), so simulated whales are also safe.
+    //
     // ── FIX 2: Dedup reactions/alerts/momentum BEFORE adding to cache ────────
     // Without this, the same reaction is broadcast every time the block watcher
     // fires or the backfill re-processes the same block. The INSERT OR IGNORE
@@ -720,13 +714,14 @@ function broadcastFullInit() {
   if (!controllers.size) return;
 
   const whaleAlerts = alertCache
-    .filter(e => e.type !== "block_tx")
-    .sort((a, b) => b.receivedAt - a.receivedAt)
-    .slice(0, 500);
+  .filter(e => e.type !== "block_tx")  // exclude block_tx, keep everything else
+  .sort((a, b) => b.receivedAt - a.receivedAt)
+  .slice(0, 5000);  
 
   const blockTxAlerts = alertCache
     .filter(e => e.type === "block_tx")
-    .sort((a, b) => b.receivedAt - a.receivedAt);
+    .sort((a, b) => b.receivedAt - a.receivedAt)
+    .slice(0, 5_000); // cap — full data available via /api/network-activity
 
   const dbLatestBlock = (() => {
     try {
@@ -1286,8 +1281,8 @@ export function injectSimulatedWhale(params: {
       timestamp:   ts,
       token:       params.token,
       txHash:      params.txHash,
-      blockNumber: "",   // simulation — no block number yet
-      blockHash:   "",
+      blockNumber: "simulated",   // simulation — no block number yet
+      blockHash:   "simulated",
       txFee:       "0",
       signalReason: "Simulated whale transfer",
     },
@@ -1315,22 +1310,23 @@ export async function GET(req: NextRequest) {
       controllers.add(controller);
 
       // ── FIX 1 (SSE init): Send ALL event types in init payload ───────────
-      // Previously: alertCache was sorted/sliced only for "non-block_tx" which
-      // included reactions/alerts/momentum — BUT seedWhaleEventsFromDb() only
-      // seeded whales (by txHash), so reactions never made it into alertCache
-      // and therefore never appeared in the init payload.
-      // Now: seedWhaleEventsFromDb uses composite keys so ALL types are in cache.
-
       // Send all whale/reaction/alert/momentum events (newest first, max 500)
       const whaleAlerts = alertCache
         .filter(e => e.type !== "block_tx")
         .sort((a, b) => b.receivedAt - a.receivedAt)
-        .slice(0, 500);
+        .slice(0, 5000);
 
-      // Send block_tx events
+      // ── FIX: Cap block_tx to MAX_BLOCKTX_INIT entries ────────────────────
+      // alertCache can hold 134k+ block_tx entries. Sending all of them produces
+      // a ~40MB SSE message that freezes the browser's JS thread while parsing,
+      // preventing whale/alert data from ever rendering. The React state in
+      // useWhaleAlerts caps blockTxs at 5000 anyway, so sending more is pure waste.
+      // Full block_tx history is available via /api/network-activity (SQLite).
+      const MAX_BLOCKTX_INIT = 5_000;
       const blockTxAlerts = alertCache
         .filter(e => e.type === "block_tx")
-        .sort((a, b) => b.receivedAt - a.receivedAt);
+        .sort((a, b) => b.receivedAt - a.receivedAt)
+        .slice(0, MAX_BLOCKTX_INIT);
 
       controller.enqueue(encoder.encode(`data: ${JSON.stringify({
         type: "init",
