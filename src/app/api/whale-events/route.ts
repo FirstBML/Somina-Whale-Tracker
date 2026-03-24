@@ -1356,8 +1356,9 @@ export async function GET(req: NextRequest) {
       })();
 
       console.log(`📡 SSE connection: sending ${whaleAlerts.length} whale events + ${blockTxAlerts.length} block_txs`);
+      console.log(`📡 Sample first whale:`, whaleAlerts[0]);
 
-      controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+      const initPayload = {
         type: "init",
         alerts: [...whaleAlerts, ...blockTxAlerts],
         totalBlockTxsSeen,
@@ -1368,7 +1369,11 @@ export async function GET(req: NextRequest) {
         whaleThresholdSTT: Number(WHALE_DISPLAY_THRESHOLD) / 1e18,
         whalePercentile: 75,
         dbLatestBlock,
-      })}\n\n`));
+      };
+      
+      console.log(`📡 Sending init payload with ${initPayload.alerts.length} total alerts`);
+      
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(initPayload)}\n\n`));
 
       controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "connected" })}\n\n`));
 
