@@ -96,7 +96,18 @@ export async function POST(_req: NextRequest) {
     // The block watcher cannot detect this transaction because simulate-whale sends
     // a contract CALL with no native STT value (tx.value = 0). Without this injection,
     // the simulated whale never appears in the frontend whale feed.
-    injectSimulatedWhale({ from, to, amountEth, token, txHash: hash });
+    // CRITICAL: Use a unique txHash with "sim" prefix to avoid dedup collisions
+    const simulatedTxHash = `0xsim${hash.slice(2)}` as `0x${string}`;
+    
+    injectSimulatedWhale({ 
+      from, 
+      to, 
+      amountEth, 
+      token, 
+      txHash: simulatedTxHash  // Use modified hash to ensure it's not filtered
+    });
+
+    console.log(`🎭 Simulated whale injected: ${amountEth} ${token} ${from.slice(0,8)}→${to.slice(0,8)} tx:${simulatedTxHash.slice(0,10)}`);
 
     // Fire and return immediately — don't wait for receipt (testnet can be slow)
     return NextResponse.json({
@@ -104,6 +115,7 @@ export async function POST(_req: NextRequest) {
       txHash: hash,
       token,
       amount: amountEth,
+      simulatedTxHash,
     });
 
   } catch (e: any) {

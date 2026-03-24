@@ -321,9 +321,9 @@ function getSignalKey(entry: CacheEntry): string {
 // ── SQLite-backed block_tx persistence ───────────────────────────────────────
 
 const insertBlockTx = db.prepare(`
-INSERT OR IGNORE INTO block_tx_events
-(id, from_addr, to_addr, amount, is_transfer, tx_hash, block_number, block_hash, tx_fee, received_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  INSERT OR IGNORE INTO block_tx_events
+  (id, from_addr, to_addr, amount, is_transfer, tx_hash, block_number, block_hash, tx_fee, received_at, block_timestamp)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 function loadBlockTxFromDb() {
@@ -341,7 +341,23 @@ function loadBlockTxFromDb() {
   for (const row of rows) {
     const amountRaw = parseFloat(row.amount ?? "0");
     if (amountRaw > networkLargestSTT) networkLargestSTT = amountRaw;
-    const blockTsMs = row.block_timestamp ?? row.received_at;
+    
+    // Normalize block timestamp to milliseconds
+    let blockTsMs = row.block_timestamp ?? row.received_at;
+    
+    // If timestamp is in seconds (< 100 billion, i.e., before year 5000), convert to ms
+    // Also handle case where it's stored as number (SQLite stores as integer)
+    if (blockTsMs && blockTsMs > 0) {
+      // Check if it looks like seconds (10-11 digits) rather than milliseconds (13 digits)
+      // Timestamps in seconds: 1734567890 (10 digits) or 17345678901 (11 digits)
+      // Timestamps in milliseconds: 1734567890123 (13 digits)
+      if (blockTsMs < 100_000_000_00) {
+        blockTsMs = blockTsMs * 1000;
+      }
+    } else {
+      blockTsMs = row.received_at;
+    }
+    
     alertCache.push({
       type: "block_tx",
       receivedAt: row.received_at,
@@ -361,7 +377,7 @@ function loadBlockTxFromDb() {
   totalBlockTxsSeen = rows.length;
   console.log(`📂 Loaded ${rows.length} block_tx from SQLite (last 24h)`);
 }
-
+ 
 setInterval(() => {
   const cutoff = Date.now() - BLOCK_TX_WINDOW_MS;
   const { changes } = db.prepare(`DELETE FROM block_tx_events WHERE received_at < ?`).run(cutoff);
@@ -385,6 +401,17 @@ function push(entry: CacheEntry) {
     let i = 0;
     while (i < alertCache.length && alertCache[i].type === "block_tx" && alertCache[i].receivedAt < cutoff) i++;
     if (i > 0) alertCache.splice(0, i);
+    
+    // Normalize block timestamp for storage
+    let blockTsMs = entry.receivedAt;
+    try {
+      const hexTs = entry.raw.timestamp ?? "0x0";
+      const parsed = Number(BigInt(hexTs));
+      // If timestamp is in seconds (< 100 billion, i.e., before year 5000), convert to ms
+      blockTsMs = parsed < 100_000_000_00 ? parsed * 1000 : parsed;
+      if (blockTsMs <= 0) blockTsMs = entry.receivedAt;
+    } catch { blockTsMs = entry.receivedAt; }
+    
     try {
       insertBlockTx.run(
         `btx-${entry.receivedAt}-${Math.random()}`,
@@ -397,6 +424,7 @@ function push(entry: CacheEntry) {
         entry.raw.blockHash,
         entry.raw.txFee ?? "0",
         entry.receivedAt,
+        blockTsMs,  // Store normalized block timestamp
       );
     } catch {} // IGNORE duplicate tx_hash
   } else {
@@ -432,23 +460,31 @@ function push(entry: CacheEntry) {
   alertCache.push(entry);
   analyticsProcessEvent(entry.type, entry.raw, entry.receivedAt);
   broadcast(entry);
+  
+  // ── Persist whale events with normalized timestamps ──────────────────────────
   if (entry.type === "whale" && entry.raw.txHash) {
-    const blockTs = (() => {
-      try { const t = Number(BigInt(entry.raw.timestamp ?? "0x0")) * 1000; return t > 0 ? t : entry.receivedAt; }
-      catch { return entry.receivedAt; }
-    })();
+    // Normalize block timestamp to milliseconds
+    let blockTsMs = entry.receivedAt;
+    try {
+      const hexTs = entry.raw.timestamp ?? "0x0";
+      const parsed = Number(BigInt(hexTs));
+      // If timestamp is in seconds (< 100 billion, i.e., before year 5000), convert to ms
+      blockTsMs = parsed < 100_000_000_00 ? parsed * 1000 : parsed;
+      if (blockTsMs <= 0) blockTsMs = entry.receivedAt;
+    } catch { blockTsMs = entry.receivedAt; }
+    
     db.prepare(`
-INSERT OR IGNORE INTO whale_events
-(id, type, from_addr, to_addr, amount, timestamp, block_timestamp, token, tx_hash, block_number, block_hash, tx_fee, linked_tx_hash, signal_reason)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`).run(
+      INSERT OR IGNORE INTO whale_events
+      (id, type, from_addr, to_addr, amount, timestamp, block_timestamp, token, tx_hash, block_number, block_hash, tx_fee, linked_tx_hash, signal_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
       `${entry.receivedAt}-${Math.random()}`,
       entry.type,
       entry.raw.from,
       entry.raw.to,
       entry.raw.amount,
       entry.receivedAt,
-      blockTs,
+      blockTsMs,  // ← Store normalized block timestamp in milliseconds
       entry.raw.token,
       entry.raw.txHash,
       entry.raw.blockNumber || null,
@@ -459,25 +495,30 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     );
   }
 
-  // Persist reactions/alerts/momentum so they survive server restart
+  // ── Persist reactions/alerts/momentum with normalized timestamps ─────────────
   if ((entry.type === "reaction" || entry.type === "alert" || entry.type === "momentum") && entry.raw.linkedTxHash) {
-    const sigTs = (() => {
-      try { const t = Number(BigInt(entry.raw.timestamp ?? "0x0")) * 1000; return t > 0 ? t : entry.receivedAt; }
-      catch { return entry.receivedAt; }
-    })();
+    // Normalize timestamp to milliseconds
+    let sigTsMs = entry.receivedAt;
+    try {
+      const hexTs = entry.raw.timestamp ?? "0x0";
+      const parsed = Number(BigInt(hexTs));
+      sigTsMs = parsed < 100_000_000_00 ? parsed * 1000 : parsed;
+      if (sigTsMs <= 0) sigTsMs = entry.receivedAt;
+    } catch { sigTsMs = entry.receivedAt; }
+    
     try {
       db.prepare(`
-INSERT OR IGNORE INTO whale_events
-(id, type, from_addr, to_addr, amount, timestamp, block_timestamp, token, tx_hash, block_number, block_hash, tx_fee, linked_tx_hash, signal_reason)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`).run(
+        INSERT OR IGNORE INTO whale_events
+        (id, type, from_addr, to_addr, amount, timestamp, block_timestamp, token, tx_hash, block_number, block_hash, tx_fee, linked_tx_hash, signal_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
         `${entry.type}-${entry.receivedAt}-${Math.random()}`,
         entry.type,
         entry.raw.from,
         entry.raw.to,
         entry.raw.amount || "0x0",
         entry.receivedAt,
-        sigTs,
+        sigTsMs,  // ← Store normalized timestamp in milliseconds
         entry.raw.token || "",
         entry.raw.txHash || null,
         entry.raw.blockNumber || null,
@@ -489,7 +530,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     } catch {} // IGNORE duplicates
   }
 }
-
 function getHistoricalEvents(timeRangeMs: number): CacheEntry[] {
   const cutoff = Date.now() - timeRangeMs;
   // Use OR condition: include row if EITHER timestamp column is within range.
@@ -1268,17 +1308,18 @@ export function injectSimulatedWhale(params: {
       timestamp:   ts,
       token:       params.token,
       txHash:      params.txHash,
-      blockNumber: "simulated",   // simulation — no block number yet
+      blockNumber: "simulated",   // CRITICAL: Mark as simulated for frontend badge
       blockHash:   "simulated",
       txFee:       "0",
-      signalReason: "Simulated whale transfer",
+      signalReason: "🧪 SIMULATED WHALE - Test transaction only",
     },
   };
 
-  // Use markBlockSeen to prevent the block watcher from double-emitting if the
-  // tx eventually lands in a block above the on-chain threshold
-  if (params.txHash) markBlockSeen(params.txHash);
-
+  // DO NOT use markBlockSeen for simulated whales - we want them to always show
+  // The markBlockSeen would prevent the whale from appearing if the txHash was seen before
+  // For simulated whales, we skip the dedup check entirely
+  
+  // Push directly to cache - this bypasses the dedup for simulated whales
   push(entry);
   console.log(`🎭 Simulated whale injected: ${params.amountEth} ${params.token} ${params.from.slice(0,8)}→${params.to.slice(0,8)} tx:${params.txHash.slice(0,10)}`);
 }
@@ -1300,7 +1341,7 @@ export async function GET(req: NextRequest) {
       const whaleAlerts = alertCache
         .filter(e => e.type !== "block_tx")
         .sort((a, b) => b.receivedAt - a.receivedAt)
-        .slice(0, 500);
+        .slice(0, 5000);
 
       const blockTxAlerts = alertCache
         .filter(e => e.type === "block_tx")

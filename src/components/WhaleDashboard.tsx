@@ -433,7 +433,6 @@ function FilterBar({t,search,setSearch,minAmt,setMinAmt,maxAmt,setMaxAmt,token,s
   </div>);
 }
 
-// ── Live Feed Tab ─────────────────────────────────────────────────────────────
 function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBlockTxsSeen,timePreset,feedSubTab,setFeedSubTab,netMinAmt,setNetMinAmt,netMaxAmt,setNetMaxAmt}:{alerts:WhaleAlert[];t:typeof T.dark;connectedAddr?:string;burst:Burst;oraclePrices:Record<string,any>;blockTxs:BlockTx[];totalBlockTxsSeen:number;timePreset:number;feedSubTab:"alerts"|"network-activity";setFeedSubTab:(v:"alerts"|"network-activity")=>void;netMinAmt:string;setNetMinAmt:(v:string)=>void;netMaxAmt:string;setNetMaxAmt:(v:string)=>void;}){
   const[expanded,setExpanded]=useState<string|null>(null);
   const[page,setPage]=useState(0);
@@ -484,19 +483,6 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
     setNetPage(0);
   }
  
-  // Debug: log network filter changes
-  useEffect(() => {
-    if (feedSubTab === "network-activity") {
-      console.log('📊 Network activity filters changed:', {
-        netMinAmt,
-        netMaxAmt,
-        timePreset,
-        netPage,
-        netSort
-      });
-    }
-  }, [netMinAmt, netMaxAmt, timePreset, netPage, netSort, feedSubTab]);
- 
   useEffect(()=>{
     if(feedSubTab!=="network-activity") return;
     setNetLoading(true);
@@ -508,34 +494,10 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
       ...(netMinAmt ? {min: netMinAmt} : {}),
       ...(netMaxAmt ? {max: netMaxAmt} : {}),
     });
-    
-    console.log('🔍 Fetching network activity:', {
-      url: `/api/network-activity?${params}`,
-      netMinAmt,
-      netMaxAmt,
-      timePreset,
-      netPage
-    });
-    
     fetch(`/api/network-activity?${params}`)
-      .then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then(d => { 
-        console.log('✅ Network activity response:', {
-          rows: d.rows?.length,
-          total: d.total,
-          sttCount: d.sttCount,
-          pages: d.pages
-        });
-        setNetData(d); 
-        setNetLoading(false); 
-      })
-      .catch(err => {
-        console.error('❌ Network activity fetch failed:', err);
-        setNetLoading(false);
-      });
+      .then(r=>r.json())
+      .then(d=>{ setNetData(d); setNetLoading(false); })
+      .catch(()=>setNetLoading(false));
   },[netPage, netSort, netMinAmt, netMaxAmt, feedSubTab, timePreset]);
  
   const prevBlockTxLen = useRef(0);
@@ -562,7 +524,7 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
         {!alerts.length
           ? <div style={{padding:48,textAlign:"center",color:t.muted,fontFamily:"monospace",fontSize:13}}>Waiting for activity...</div>
           : <><div style={{overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}>
-              <thead>\\
+              <thead><tr>
                 <SortTh t={t} active={whaleSort.col==="type"}  dir={whaleSort.dir} onClick={()=>toggleWhaleSort("type")}>Type</SortTh>
                 <Th t={t}>Token</Th>
                 <SortTh t={t} active={whaleSort.col==="amount"} dir={whaleSort.dir} onClick={()=>toggleWhaleSort("amount")}>Amount</SortTh>
@@ -574,7 +536,7 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
                 <SortTh t={t} active={whaleSort.col==="block"} dir={whaleSort.dir} onClick={()=>toggleWhaleSort("block")}>Block</SortTh>
                 <SortTh t={t} active={whaleSort.col==="time"}  dir={whaleSort.dir} onClick={()=>toggleWhaleSort("time")}>Time</SortTh>
                 <Th t={t}></Th>
-               </thead>
+              </tr></thead>
               <tbody>{pageAlerts.map((a,i)=>{
                 const isMyTx=connectedAddr&&(a.from.toLowerCase()===connectedAddr.toLowerCase()||a.to.toLowerCase()===connectedAddr.toLowerCase());
                 const usd=a.type==="whale"?usdVal(num(a.amount),a.token,oraclePrices):null;
@@ -582,7 +544,13 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
                 const sigColor = a.type==="momentum"?"#ef4444":a.type==="alert"?"#f97316":"#a855f7";
                 return(<>
                   <tr key={a.id} style={{background:rowBg(a,i),cursor:"pointer",transition:"background 0.15s"}} onMouseEnter={e=>(e.currentTarget.style.background=t.rowHover)} onMouseLeave={e=>(e.currentTarget.style.background=rowBg(a,i))}>
-                    <Td t={t}><div style={{display:"flex",gap:4,alignItems:"center"}}><TypeBadge type={a.type} t={t}/>{isMyTx&&<span style={{fontSize:8,background:"rgba(74,222,128,0.2)",color:"#4ade80",border:"1px solid rgba(74,222,128,0.4)",borderRadius:3,padding:"1px 5px",fontFamily:"monospace"}}>YOU</span>}{a.blockNumber === "simulated" && <span style={{fontSize:8,background:"#f97316",color:"white",borderRadius:3,padding:"1px 5px",fontFamily:"monospace"}}>TEST</span>}</div></Td>
+                    <Td t={t}>
+                      <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                        <TypeBadge type={a.type} t={t}/>
+                        {isMyTx && <span style={{fontSize:8,background:"rgba(74,222,128,0.2)",color:"#4ade80",border:"1px solid rgba(74,222,128,0.4)",borderRadius:3,padding:"1px 5px",fontFamily:"monospace"}}>YOU</span>}
+                        {a.blockNumber === "simulated" && <span style={{fontSize:8,background:"#f97316",color:"white",borderRadius:3,padding:"1px 5px",fontFamily:"monospace"}}>🧪 TEST</span>}
+                      </div>
+                    </Td>
                     <Td t={t}>{a.token?<Badge text={a.token} color={TOKEN_COLORS[a.token]} t={t}/>:<span style={{color:t.muted,fontSize:11}}>—</span>}</Td>
                     <Td t={t} accent bold>{a.type==="whale"?parseFloat(a.amount).toFixed(8):<span style={{color:t.muted}}>—</span>}</Td>
                     <Td t={t}>{
@@ -611,8 +579,8 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
                     }</Td>
                     <Td t={t}><span style={{color:t.subtext,fontSize:11}}>{a.blockNumber||"—"}</span></Td>
                     <Td t={t}><span style={{color:t.muted,fontSize:10}}>{timeAgo(a.timestamp)}</span></Td>
-                    <td style={{padding:"10px 12px",borderBottom:`1px solid ${t.border}`}}><button onClick={()=>setExpanded(expanded===a.id?null:a.id)} style={{fontSize:9,fontFamily:"monospace",padding:"2px 8px",borderRadius:4,cursor:"pointer",background:t.accentBg,color:t.accent,border:`1px solid ${t.border}`}}>{expanded===a.id?"▲":"▼"}</button> </td>
-                   </tr>
+                    <td style={{padding:"10px 12px",borderBottom:`1px solid ${t.border}`}}><button onClick={()=>setExpanded(expanded===a.id?null:a.id)} style={{fontSize:9,fontFamily:"monospace",padding:"2px 8px",borderRadius:4,cursor:"pointer",background:t.accentBg,color:t.accent,border:`1px solid ${t.border}`}}>{expanded===a.id?"▲":"▼"}</button></td>
+                  </tr>
                   {expanded===a.id&&(<tr key={`${a.id}-exp`} style={{background:t.accentBg}}><td colSpan={11} style={{padding:"12px 16px",borderBottom:`1px solid ${t.border}`}}>
                     <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(260px, 1fr))",gap:12,fontFamily:"monospace",fontSize:11}}>
                       {a.type==="whale"&&<>
@@ -635,10 +603,10 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
                       <div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Block</span><div style={{color:t.text,marginTop:4}}>{a.blockNumber||"—"}</div></div>
                       <div><span style={{color:t.muted,fontSize:9,textTransform:"uppercase"}}>Timestamp</span><div style={{color:t.text,marginTop:4}}>{fmtTime(a.timestamp)}</div></div>
                     </div>
-                   </td></tr>)}
+                  </td></tr>)}
                 </>);
               })}</tbody>
-             </table></div>
+            </table></div>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 4px",borderTop:`1px solid ${t.border}`}}>
               <span style={{color:t.muted,fontSize:10,fontFamily:"monospace"}}>{alerts.length} events · page {page+1} of {totalPages}</span>
               <div style={{display:"flex",gap:6}}>
@@ -659,22 +627,25 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(120px, 1fr))",gap:8}}>
             <div><label style={{color:t.subtext,fontSize:9,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",display:"block",marginBottom:4}}>Min Amount (STT)</label><input type="number" value={netMinAmt} onChange={e=>setNetMinAmt(e.target.value)} placeholder="0" style={{background:t.input,border:`1px solid ${t.border}`,borderRadius:7,padding:"7px 10px",fontSize:11,fontFamily:"monospace",color:t.text,outline:"none",width:"100%",boxSizing:"border-box"}}/></div>
             <div><label style={{color:t.subtext,fontSize:9,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",display:"block",marginBottom:4}}>Max Amount (STT)</label><input type="number" value={netMaxAmt} onChange={e=>setNetMaxAmt(e.target.value)} placeholder="∞" style={{background:t.input,border:`1px solid ${t.border}`,borderRadius:7,padding:"7px 10px",fontSize:11,fontFamily:"monospace",color:t.text,outline:"none",width:"100%",boxSizing:"border-box"}}/></div>
-            <div style={{display:"flex",alignItems:"flex-end"}}><button onClick={()=>{
-              setNetMinAmt("");
-              setNetMaxAmt("");
-              setNetPage(0);
-            }} style={{fontSize:9,fontFamily:"monospace",padding:"6px 12px",borderRadius:6,cursor:"pointer",color:t.errText,background:"transparent",border:"1px solid transparent"}}>✕ Clear</button></div>
+            <div style={{display:"flex",alignItems:"flex-end"}}><button onClick={()=>{setNetMinAmt("");setNetMaxAmt("");}} style={{fontSize:9,fontFamily:"monospace",padding:"6px 12px",borderRadius:6,cursor:"pointer",color:t.errText,background:"transparent",border:"1px solid transparent"}}>✕ Clear</button></div>
           </div>
         </div>
         {netLoading && netData.rows.length===0
           ? <div style={{padding:"24px",textAlign:"center",color:t.muted,fontSize:11,fontFamily:"monospace"}}>Loading...</div>
           : netData.total===0
-            ? <div style={{padding:"24px",textAlign:"center",color:t.muted,fontSize:11,fontFamily:"monospace"}}>
-                {netLoading ? "Loading..." : "No transactions found with current filters. Try adjusting min/max amounts or time window."}
-              </div>
+            ? <div style={{padding:"24px",textAlign:"center",color:t.muted,fontSize:11,fontFamily:"monospace"}}>Waiting for block activity...</div>
             : <><div style={{overflowX:"auto",opacity:netLoading?0.6:1,transition:"opacity 0.2s"}}>
-                <table style={{width:"100%",borderCollapse:"collapse"}}>
-                  <thead>\\
+                <table style={{width:"100%",borderCollapse:"collapse",tableLayout:"fixed",minWidth:820}}>
+                  <colgroup>
+                    <col style={{width:"14%"}}/>{/* From */}
+                    <col style={{width:"14%"}}/>{/* To */}
+                    <col style={{width:"13%"}}/>{/* Amount (STT) */}
+                    <col style={{width:"13%"}}/>{/* Tx Fee (STT) */}
+                    <col style={{width:"20%"}}/>{/* TX Hash */}
+                    <col style={{width:"12%"}}/>{/* Block */}
+                    <col style={{width:"14%"}}/>{/* Time */}
+                  </colgroup>
+                  <thead><tr>
                     <SortTh t={t} active={netSort.col==="from"}   dir={netSort.dir} onClick={()=>toggleNetSort("from")}>From</SortTh>
                     <SortTh t={t} active={netSort.col==="to"}     dir={netSort.dir} onClick={()=>toggleNetSort("to")}>To</SortTh>
                     <SortTh t={t} active={netSort.col==="amount"} dir={netSort.dir} onClick={()=>toggleNetSort("amount")}>Amount (STT)</SortTh>
@@ -682,7 +653,7 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
                     <Th t={t}>TX Hash</Th>
                     <SortTh t={t} active={netSort.col==="block"}  dir={netSort.dir} onClick={()=>toggleNetSort("block")}>Block</SortTh>
                     <SortTh t={t} active={netSort.col==="time"}   dir={netSort.dir} onClick={()=>toggleNetSort("time")}>Time</SortTh>
-                   </thead>
+                  </tr></thead>
                   <tbody>{netData.rows.map((tx,i)=>(
                     <tr key={tx.id} style={{background:i%2===0?t.tableRow:t.tableAlt}}>
                       <Td t={t}><ExLink href={addrUrl(tx.from)} label={short(tx.from)} t={t}/></Td>
@@ -692,9 +663,9 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
                       <Td t={t}><ExLink href={txUrl(tx.txHash)} label={shortHash(tx.txHash)} t={t}/></Td>
                       <Td t={t}><span style={{color:t.subtext,fontSize:11}}>{tx.blockNumber}</span></Td>
                       <Td t={t}><span style={{color:t.muted,fontSize:10}}>{timeAgo(tx.timestamp)}</span></Td>
-                     </tr>
+                    </tr>
                   ))}</tbody>
-                 </table>
+                </table>
               </div>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 4px",borderTop:`1px solid ${t.border}`}}>
                 <span style={{color:t.muted,fontSize:10,fontFamily:"monospace"}}>
@@ -713,6 +684,8 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
     )}
   </div>);
 }
+
+
 // ── My Wallet Tab ─────────────────────────────────────────────────────────────
 function MyWalletTab({alerts,connectedAddr,t}:{alerts:WhaleAlert[];connectedAddr:string;t:typeof T.dark}){
   const myTxns    =useMemo(()=>alerts.filter(a=>a.type==="whale"&&(a.from.toLowerCase()===connectedAddr.toLowerCase()||a.to.toLowerCase()===connectedAddr.toLowerCase())),[alerts,connectedAddr]);
@@ -1192,10 +1165,10 @@ useEffect(() => {
   const filteredMetrics: LiveMetrics = useMemo(() => {
   const isDefault = timePreset === 24*60*60_000 && !minAmt && !maxAmt && tokenFilter === "All" && !search;
 
-  const cutoff    = isDefault ? 0 : Date.now() - timePreset;
+  const cutoff = isDefault ? 0 : Date.now() - timePreset;
   const walletLow = search.toLowerCase();
-  const minStt    = minAmt ? parseFloat(minAmt) : undefined;
-  const maxStt    = maxAmt ? parseFloat(maxAmt) : undefined;
+  const minStt = minAmt ? parseFloat(minAmt) : undefined;
+  const maxStt = maxAmt ? parseFloat(maxAmt) : undefined;
   const tokFilter = tokenFilter !== "All" ? tokenFilter : undefined;
 
   let totalTx = 0, sttTx = 0, whaleTx = 0;
@@ -1212,14 +1185,15 @@ useEffect(() => {
     if (tx.amountRaw > 0) sttTx++;
   }
 
-  // Count whale/signal events — EXCLUDE simulated whales from metrics
+  // Count whale/signal events — SHOW simulated whales in table but EXCLUDE from metrics
   for (const a of alerts) {
     if (cutoff > 0 && a.timestamp < cutoff) continue;
     if (walletLow && a.from.toLowerCase() !== walletLow && a.to.toLowerCase() !== walletLow) continue;
     if (tokFilter && a.token !== tokFilter) continue;
 
     if (a.type === "whale") {
-      // CRITICAL: Exclude simulated whales from all metrics
+      // CRITICAL: Exclude simulated whales from ALL METRICS (counts, volume, fees)
+      // But they will still show in the table with TEST badge
       if (a.blockNumber === "simulated") continue;
       
       const stt = Number(a.amountRaw) / 1e18;
@@ -1240,25 +1214,26 @@ useEffect(() => {
     else if (a.type === "reaction")   { reactCount++; }
   }
 
-  const avg = whaleSizes.length > 0 ?
-whaleSizes.reduce((s,v)=>s+v,0)/whaleSizes.length : 0;
+  const avg = whaleSizes.length > 0 ? whaleSizes.reduce((s,v)=>s+v,0)/whaleSizes.length : 0;
 
-    // Whale Rate = whaleTx / sttTx
-    // The blockTxs array is capped at 5k and spans 24h, so for short
-    // windows (30m/1h) the sample is too small to be meaningful.
-    // Use MIN_STT_SAMPLE to guard against inflated/zero rates.
+  // CRITICAL FIX: Whale Rate = whaleTx / sttTx (NOT totalTx)
+  // If sttTx is 0, rate is 0 (cannot have whales without STT transfers)
+  // For short windows (30m/1h), sttTx might be small, but that's correct
+  const whaleTxRateRaw = sttTx > 0 ? (whaleTx / sttTx) * 100 : 0;
+  const whaleTxRate = Math.min(100, Math.max(0, whaleTxRateRaw));
+
+  // For 24h default: use server-side totals for TXN COUNT / STT TXN
+  // (they exceed our 5k blockTxs cap), but use client-side whale counts
+  if (isDefault) {
+    // Only use server-side rate when client sample is too small (< 50)
+    // Otherwise use the actual calculated rate from the window
     const MIN_STT_SAMPLE = 50;
-    const whaleTxRateRaw = sttTx >= MIN_STT_SAMPLE ? (whaleTx / sttTx) * 100 : 0;
-    // When sample too small, fall back to server-side rate which uses full DB counters
-    const effectiveRate = sttTx >= MIN_STT_SAMPLE ? Math.min(100, whaleTxRateRaw) : liveMetrics.whaleTxRate;
-
-    // For 24h default: use server-side totals for TXN COUNT / STT TXN
-    // (they exceed our 5k blockTxs cap), but use client-side whale counts
-    if (isDefault) {
-      return {
-        ...liveMetrics,
-        whaleTxRate: effectiveRate,
-        whaleTxRateRaw: effectiveRate,
+    const finalRate = sttTx >= MIN_STT_SAMPLE ? whaleTxRate : liveMetrics.whaleTxRate;
+    
+    return {
+      ...liveMetrics,
+      whaleTxRate: finalRate,
+      whaleTxRateRaw: finalRate,
       whaleTx24h: whaleTx,
       whaleVolumeStt: whaleVol,
       avgWhaleSizeStt: avg,
@@ -1272,25 +1247,24 @@ whaleSizes.reduce((s,v)=>s+v,0)/whaleSizes.length : 0;
   }
 
   return {
-      totalTx24h: totalTx,
-      sttTx24h: sttTx,
-      whaleTx24h: whaleTx,
-      whaleVolumeStt: whaleVol,
-      avgWhaleSizeStt: avg,
-      largestWhaleStt: largestStt,
-      whaleFees,
-      whaleFeeEstimated: feeEst,
-      alerts24h: alertCount,
-      momentum24h: momCount,
-      reactions24h: reactCount,
-      whaleTxRate: effectiveRate,
-      whaleTxRateRaw: effectiveRate,
-      whaleThresholdStt: liveMetrics.whaleThresholdStt,
-      whalePercentile: liveMetrics.whalePercentile,
-      updatedAt: Date.now(),
-    };
+    totalTx24h: totalTx,
+    sttTx24h: sttTx,
+    whaleTx24h: whaleTx,
+    whaleVolumeStt: whaleVol,
+    avgWhaleSizeStt: avg,
+    largestWhaleStt: largestStt,
+    whaleFees,
+    whaleFeeEstimated: feeEst,
+    alerts24h: alertCount,
+    momentum24h: momCount,
+    reactions24h: reactCount,
+    whaleTxRate,
+    whaleTxRateRaw,
+    whaleThresholdStt: liveMetrics.whaleThresholdStt,
+    whalePercentile: liveMetrics.whalePercentile,
+    updatedAt: Date.now(),
+  };
 }, [alerts, blockTxs, timePreset, minAmt, maxAmt, tokenFilter, search, liveMetrics]);
-
   const isDefaultFilter = timePreset === 24*60*60_000 && !minAmt && !maxAmt && tokenFilter === "All" && !search;
   const metrics = filteredMetrics;
 
@@ -1298,7 +1272,7 @@ whaleSizes.reduce((s,v)=>s+v,0)/whaleSizes.length : 0;
   const reactions = useMemo(()=>alerts.filter(a=>a.type==="reaction"),[alerts]);
 
   const windowCutoff = timePreset>0 ? now-timePreset : 0;
-  const windowedWhales    = useMemo(()=>whales.filter(a=> (!windowCutoff||a.timestamp>=windowCutoff) && a.blockNumber !== "simulated"),[whales,windowCutoff]);
+  const windowedWhales = useMemo(()=>whales.filter(a=> !windowCutoff||a.timestamp>=windowCutoff),[whales,windowCutoff]);
   const windowedReactions = useMemo(()=>reactions.filter(a=>!windowCutoff||a.timestamp>=windowCutoff),[reactions,windowCutoff]);
 
   // KPIs — now come from metrics which is filter-aware
@@ -1337,20 +1311,44 @@ whaleSizes.reduce((s,v)=>s+v,0)/whaleSizes.length : 0;
     return {count:recent.length,volume:vol,windowSec:Math.round((now-oldest)/1000),dominantToken,tokenBreakdown:tkCounts};
   },[whales]);
 
-  const filtered=useMemo(()=>{
-    const from=dateFrom?new Date(dateFrom).getTime():timePreset>0?now-timePreset:0;
-    const to=dateTo?new Date(dateTo).getTime():null;
-    return alerts.filter(a=>{
-      if(!showTypes.includes(a.type))return false;
-      if(a.timestamp<from)return false;
-      if(to!==null&&a.timestamp>to)return false;
-      if(search&&!a.from.toLowerCase().includes(search.toLowerCase())&&!a.to.toLowerCase().includes(search.toLowerCase()))return false;
-      if(tokenFilter!=="All"&&a.token!==tokenFilter&&a.type==="whale")return false;
-      if(minAmt&&a.type==="whale"&&num(a.amount)<parseFloat(minAmt))return false;
-      if(maxAmt&&a.type==="whale"&&num(a.amount)>parseFloat(maxAmt))return false;
-      return true;
-    });
-  },[alerts,search,minAmt,maxAmt,tokenFilter,timePreset,dateFrom,dateTo,showTypes,now]);
+  // filtered useMemo
+  const filtered = useMemo(() => {
+  const from = dateFrom ? new Date(dateFrom).getTime() : timePreset > 0 ? now - timePreset : 0;
+  const to = dateTo ? new Date(dateTo).getTime() : null;
+  
+  console.log("🔍 Filtering alerts:", {
+    totalAlerts: alerts.length,
+    timePreset,
+    cutoff: from,
+    dateFrom,
+    dateTo,
+    showTypes,
+    tokenFilter,
+    minAmt,
+    maxAmt,
+    search
+  });
+  
+  const result = alerts.filter(a => {
+    if (!showTypes.includes(a.type)) return false;
+    const tsMs = a.timestamp < 10_000_000_000 ? a.timestamp * 1000 : a.timestamp;
+    if (tsMs < from) return false;
+    if (to !== null && tsMs > to) return false;
+    if (search && !a.from.toLowerCase().includes(search.toLowerCase()) && !a.to.toLowerCase().includes(search.toLowerCase())) return false;
+    if (tokenFilter !== "All" && a.token !== tokenFilter && a.type === "whale") return false;
+    if (minAmt && a.type === "whale" && num(a.amount) < parseFloat(minAmt)) return false;
+    if (maxAmt && a.type === "whale" && num(a.amount) > parseFloat(maxAmt)) return false;
+    return true;
+  });
+  
+  console.log("🔍 Filtered result:", {
+    total: result.length,
+    whales: result.filter(a => a.type === "whale").length,
+    reactions: result.filter(a => a.type === "reaction").length
+  });
+  
+  return result;
+}, [alerts, search, minAmt, maxAmt, tokenFilter, timePreset, dateFrom, dateTo, showTypes, now]);
 
   async function simulateWhale(){setSimulating(true);try{const res=await fetch("/api/simulate-whale",{method:"POST"});const d=await res.json();if(!d.success)throw new Error(d.error);}catch(e){alert("Simulation failed: "+e);}finally{setSimulating(false);}}
 
@@ -1581,12 +1579,12 @@ whaleSizes.reduce((s,v)=>s+v,0)/whaleSizes.length : 0;
                     {icon:"⚡",  color:"#06b6d4",title:"Somnia Reactivity", desc:"Reactivity Engine pushes events natively — zero polling, zero indexers, zero latency."},
                     {icon:"🔍",  color:"#a855f7",title:"Handler Contract",  desc:"WhaleHandler._onEvent() called by precompile 0x0100. Emits ReactedToWhaleTransfer on-chain."},
                     {icon:"💾",  color:"#4ade80",title:"Data Streams",      desc:"Leaderboard persists to Somnia Data Streams on every whale event — survives server restarts."},
-                    {icon:"🚨",  color:"#f97316",title:"Burst Detection",   desc:"WhaleHandler emits WhaleMomentumDetected on-chain when ≥3 transfers occur within 10 blocks."},
+                    {icon:"🚨",  color:"#f97316",title:"Burst Detection",   desc:"WhaleHandler emits WhaleMomentumDetected on-chain when ≥3 transfers occur within 60 seconds. Frontend burst banner also triggers live."},
                     {icon:"💛",  color:"#4ade80",title:"Wallet Connect",    desc:"Connect wallet to see your personal transfers, net flow, and YOU badge in Live Feed."},
                   ].map((s,i)=>(<div key={i} style={{background:t.pageBg,border:`1px solid ${t.border}`,borderRadius:10,padding:14}}><div style={{fontSize:22,marginBottom:8}}>{s.icon}</div><p style={{color:s.color,fontFamily:"monospace",fontSize:10,fontWeight:700,margin:"0 0 4px"}}>{s.title}</p><p style={{color:t.subtext,fontSize:10,lineHeight:1.6,margin:0}}>{s.desc}</p></div>))}
                 </div>
                 <div style={{background:t.pageBg,border:`1px solid ${t.border}`,borderRadius:10,padding:14}}>
-                  <pre style={{color:t.subtext,fontSize:10,fontFamily:"monospace",lineHeight:1.8,margin:0,whiteSpace:"pre-wrap"}}>{`WhaleTracker.sol       → emits WhaleTransfer\nSomnia Reactivity       → pushes to handler (precompile 0x0100)\nWhaleHandler._onEvent() → emits ReactedToWhaleTransfer\n                        → emits AlertThresholdCrossed (every N)\n                        → emits WhaleMomentumDetected (≥3 in 10 blocks)\nFrontend burst detector → ≥3 transfers/60s → 🚨 banner\nData Streams            → persists leaderboard across restarts\nSSE stream              → 🐋 whale  ⚡ reaction  🚨 alert  🔥 momentum`}</pre>
+                  <pre style={{color:t.subtext,fontSize:10,fontFamily:"monospace",lineHeight:1.8,margin:0,whiteSpace:"pre-wrap"}}>{`WhaleTracker.sol       → emits WhaleTransfer\nSomnia Reactivity       → pushes to handler (precompile 0x0100)\nWhaleHandler._onEvent() → emits ReactedToWhaleTransfer\n                        → emits AlertThresholdCrossed (every N)\n                        → emits WhaleMomentumDetected (≥3 in 60s window)\nFrontend burst detector → ≥3 transfers/60s → 🚨 banner\nData Streams            → persists leaderboard across restarts\nSSE stream              → 🐋 whale  ⚡ reaction  🚨 alert  🔥 momentum`}</pre>
                 </div>
               </div>
             )}

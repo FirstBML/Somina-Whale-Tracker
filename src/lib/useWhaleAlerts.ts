@@ -5,7 +5,6 @@ import { useEffect, useRef, useState, useMemo } from "react";
 declare global {
   interface Window {
     _processedTxHashes?: Set<string>;
-    // FIX 3 — Separate dedup set for reactions/alerts/momentum
     _processedAlertKeys?: Set<string>;
   }
 }
@@ -44,7 +43,6 @@ export type BlockTx = {
   txFee: string;
 };
 
-// Mirror of analyticsEngine.ts types — kept in sync manually
 export type LiveMetrics = {
   totalTx24h: number;
   sttTx24h: number;
@@ -90,34 +88,21 @@ function parseEntry(raw: any): WhaleAlert | null {
     const r = raw?.raw ?? raw;
     const type = (raw?.type ?? "whale") as AlertType;
 
-    // Integrity gate: whale entries must have a txHash to be valid
-    // blockNumber is NOT required — simulated whales and some old DB rows have no blockNumber
     if (type === "whale") {
-    console.log(`🔍 Parsing whale: txHash=${r.txHash?.slice(0,10)}, blockNumber=${r.blockNumber}`);
-    if (!r.txHash) {
-      console.warn(`⚠️ Whale rejected: no txHash`);
-      return null;
+      console.log(`🔍 Parsing whale: txHash=${r.txHash?.slice(0,10)}, blockNumber=${r.blockNumber}`);
+      if (!r.txHash) {
+        console.warn(`⚠️ Whale rejected: no txHash`);
+        return null;
+      }
     }
-  }
 
     const amount = BigInt(r?.amount ?? "0x0");
 
-    // ── Timestamp strategy ────────────────────────────────────────────────────
-    // For WHALE entries: prefer raw.receivedAt (when the server processed the tx).
-    // Using the block's mint time caused two visible bugs:
-    //   1. Backfilled whales showed "55m ago" while their alerts showed "4m ago"
-    //      because alerts always use Date.now() but whales used block timestamp.
-    //   2. Alerts sorted ABOVE whales in the feed (alerts had more recent timestamps).
-    // Using receivedAt fixes both: whale and its derived alert have near-identical
-    // timestamps, so they appear together in the feed in the correct order.
-    // The actual block time is still visible in the expanded row via blockNumber + explorer.
     let timestamp: number;
     if (type === "whale") {
-      // raw.receivedAt is set by the server at push() time (top-level CacheEntry field)
       const receivedAt = typeof raw?.receivedAt === "number" ? raw.receivedAt : 0;
       timestamp = receivedAt > 0 ? receivedAt : (Number(BigInt(r?.timestamp ?? "0x0")) * 1000 || Date.now());
     } else {
-      // For reactions/alerts/momentum: use block timestamp if available, else Date.now()
       let ts = 0;
       try { ts = Number(BigInt(r?.timestamp ?? "0x0")) * 1000; } catch {}
       if (ts > 0 && ts <= Date.now()) timestamp = ts;
@@ -178,19 +163,14 @@ function parseBlockTx(msg: any): BlockTx | null {
 const ALERTS_CACHE_KEY  = "wt_alerts_cache";
 const BLOCKTX_CACHE_KEY = "wt_blocktx_cache";
 const CACHE_TTL_MS      = 24 * 60 * 60_000;
-
-// ── Cache versioning — bump this string whenever the data shape changes ───────
-// On mismatch the old localStorage data is cleared automatically so users
-// never need to do a manual Ctrl+Shift+R to see fresh data.
 const CACHE_VERSION     = "v4";
 const CACHE_VERSION_KEY = "wt_cache_version";
 const isBrowser = typeof window !== "undefined";
-const MAX_BLOCKTX_STATE = 5_000; // cap in React state — full data in SQLite via /api/network-activity
+const MAX_BLOCKTX_STATE = 5_000;
 
 function loadCached<T>(key: string): T[] {
   if (!isBrowser) return [];
   try {
-    // Auto-clear entire cache if version has changed
     const storedVersion = localStorage.getItem(CACHE_VERSION_KEY);
     if (storedVersion !== CACHE_VERSION) {
       localStorage.removeItem(ALERTS_CACHE_KEY);
@@ -212,26 +192,16 @@ function saveCache<T>(key: string, data: T[]) {
   catch {}
 }
 
-// ── FIX: Dedup key — one reaction per whale (linkedTxHash), not per reactionCount ──
-// The Reactivity precompile fires 3 events per whale with incrementing counts.
-// ── FIX: Dedup key with proper whale deduplication ──
-// IMPORTANT: For whales, we MUST use txHash as the primary key.
-// Without this, whales with the same timestamp/from pair get filtered out.
-// The txHash is the only truly unique identifier for an on-chain transaction.
 function getAlertDedupKey(a: WhaleAlert): string {
   if (a.type === "whale") {
-    // ALWAYS use txHash for whales - this is the only reliable dedup key
     if (a.txHash) {
       return `whale:${a.txHash}`;
     }
-    // Fallback only for simulated whales (which have no txHash)
     return `whale:sim:${a.timestamp}:${a.from}`;
   }
   if (a.type === "reaction") {
-    // One reaction per linked whale transaction
     return `reaction:${a.linkedTxHash ?? a.timestamp}`;
   }
-  // alert, momentum
   return `${a.type}:${a.linkedTxHash ?? ""}:${a.timestamp}`;
 }
 
@@ -255,7 +225,6 @@ export function useWhaleAlerts() {
   const retryCount = useRef(0);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Hydrate from localStorage after mount
   useEffect(() => {
     const cachedAlerts = loadCached<WhaleAlert>(ALERTS_CACHE_KEY);
     const cachedBlockTxs = loadCached<BlockTx>(BLOCKTX_CACHE_KEY);
@@ -288,18 +257,28 @@ export function useWhaleAlerts() {
           const msg = JSON.parse(e.data);
 
           if (msg.type === "init") {
+            console.log("📡 INIT received:", {
+              totalAlerts: msg.alerts?.length,
+              whaleCount: msg.alerts?.filter((a: any) => a.type === "whale").length,
+              reactionCount: msg.alerts?.filter((a: any) => a.type === "reaction").length,
+              alertCount: msg.alerts?.filter((a: any) => a.type === "alert").length,
+              momentumCount: msg.alerts?.filter((a: any) => a.type === "momentum").length,
+              dbLatestBlock: msg.dbLatestBlock,
+              metrics: msg.metrics
+            });
+            
+            if (msg.alerts?.length > 0) {
+              console.log("📊 Sample alerts (first 3):", msg.alerts.slice(0, 3));
+            }
+            
             if (msg.dbLatestBlock > lastKnownBlock) {
               lastKnownBlock = msg.dbLatestBlock;
               const allAlerts = msg.alerts || [];
 
-              // ✅ FIX 1: Parse ALL event types from init (including reactions)
-              // Previously this only parsed non-block_tx events but reactions
-              // need to come through too.
               const rawParsed = allAlerts
                 .filter((a: any) => a.type !== "block_tx")
                 .map(parseEntry).filter(Boolean) as WhaleAlert[];
 
-              // ✅ FIX 3: Dedup by content key
               const seen = new Set<string>();
               const parsedAlerts = rawParsed.filter(a => {
                 const key = getAlertDedupKey(a);
@@ -312,12 +291,17 @@ export function useWhaleAlerts() {
                 .filter((a: any) => a.type === "block_tx")
                 .map(parseBlockTx).filter(Boolean) as BlockTx[];
 
-              setAlerts(parsedAlerts);
-              setBlockTxs(parsedBlockTxs.slice(0, MAX_BLOCKTX_STATE)); // cap — full data in SQLite
-              saveCache(ALERTS_CACHE_KEY, parsedAlerts);
-              saveCache(BLOCKTX_CACHE_KEY, parsedBlockTxs.slice(0, 500)); // localStorage cap
+              console.log("📊 Frontend alerts after init:", {
+                total: parsedAlerts.length,
+                whales: parsedAlerts.filter(a => a.type === "whale").length,
+                reactions: parsedAlerts.filter(a => a.type === "reaction").length
+              });
 
-              // Pre-seed dedup sets so live messages don't duplicate loaded history
+              setAlerts(parsedAlerts);
+              setBlockTxs(parsedBlockTxs.slice(0, MAX_BLOCKTX_STATE));
+              saveCache(ALERTS_CACHE_KEY, parsedAlerts);
+              saveCache(BLOCKTX_CACHE_KEY, parsedBlockTxs.slice(0, 500));
+
               if (!window._processedTxHashes) window._processedTxHashes = new Set();
               if (!window._processedAlertKeys) window._processedAlertKeys = new Set();
 
@@ -342,26 +326,25 @@ export function useWhaleAlerts() {
           if (msg.type === "error") setError(msg.message);
 
           if (["whale", "reaction", "alert", "momentum"].includes(msg.type)) {
-          const a = parseEntry(msg);
-          if (a) {
-            if (!window._processedAlertKeys) window._processedAlertKeys = new Set();
-            const key = getAlertDedupKey(a);
-            
-            // Debug: log whale arrivals
-            if (a.type === "whale") {
-              console.log(`🐋 Whale received in frontend: ${a.txHash?.slice(0,10)} key=${key} alreadySeen=${window._processedAlertKeys.has(key)}`);
-            }
-            
-            if (window._processedAlertKeys.has(key)) return;
-            window._processedAlertKeys.add(key);
+            const a = parseEntry(msg);
+            if (a) {
+              if (!window._processedAlertKeys) window._processedAlertKeys = new Set();
+              const key = getAlertDedupKey(a);
+              
+              if (a.type === "whale") {
+                console.log(`🐋 Whale received in frontend: ${a.txHash?.slice(0,10)} key=${key} alreadySeen=${window._processedAlertKeys.has(key)}`);
+              }
+              
+              if (window._processedAlertKeys.has(key)) return;
+              window._processedAlertKeys.add(key);
 
-            setAlerts(prev => {
-              const next = [a, ...prev];
-              saveCache(ALERTS_CACHE_KEY, next);
-              return next;
-            });
+              setAlerts(prev => {
+                const next = [a, ...prev];
+                saveCache(ALERTS_CACHE_KEY, next);
+                return next;
+              });
+            }
           }
-        }
 
           if (msg.type === "block_tx") {
             const txHash = msg.raw?.txHash;
@@ -385,7 +368,7 @@ export function useWhaleAlerts() {
             }
             if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
             if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
-          } // ← closes the block_tx if block
+          }
 
           if (msg.type === "whale_fee_update" && msg.txHash && msg.txFee) {
             setAlerts(prev => prev.map(a =>
@@ -426,7 +409,7 @@ export function useWhaleAlerts() {
 
   return {
     alerts,
-    blockTxs, // capped at 5000 — for display only
+    blockTxs,
     blockTxTotal: totalBlockTxsSeen,
     sttTransfers,
     contractCalls,
@@ -435,17 +418,12 @@ export function useWhaleAlerts() {
     currentThreshold,
     whaleThresholdSTT,
     whalePercentile,
-    metrics, // pre-computed by analyticsEngine — no frontend math needed
-    shockData, // pre-computed shock scores per whale event
+    metrics,
+    shockData,
     connected,
     error,
   };
 }
-
-// ── Filter-aware metrics fetcher ──────────────────────────────────────────────
-// Call this from the dashboard whenever window/min/max/token/wallet filters
-// change. Returns filtered KPIs from the backend analyticsEngine.
-// This is separate from the SSE stream so it doesn't block real-time updates.
 
 export type MetricsFilter = {
   windowMs?: number;
@@ -473,21 +451,11 @@ export async function fetchFilteredMetrics(filter: MetricsFilter = {}): Promise<
   }
 }
 
-// ── Cache utilities ───────────────────────────────────────────────────────────
-
-/**
- * clearFrontendCache — wipes all cached whale/block_tx data from localStorage.
- * Call this when the user clicks "Clear Cache" in the dashboard, or when data
- * looks stale after a server restart. The SSE connection will immediately
- * reseed from the fresh server-side init payload.
- */
 export function clearFrontendCache(): void {
   if (typeof window === "undefined") return;
   try {
     localStorage.removeItem(ALERTS_CACHE_KEY);
     localStorage.removeItem(BLOCKTX_CACHE_KEY);
-    // Bump the stored version so loadCached() doesn't restore anything until
-    // the next saveCache() call (which sets the correct version again).
     localStorage.removeItem(CACHE_VERSION_KEY);
   } catch {}
 }
