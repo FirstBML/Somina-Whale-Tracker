@@ -1,17 +1,3 @@
-/**
- * analyticsEngine.ts — Backend analytics layer
- *
- * Maintains all metrics incrementally as events arrive.
- * Every query is O(1) or O(buckets) — never O(transactions).
- * Frontend becomes pure display: it renders pre-computed values, never filters arrays.
- *
- * FIX: Added getFilteredMetrics(filter) so KPIs/charts respond to
- *      window, min, max, token, and wallet filters correctly.
- *      Filtered queries run over the raw event log (kept in a bounded ring buffer)
- *      rather than the incremental counters, so unfiltered paths stay O(1).
- */
-
-// ── Types ─────────────────────────────────────────────────────────────────────
 
 export type LiveMetrics = {
   // Network

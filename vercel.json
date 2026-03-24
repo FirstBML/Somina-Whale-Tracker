@@ -1,0 +1,18 @@
+{
+  "buildCommand": "next build",
+  "devCommand": "next dev",
+  "installCommand": "npm install --ignore-scripts",
+  "framework": "nextjs",
+  "outputDirectory": ".next",
+  "functions": {
+    "src/app/api/**/*.ts": {
+      "maxDuration": 10
+    }
+  },
+  "env": {
+    "NEXT_PUBLIC_CONTRACT_ADDRESS": "0x38538663834868bFbE09219d56429E7aA7728404",
+    "HANDLER_CONTRACT_ADDRESS": "0xb751F08b47a8C438c5944d9ae21462DaEC935Ee2", 
+    "LEADERBOARD_SCHEMA_ID": "0xbe972be1cf847b83576d5bb0c7166be7dcc89da8671a78e0c592316010e9ae73",
+    "LEADERBOARD_PUBLISHER": "0xcbb9Ac18bB5C13F8f8cdC1bFABeADD6705Cf78c4"
+  }
+}

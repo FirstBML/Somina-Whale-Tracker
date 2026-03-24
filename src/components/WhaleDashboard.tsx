@@ -175,7 +175,7 @@ function Speedometer({value,t}:{value:number|null;t:typeof T.dark}){
 }
 
 function SpeedometerLarge({value,t}:{value:number|null;t:typeof T.dark}){
-  // CRITICAL FIX: Validate the rate
+  // CRITICAL  Validate the rate
   // A valid rate must be:
   // 1. Not null/undefined
   // 2. Between 0 and 100
@@ -1158,7 +1158,7 @@ useEffect(() => {
   // /api/whale-events. Each chunk gets its own module registry, so analyticsEngine's
   // rawEvents ring buffer (populated by whale-events) is EMPTY in the metrics module.
   // This caused all filtered KPIs to return zeros regardless of what data existed.
-  // The fix: compute filtered metrics directly from `alerts` and `blockTxs` which
+  // compute filtered metrics directly from `alerts` and `blockTxs` which
   // are already in the browser from the SSE stream — exactly what the tables do.
   // Result: instant KPI updates with zero API latency, same as the table filtering.
 
@@ -1221,7 +1221,7 @@ useEffect(() => {
 
   const avg = whaleSizes.length > 0 ? whaleSizes.reduce((s,v)=>s+v,0)/whaleSizes.length : 0;
 
-  // CRITICAL FIX: Whale Rate = whaleTx / sttTx (NOT totalTx)
+  // Whale Rate = whaleTx / sttTx 
   // If sttTx is 0, rate is 0 (cannot have whales without STT transfers)
   // For short windows (30m/1h), sttTx might be small, but that's correct
   const whaleTxRateRaw = sttTx > 0 ? (whaleTx / sttTx) * 100 : 0;
@@ -1281,7 +1281,7 @@ useEffect(() => {
   const windowedReactions = useMemo(()=>reactions.filter(a=>!windowCutoff||a.timestamp>=windowCutoff),[reactions,windowCutoff]);
 
   // KPIs — now come from metrics which is filter-aware
-  // FIX: TXN COUNT — use metrics.totalTx24h (filter-aware) rather than blockTxTotal
+  // TXN COUNT — use metrics.totalTx24h (filter-aware) rather than blockTxTotal
   // blockTxTotal is the raw SSE cumulative count and never changes with filters.
   // metrics.totalTx24h is computed from the ring buffer respecting the active window/filter.
   const displayTxnCount       = metrics.totalTx24h;
