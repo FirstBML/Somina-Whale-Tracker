@@ -88,8 +88,9 @@ function parseEntry(raw: any): WhaleAlert | null {
     const r = raw?.raw ?? raw;
     const type = (raw?.type ?? "whale") as AlertType;
 
+    // Log whale parsing
     if (type === "whale") {
-      console.log(`🔍 Parsing whale: txHash=${r.txHash?.slice(0,10)}, blockNumber=${r.blockNumber}`);
+      console.log(`🔍 Parsing whale: txHash=${r.txHash?.slice(0,10)}, blockNumber=${r.blockNumber}, hasTxHash=${!!r.txHash}`);
       if (!r.txHash) {
         console.warn(`⚠️ Whale rejected: no txHash`);
         return null;
@@ -166,7 +167,7 @@ const CACHE_TTL_MS      = 24 * 60 * 60_000;
 const CACHE_VERSION     = "v4";
 const CACHE_VERSION_KEY = "wt_cache_version";
 const isBrowser = typeof window !== "undefined";
-const MAX_BLOCKTX_STATE = 5_000;
+const MAX_BLOCKTX_STATE = 50_000;
 
 function loadCached<T>(key: string): T[] {
   if (!isBrowser) return [];
@@ -242,10 +243,12 @@ export function useWhaleAlerts() {
         esRef.current = null;
       }
 
+      console.log("🔌 Connecting to SSE: /api/whale-events");
       const es = new EventSource("/api/whale-events");
       esRef.current = es;
 
       es.onopen = () => {
+        console.log("✅ SSE Connection OPENED");
         setConnected(true);
         setError(null);
         retryCount.current = 0;
@@ -255,60 +258,71 @@ export function useWhaleAlerts() {
         if (e.data === ": ping") return;
         try {
           const msg = JSON.parse(e.data);
+          
+          // Log every message type
+          console.log(`📨 SSE message type: ${msg.type}`, msg.type === "init" ? { 
+            alertsCount: msg.alerts?.length,
+            sampleFirst: msg.alerts?.[0]
+          } : {});
 
           if (msg.type === "init") {
-            console.log("📡 INIT received:", {
-              totalAlerts: msg.alerts?.length,
-              whaleCount: msg.alerts?.filter((a: any) => a.type === "whale").length,
-              reactionCount: msg.alerts?.filter((a: any) => a.type === "reaction").length,
-              alertCount: msg.alerts?.filter((a: any) => a.type === "alert").length,
-              momentumCount: msg.alerts?.filter((a: any) => a.type === "momentum").length,
-              dbLatestBlock: msg.dbLatestBlock,
-              metrics: msg.metrics
-            });
+            console.log("📡 INIT received - raw alerts length:", msg.alerts?.length);
             
-            if (msg.alerts?.length > 0) {
-              console.log("📊 Sample alerts (first 3):", msg.alerts.slice(0, 3));
+            // Remove the dbLatestBlock check - always process init
+            const allAlerts = msg.alerts || [];
+
+            // Parse all non-block_tx alerts
+            const rawParsed: WhaleAlert[] = [];
+            for (const alert of allAlerts) {
+              if (alert.type !== "block_tx") {
+                const parsed = parseEntry(alert);
+                if (parsed) {
+                  rawParsed.push(parsed);
+                }
+              }
             }
             
+            console.log(`📊 rawParsed count: ${rawParsed.length}`);
+
+            // Dedup
+            const seen = new Set<string>();
+            const parsedAlerts = rawParsed.filter(a => {
+              const key = getAlertDedupKey(a);
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            });
+
+            const parsedBlockTxs = allAlerts
+              .filter((a: any) => a.type === "block_tx")
+              .map(parseBlockTx).filter(Boolean) as BlockTx[];
+
+            console.log("📊 Frontend alerts after init:", {
+              total: parsedAlerts.length,
+              whales: parsedAlerts.filter(a => a.type === "whale").length,
+              reactions: parsedAlerts.filter(a => a.type === "reaction").length,
+              alerts: parsedAlerts.filter(a => a.type === "alert").length,
+              momentum: parsedAlerts.filter(a => a.type === "momentum").length
+            });
+
+            // Update state
+            setAlerts(parsedAlerts);
+            setBlockTxs(parsedBlockTxs.slice(0, MAX_BLOCKTX_STATE));
+            saveCache(ALERTS_CACHE_KEY, parsedAlerts);
+            saveCache(BLOCKTX_CACHE_KEY, parsedBlockTxs.slice(0, 500));
+
+            if (!window._processedTxHashes) window._processedTxHashes = new Set();
+            if (!window._processedAlertKeys) window._processedAlertKeys = new Set();
+
+            parsedBlockTxs.forEach(tx => { if (tx.txHash) window._processedTxHashes!.add(tx.txHash); });
+            parsedAlerts.forEach(a => { window._processedAlertKeys!.add(getAlertDedupKey(a)); });
+
+            // Update the lastKnownBlock for future reference
             if (msg.dbLatestBlock > lastKnownBlock) {
               lastKnownBlock = msg.dbLatestBlock;
-              const allAlerts = msg.alerts || [];
-
-              const rawParsed = allAlerts
-                .filter((a: any) => a.type !== "block_tx")
-                .map(parseEntry).filter(Boolean) as WhaleAlert[];
-
-              const seen = new Set<string>();
-              const parsedAlerts = rawParsed.filter(a => {
-                const key = getAlertDedupKey(a);
-                if (seen.has(key)) return false;
-                seen.add(key);
-                return true;
-              });
-
-              const parsedBlockTxs = allAlerts
-                .filter((a: any) => a.type === "block_tx")
-                .map(parseBlockTx).filter(Boolean) as BlockTx[];
-
-              console.log("📊 Frontend alerts after init:", {
-                total: parsedAlerts.length,
-                whales: parsedAlerts.filter(a => a.type === "whale").length,
-                reactions: parsedAlerts.filter(a => a.type === "reaction").length
-              });
-
-              setAlerts(parsedAlerts);
-              setBlockTxs(parsedBlockTxs.slice(0, MAX_BLOCKTX_STATE));
-              saveCache(ALERTS_CACHE_KEY, parsedAlerts);
-              saveCache(BLOCKTX_CACHE_KEY, parsedBlockTxs.slice(0, 500));
-
-              if (!window._processedTxHashes) window._processedTxHashes = new Set();
-              if (!window._processedAlertKeys) window._processedAlertKeys = new Set();
-
-              parsedBlockTxs.forEach(tx => { if (tx.txHash) window._processedTxHashes!.add(tx.txHash); });
-              parsedAlerts.forEach(a => { window._processedAlertKeys!.add(getAlertDedupKey(a)); });
             }
 
+            // Rest of init handler...
             if (msg.totalBlockTxsSeen) setTotalBlockTxsSeen(msg.totalBlockTxsSeen);
             if (msg.networkLargestSTT) setNetworkLargestSTT(msg.networkLargestSTT);
             if (msg.whaleThresholdSTT) setWhaleThresholdSTT(msg.whaleThresholdSTT);
@@ -384,7 +398,8 @@ export function useWhaleAlerts() {
         }
       };
 
-      es.onerror = () => {
+      es.onerror = (err) => {
+        console.error("❌ SSE Connection ERROR:", err);
         setConnected(false);
         es.close();
         esRef.current = null;

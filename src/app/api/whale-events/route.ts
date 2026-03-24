@@ -1355,6 +1355,8 @@ export async function GET(req: NextRequest) {
         } catch { return 0; }
       })();
 
+      console.log(`📡 SSE connection: sending ${whaleAlerts.length} whale events + ${blockTxAlerts.length} block_txs`);
+
       controller.enqueue(encoder.encode(`data: ${JSON.stringify({
         type: "init",
         alerts: [...whaleAlerts, ...blockTxAlerts],
