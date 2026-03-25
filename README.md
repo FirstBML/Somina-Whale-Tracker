@@ -1,13 +1,11 @@
 ---
-
-```md
 # 🐋 Somnia Whale Intelligence System
 
-Real-time, event-driven whale analytics powered by **Somnia Reactivity**.
+Real-time, event-driven whale analytics powered by Somnia Reactivity.
 
 This project detects large on-chain transfers at block time, derives higher-order signals (momentum, alerts, reactions), and streams them to a live dashboard with **sub-second latency** — without relying on indexers or polling.
 
-It demonstrates how Somnia’s Reactivity layer enables **low-latency, event-driven analytics pipelines directly on blockchain data**.
+It demonstrates how Somnia’s Reactivity layer enables low-latency, event-driven analytics pipelines directly on blockchain data.
 
 ---
 
@@ -26,8 +24,6 @@ This introduces latency and complexity.
 - Smart contracts react instantly to on-chain events
 - No polling or indexing required
 - Signals are derived **at event time**, not after
-
-👉 This project shows how to build a **real-time intelligence layer on top of raw blockchain activity**
 
 ---
 
@@ -152,7 +148,7 @@ Frontend-heavy analytics causes:
 | Charts | Recharts |
 | Blockchain | Viem, Wagmi, RainbowKit |
 | Somnia | @somnia-chain/reactivity, @somnia-chain/streams |
-| Backend | Next.js API |
+| Backend | Next.js API | solidity
 | Database | SQLite (better-sqlite3) |
 | Real-time | Server-Sent Events |
 
@@ -166,7 +162,7 @@ Frontend-heavy analytics causes:
 - Git
 
 ```bash
-git clone https://github.com/your-username/somnia-whale-tracker.git
+git clone https://github.com/FirstBML/Somina-Whale-Tracker.git
 cd somnia-whale-tracker
 npm install
 ````
@@ -271,7 +267,7 @@ scripts/
 
 ---
 
-## 🧪 Submission Notes
+## 🧪 Notes
 
 ### ✅ Completed
 
@@ -296,7 +292,9 @@ scripts/
 * Move analytics fully backend
 * Use scalable DB
 * Multi-token support
-
+* Wallet Connect implementation
+* Add pass to access admin related functions
+* Deploy to cloud
 ---
 
 ## 🙌 Acknowledgments
@@ -310,4 +308,3 @@ DIA
 Built with 💙 on Somnia Testnet
 
 ```
-
