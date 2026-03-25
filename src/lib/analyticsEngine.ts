@@ -257,20 +257,6 @@ export function getWindowMetrics(windowMs: number): WindowMetrics {
   };
 }
 
-/**
- * FIX: getFilteredMetrics — computes KPIs for any combination of filters.
- *
- * All KPI cards (Whale Volume, Largest Whale, Whale Fees, STT TXN, TXN COUNT,
- * Whale Rate) and charts should call this when any filter is active.
- * Falls back to getMetrics() when no filter is set (O(1) path).
- *
- * Filters:
- *   windowMs — time window in ms (default 24h)
- *   minStt   — minimum whale size in STT
- *   maxStt   — maximum whale size in STT
- *   token    — token symbol (case-insensitive)
- *   wallet   — wallet address (from or to, case-insensitive)
- */
 export function getFilteredMetrics(filter: MetricsFilter = {}): LiveMetrics {
   const {
     windowMs = WINDOW_24H,

@@ -288,7 +288,7 @@ function markSDKSeen(key: string): boolean {
   return true;
 }
 
-// ── FIX 2 (Backend): Dedup set for derived signals (reactions/alerts/momentum) ──
+// ──  Dedup set for derived signals (reactions/alerts/momentum) ──
 // Previously, push() would broadcast every reaction/alert/momentum even if an
 // identical one had already been sent. This set prevents that.
 const seenSignalKeys = new Set<string>();
@@ -307,7 +307,7 @@ function markSignalSeen(key: string): boolean {
 
 function getSignalKey(entry: CacheEntry): string {
   if (entry.type === "reaction") {
-    // ── FIX: Key on linkedTxHash only — one reaction per whale ──────────────
+    // ── Key on linkedTxHash only — one reaction per whale ──────────────
     // The Reactivity precompile delivers 3 separate ReactedToWhaleTransfer
     // events per whale (each with an incrementing `count`). Using reactionCount
     // in the key meant all three passed dedup since each count is unique.
@@ -437,7 +437,7 @@ function push(entry: CacheEntry) {
     // in ensureSubscriptions(). The injectSimulatedWhale path calls markBlockSeen
     // before push(), so simulated whales are also safe.
     //
-    // ── FIX 2: Dedup reactions/alerts/momentum BEFORE adding to cache ────────
+    // ──  Dedup reactions/alerts/momentum BEFORE adding to cache ────────
     // Without this, the same reaction is broadcast every time the block watcher
     // fires or the backfill re-processes the same block. The INSERT OR IGNORE
     // in SQLite stops DB duplicates but the in-memory broadcast happened before
@@ -563,7 +563,7 @@ LIMIT 5000
   })) as CacheEntry[];
 }
 
-// ── FIX 1 (Backend): seedWhaleEventsFromDb seeds ALL event types (including reactions) ──
+// ── seedWhaleEventsFromDb seeds ALL event types (including reactions) ──
 // The original code only deduped by txHash, which caused reaction/alert/momentum entries
 // (which have no txHash) to be skipped. Now uses a composite key that works for all types.
 function seedWhaleEventsFromDb() {

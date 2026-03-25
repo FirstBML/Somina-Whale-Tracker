@@ -92,7 +92,7 @@ export async function POST(_req: NextRequest) {
     if (lastErr) throw lastErr;
     if (!hash) throw new Error("Transaction hash not obtained after retries");
 
-    // ── FIX: Inject the simulated whale directly into the SSE feed ─────────────
+    // ── Inject the simulated whale directly into the SSE feed ─────────────
     // The block watcher cannot detect this transaction because simulate-whale sends
     // a contract CALL with no native STT value (tx.value = 0). Without this injection,
     // the simulated whale never appears in the frontend whale feed.

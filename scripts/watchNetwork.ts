@@ -38,7 +38,7 @@ const MAX_QUEUE    = 50;
 const LOG_INTERVAL = 60_000;
 const MAX_BACKFILL = 90_000n;
 
-// ── FIX 1: Checkpoint granularity inside backfillGap ─────────────────────────
+// ──  Checkpoint granularity inside backfillGap ─────────────────────────
 // Save progress every CHECKPOINT_EVERY blocks during backfill so a crash/stop
 // never loses more than that many blocks. Previously saveLastBlock() was only
 // called after the entire backfill finished — which never happened because nonce
@@ -254,7 +254,7 @@ async function backfillGap(
   const BATCH = 50n;
   let cursor = startBlock;
   let found = 0;
-  let blocksSinceCheckpoint = 0n; // ← FIX 1 counter
+  let blocksSinceCheckpoint = 0n;
 
   while (cursor < toBlock) {
     const end = cursor + BATCH < toBlock ? cursor + BATCH : toBlock;
@@ -266,7 +266,7 @@ async function backfillGap(
       blockNums.map(n => pub.getBlock({ blockNumber: n, includeTransactions: true }))
     );
 
-    // ── FIX 2: Collect ALL whale txns from this batch into the queue first ──
+    // ── Collect ALL whale txns from this batch into the queue first ──
     // The original code called processBlock() for each block result, and
     // processBlock() called processQueue() at its end — meaning up to 50
     // concurrent processQueue() calls raced past the `reporting = false` guard
@@ -300,11 +300,11 @@ async function backfillGap(
       }
     }
 
-    // ── FIX 2: Single awaited processQueue call per batch ────────────────────
+    // ──  Single awaited processQueue call per batch ────────────────────
     // Runs serially to completion — all nonces sequential, no collisions.
     await processQueue(CONTRACT, pub, wal, address);
 
-    // ── FIX 1: Checkpoint inside the backfill loop ────────────────────────────
+    // ──  Checkpoint inside the backfill loop ────────────────────────────
     // Update lastBlock and save to disk every CHECKPOINT_EVERY blocks so a crash
     // or Ctrl+C resumes from here rather than restarting the full 90k gap.
     lastBlock = cursor;
