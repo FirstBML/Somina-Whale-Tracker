@@ -7,6 +7,8 @@ export type LiveMetrics = {
   whaleTx24h: number;
   whaleVolumeStt: number;
   avgWhaleSizeStt: number;
+  medianWhaleSizeStt: number; 
+  whaleVelocity:      number;
   largestWhaleStt: number;
   whaleFees: number;
   whaleFeeEstimated: boolean;
@@ -218,30 +220,49 @@ export function getMetrics(): LiveMetrics {
     ? whaleSizesStt.reduce((s, v) => s + v, 0) / whaleSizesStt.length
     : 0;
 
-  // ── Whale rate — % of STT value transfers that are whale-sized ──────────
-  // Denominator is sttTx24h (block_tx entries with amount > 0) as requested.
-  // Semantic: "of all transfers that moved STT value, what fraction were whale-sized?"
-  // This aligns with the STT TXN KPI shown in the sidebar.
+  // Median — more representative than mean for skewed distributions
+  const medianStt = (() => {
+    if (whaleSizesStt.length === 0) return 0;
+    const sorted = [...whaleSizesStt].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+  })();
+
+  // Whale Rate denominator = _sttTx24h (txns that moved STT value)
+  // Previously used _totalTx24h which included zero-value contract calls,
+  // making rate meaningless. sttTx = txns with amount > 0 is correct denominator.
+  // "Of all STT value transfers, what % were whale-sized?"
   const whaleTxRateRaw = _sttTx24h > 0 ? (_whaleTx24h / _sttTx24h) * 100 : 0;
-  const whaleTxRate    = Math.min(100, whaleTxRateRaw);
+  // Scale *20 for speedometer: 5% real rate → full gauge
+  const rate = Math.min(100, whaleTxRateRaw);
+
+  // Whale velocity: whales per minute over last 5 minutes
+  const now5m = Date.now() - 5 * 60_000;
+  let whalesLast5m = 0;
+  for (const [ts, count] of whaleTxBuckets) {
+    if (ts >= now5m) whalesLast5m += count;
+  }
+  const whaleVelocity = parseFloat((whalesLast5m / 5).toFixed(2));
 
   return {
-    totalTx24h:      _totalTx24h,
-    sttTx24h:        _sttTx24h,
-    whaleTx24h:      _whaleTx24h,
-    whaleVolumeStt:  _whaleVolStt,
-    avgWhaleSizeStt: avg,
-    largestWhaleStt: _largestStt,
-    whaleFees:       _whaleFees,
-    whaleFeeEstimated: _whaleFeeEst,
-    alerts24h:       _alerts24h,
-    momentum24h:     _momentum24h,
-    reactions24h:    _reactions24h,
-    whaleTxRate,
-    whaleTxRateRaw,
-    whaleThresholdStt: _whaleThresholdStt,
-    whalePercentile:   _whalePercentile,
-    updatedAt: Date.now(),
+    totalTx24h:         _totalTx24h,
+    sttTx24h:           _sttTx24h,
+    whaleTx24h:         _whaleTx24h,
+    whaleVolumeStt:     _whaleVolStt,
+    avgWhaleSizeStt:    avg,
+    medianWhaleSizeStt: medianStt,
+    largestWhaleStt:    _largestStt,
+    whaleVelocity,
+    whaleFees:          _whaleFees,
+    whaleFeeEstimated:  _whaleFeeEst,
+    alerts24h:          _alerts24h,
+    momentum24h:        _momentum24h,
+    reactions24h:       _reactions24h,
+    whaleTxRate:        rate,
+    whaleTxRateRaw:     whaleTxRateRaw,
+    whaleThresholdStt:  _whaleThresholdStt,
+    whalePercentile:    _whalePercentile,
+    updatedAt:          Date.now(),
   };
 }
 
@@ -266,7 +287,6 @@ export function getFilteredMetrics(filter: MetricsFilter = {}): LiveMetrics {
     wallet,
   } = filter;
 
-  // If no active filter, return cached O(1) result
   const hasFilter = minStt != null || maxStt != null || token || wallet || windowMs !== WINDOW_24H;
   if (!hasFilter) return getMetrics();
 
@@ -284,36 +304,48 @@ export function getFilteredMetrics(filter: MetricsFilter = {}): LiveMetrics {
   let alerts     = 0;
   let momentum   = 0;
   let reactions  = 0;
+
   const whaleSizes: number[] = [];
+  const whaleBuckets: Map<number, number> = new Map();
 
   for (const e of rawEvents) {
     if (e.receivedAt < cutoff) continue;
 
-    // Wallet filter: skip if neither from nor to matches
     if (walletLower) {
       if (e.fromAddr !== walletLower && e.toAddr !== walletLower) continue;
     }
 
-    // Token filter (primarily for non-STT future support)
     if (tokenLower && e.token.toLowerCase() !== tokenLower) continue;
+
+    const bucket = Math.floor(e.receivedAt / BUCKET_MS) * BUCKET_MS;
 
     if (e.type === "block_tx") {
       totalTx++;
-      if (e.amountStt > 0) sttTx++;
+
+     if (e.amountStt >= 0.0001) {
+        sttTx++;
+      }
 
     } else if (e.type === "whale") {
       const stt = e.amountStt;
+
       if (minStt != null && stt < minStt) continue;
       if (maxStt != null && stt > maxStt) continue;
 
       whaleTx++;
       whaleVol += stt;
+
       if (stt > largestStt) largestStt = stt;
+
       if (e.txFee > 0) {
         whaleFees += e.txFee;
         if (e.feeEstimated) feeEst = true;
       }
+
       whaleSizes.push(stt);
+
+      // track for velocity
+      whaleBuckets.set(bucket, (whaleBuckets.get(bucket) ?? 0) + 1);
 
     } else if (e.type === "alert")    { alerts++; }
     else if (e.type === "momentum")   { momentum++; }
@@ -324,7 +356,27 @@ export function getFilteredMetrics(filter: MetricsFilter = {}): LiveMetrics {
     ? whaleSizes.reduce((s, v) => s + v, 0) / whaleSizes.length
     : 0;
 
+  const medianStt = (() => {
+    if (whaleSizes.length === 0) return 0;
+    const sorted = [...whaleSizes].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 0
+      ? (sorted[mid - 1] + sorted[mid]) / 2
+      : sorted[mid];
+  })();
+
   const whaleTxRateRaw = sttTx > 0 ? (whaleTx / sttTx) * 100 : 0;
+
+  const whaleTxRate = Math.min(100, whaleTxRateRaw);
+
+  const now5m = Date.now() - 5 * 60_000;
+  let whalesLast5m = 0;
+
+  for (const [ts, count] of whaleBuckets) {
+    if (ts >= now5m) whalesLast5m += count;
+  }
+
+  const whaleVelocity = parseFloat((whalesLast5m / 5).toFixed(2));
 
   return {
     totalTx24h:        totalTx,
@@ -332,20 +384,21 @@ export function getFilteredMetrics(filter: MetricsFilter = {}): LiveMetrics {
     whaleTx24h:        whaleTx,
     whaleVolumeStt:    whaleVol,
     avgWhaleSizeStt:   avg,
+    medianWhaleSizeStt: medianStt,   
+    whaleVelocity,                   
     largestWhaleStt:   largestStt,
     whaleFees,
     whaleFeeEstimated: feeEst,
     alerts24h:         alerts,
     momentum24h:       momentum,
     reactions24h:      reactions,
-    whaleTxRate:       Math.min(100, whaleTxRateRaw),
+    whaleTxRate,
     whaleTxRateRaw,
     whaleThresholdStt: _whaleThresholdStt,
     whalePercentile:   _whalePercentile,
     updatedAt: Date.now(),
   };
 }
-
 export function getShockData(): ShockDataPoint[] {
   return completedShock.slice(-20);
 }

@@ -49,7 +49,9 @@ export type LiveMetrics = {
   whaleTx24h: number;
   whaleVolumeStt: number;
   avgWhaleSizeStt: number;
+  medianWhaleSizeStt: number;
   largestWhaleStt: number;
+  whaleVelocity:      number;
   whaleFees: number;
   whaleFeeEstimated: boolean;
   alerts24h: number;
@@ -76,8 +78,8 @@ export type ShockDataPoint = {
 
 const DEFAULT_METRICS: LiveMetrics = {
   totalTx24h: 0, sttTx24h: 0, whaleTx24h: 0,
-  whaleVolumeStt: 0, avgWhaleSizeStt: 0,
-  largestWhaleStt: 0, whaleFees: 0, whaleFeeEstimated: false,
+  whaleVolumeStt: 0, avgWhaleSizeStt: 0, medianWhaleSizeStt: 0,
+  largestWhaleStt: 0, whaleVelocity: 0, whaleFees: 0, whaleFeeEstimated: false,
   alerts24h: 0, momentum24h: 0, reactions24h: 0,
   whaleTxRate: 0, whaleThresholdStt: 0.5, whalePercentile: 90,
   updatedAt: 0,
@@ -166,7 +168,7 @@ const CACHE_TTL_MS      = 24 * 60 * 60_000;
 const CACHE_VERSION     = "v4";
 const CACHE_VERSION_KEY = "wt_cache_version";
 const isBrowser = typeof window !== "undefined";
-const MAX_BLOCKTX_STATE = 5_000;
+const MAX_BLOCKTX_STATE = 50_000;
 
 function loadCached<T>(key: string): T[] {
   if (!isBrowser) return [];

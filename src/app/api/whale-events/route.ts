@@ -883,13 +883,29 @@ async function loadRecentBlockTxs() {
 
     // Broadcast updated init to all connected clients so they get the full backfilled dataset
     broadcastFullInit();
+    
+    // Also broadcast metrics update after backfill
+    if (controllers.size > 0) {
+      const updatedMetrics = analyticsGetMetrics();
+      const updatedShock = analyticsGetShock();
+      
+      const updateMsg = {
+        type: "metrics_update",
+        metrics: updatedMetrics,
+        shock: updatedShock,
+      };
+      
+      const msg = encoder.encode(`data: ${JSON.stringify(updateMsg)}\n\n`);
+      controllers.forEach(c => { try { c.enqueue(msg); } catch {} });
+      
+      console.log(`📢 Broadcast backfill update: metrics and shock data to ${controllers.size} clients`);
+    }
   } catch (e: any) {
     console.warn("⚠ Block_tx backfill failed (non-critical):", e.message?.split("\n")[0]);
   } finally {
     backfillRunning = false;
   }
 }
-
 async function getEthUsdPrice(pub: ReturnType<typeof createPublicClient>): Promise<number> {
   try {
     const [roundData, decimals] = await Promise.all([
@@ -1080,10 +1096,9 @@ async function ensureSubscriptions() {
   promoteBlockTxToWhaleEvents();
   
   // ========== STEP 3: Seed ALL event types from DB (whales, reactions, alerts, momentum) ==========
-  seedWhaleEventsFromDb(); // ✅ Now seeds ALL types: whale + reaction + alert + momentum
+  seedWhaleEventsFromDb();
   
   // ========== STEP 4: CRITICAL - Broadcast init AFTER all data is loaded ==========
-  // This ensures frontend that connected during loading receives all historical data
   broadcastFullInit();
   
   nonBlockTxCount = alertCache.filter(e => e.type !== "block_tx").length;

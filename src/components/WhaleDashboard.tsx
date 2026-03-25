@@ -2,7 +2,7 @@
 import { useState, useMemo, useRef, useEffect } from "react";
 import { useAccount } from "wagmi";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { useWhaleAlerts, WhaleAlert, BlockTx, LiveMetrics, clearFrontendCache } from "../lib/useWhaleAlerts";
+import { useWhaleAlerts, WhaleAlert, BlockTx, LiveMetrics, clearFrontendCache, fetchFilteredMetrics } from "../lib/useWhaleAlerts";
 import { useOraclePrices, formatUsd, OraclePrice } from "../lib/useOraclePrices";
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell, RadialBarChart, RadialBar, PolarAngleAxis } from "recharts";
 
@@ -12,13 +12,13 @@ const T = {
 };
 
 const TOKEN_COLORS: Record<string,string> = {STT:"#06b6d4",USDC:"#2775CA",WETH:"#627EEA",WBTC:"#F7931A",USDT:"#26A17B",LINK:"#2A5ADA",UNI:"#FF007A",AAVE:"#B6509E"};
-const ALL_TOKENS_FALLBACK = ["All","STT","USDC","WETH","WBTC","USDT","LINK","UNI","AAVE"];
 
 const TIME_PRESETS = [
-  {label:"30m", ms:30*60_000},
-  {label:"1h",  ms:60*60_000},
   {label:"24h", ms:24*60*60_000},
 ];
+
+const ALL_TOKENS_FALLBACK = ["All","STT","USDC","WETH","WBTC","USDT","LINK","UNI","AAVE"];
+
 const MAX_CUSTOM_RANGE_MS = 24*60*60_000;
 
 const short     = (a:string) => a ? `${a.slice(0,6)}…${a.slice(-4)}` : "—";
@@ -108,240 +108,156 @@ function Td({children,t,bold,accent,color}:{children:React.ReactNode;t:typeof T.
 function ExLink({href,label,t}:{href:string;label:string;t:typeof T.dark}){if(!href)return<span style={{color:t.muted,fontFamily:"monospace",fontSize:11}}>—</span>;return(<a href={href} target="_blank" rel="noreferrer" style={{color:t.subtext,textDecoration:"none",fontFamily:"monospace",fontSize:11,display:"inline-flex",alignItems:"center",gap:3}} onMouseEnter={e=>(e.currentTarget.style.color=t.accent)} onMouseLeave={e=>(e.currentTarget.style.color=t.subtext)}>{label}<span style={{fontSize:9,opacity:0.6}}>↗</span></a>);}
 function KpiCard({label,value,sub,color,t}:{label:string;value:string|number;sub?:string;color?:string;t:typeof T.dark}){return(<div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:10,padding:"12px 16px"}}><p style={{color:t.subtext,fontSize:10,textTransform:"uppercase",letterSpacing:"0.12em",fontFamily:"monospace",margin:"0 0 4px"}}>{label}</p><p style={{color:color??t.statVal,fontSize:18,fontWeight:700,fontFamily:"monospace",margin:0}}>{value}</p>{sub&&<p style={{color:t.muted,fontSize:10,margin:"2px 0 0",fontFamily:"monospace"}}>{sub}</p>}</div>);}
 
-function Speedometer({value,t}:{value:number|null;t:typeof T.dark}){
-  const pct = Math.min(100, (value??0) * 10);
-  const color = pct>=50?"#ef4444":pct>=20?"#f97316":pct>=5?"#f59e0b":"#4ade80";
-  const label = pct>=50?"HIGH":pct>=20?"ELEVATED":pct>=5?"MODERATE":"LOW";
-  const displayVal = value!=null ? `${value.toFixed(2)}%` : "—";
-  const cx=80, cy=75, r=55;
-  const startDeg=200, endDeg=-20, sweep=220;
-  const toRad=(d:number)=>(d*Math.PI)/180;
-  const arcPath=(inner:number,outer:number,pctFill:number)=>{
-    const angle = startDeg - (sweep*(pctFill/100));
-    const x1s=cx+outer*Math.cos(toRad(startDeg)), y1s=cy-outer*Math.sin(toRad(startDeg));
-    const x1e=cx+outer*Math.cos(toRad(angle)),    y1e=cy-outer*Math.sin(toRad(angle));
-    const x2s=cx+inner*Math.cos(toRad(angle)),    y2s=cy-inner*Math.sin(toRad(angle));
-    const x2e=cx+inner*Math.cos(toRad(startDeg)), y2e=cy-inner*Math.sin(toRad(startDeg));
-    const large = pctFill>50?1:0;
+// ── Whale Pressure Gauge 
+function WhalePressureGauge({pressure, t}: {pressure: number | null; t: typeof T.dark}) {
+  // Validate pressure value
+  const isValid = pressure !== null && pressure !== undefined && !isNaN(pressure);
+  const displayPressure = isValid ? pressure : 0;
+  
+  // Determine color based on pressure
+  const getColor = (p: number) => {
+    if (p >= 0.5) return "#4ade80";      // Strong accumulation - bright green
+    if (p >= 0.2) return "#86efac";      // Moderate accumulation - light green
+    if (p >= 0.05) return "#bef264";     // Light accumulation - lime
+    if (p <= -0.5) return "#ef4444";     // Strong distribution - red
+    if (p <= -0.2) return "#f87171";     // Moderate distribution - light red
+    if (p <= -0.05) return "#facc15";    // Light distribution - yellow
+    return "#6b7280";                     // Neutral - gray
+  };
+  
+  // Get label based on pressure
+  const getLabel = (p: number) => {
+    if (p >= 0.5) return "STRONG ACCUMULATION";
+    if (p >= 0.2) return "MODERATE ACCUMULATION";
+    if (p >= 0.05) return "LIGHT ACCUMULATION";
+    if (p <= -0.5) return "STRONG DISTRIBUTION";
+    if (p <= -0.2) return "MODERATE DISTRIBUTION";
+    if (p <= -0.05) return "LIGHT DISTRIBUTION";
+    return "BALANCED";
+  };
+  
+  const color = getColor(displayPressure);
+  const label = getLabel(displayPressure);
+  const displayVal = isValid ? `${displayPressure >= 0 ? "+" : ""}${displayPressure.toFixed(4)}` : "—";
+  
+  // Gauge configuration
+  const cx = 130, cy = 100;
+  const startDeg = 210, sweep = 240;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const pt = (radius: number, deg: number) => [cx + radius * Math.cos(toRad(deg)), cy - radius * Math.sin(toRad(deg))];
+  
+  // Map pressure from [-1, 1] to [0, 100] for needle position
+  const mappedPct = Math.min(100, Math.max(0, ((displayPressure + 1) / 2) * 100));
+  
+  const arcPath = (inner: number, outer: number, fill: number) => {
+    const endDeg = startDeg - (sweep * (fill / 100));
+    const [x1s, y1s] = pt(outer, startDeg);
+    const [x1e, y1e] = pt(outer, endDeg);
+    const [x2s, y2s] = pt(inner, endDeg);
+    const [x2e, y2e] = pt(inner, startDeg);
+    const large = fill > 50 ? 1 : 0;
     return `M${x1s},${y1s} A${outer},${outer} 0 ${large},0 ${x1e},${y1e} L${x2s},${y2s} A${inner},${inner} 0 ${large},1 ${x2e},${y2e} Z`;
   };
-  const bgPath=arcPath(43,55,100);
-  const fillPath=arcPath(43,55,pct);
-  const needleAngle = startDeg - (sweep*(pct/100));
-  const nx=cx+38*Math.cos(toRad(needleAngle)), ny=cy-38*Math.sin(toRad(needleAngle));
-  const ticks=[0,25,50,75,100].map(p=>{
-    const a=startDeg-(sweep*(p/100));
-    const ox=cx+58*Math.cos(toRad(a)), oy=cy-58*Math.sin(toRad(a));
-    const ix=cx+50*Math.cos(toRad(a)), iy=cy-50*Math.sin(toRad(a));
-    return {ox,oy,ix,iy,major:p%50===0};
-  });
-  return(
-    <div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:10,padding:"8px 14px",display:"flex",alignItems:"center",gap:10,minWidth:0}}>
-      <div style={{flexShrink:0}}>
-        <svg width={160} height={90} viewBox="0 0 160 90">
-          <defs>
-            <linearGradient id="gaugeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor="#4ade80"/>
-              <stop offset="40%" stopColor="#f59e0b"/>
-              <stop offset="70%" stopColor="#f97316"/>
-              <stop offset="100%" stopColor="#ef4444"/>
-            </linearGradient>
-            <filter id="glow">
-              <feGaussianBlur stdDeviation="2" result="blur"/>
-              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-            </filter>
-          </defs>
-          <path d={bgPath} fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.06)" strokeWidth="0.5"/>
-          {pct>0&&<path d={fillPath} fill="url(#gaugeGrad)" opacity="0.9" filter="url(#glow)"/>}
-          {ticks.map((tk,i)=>(
-            <line key={i} x1={tk.ox} y1={tk.oy} x2={tk.ix} y2={tk.iy}
-              stroke={tk.major?"rgba(255,255,255,0.4)":"rgba(255,255,255,0.15)"} strokeWidth={tk.major?1.5:1}/>
-          ))}
-          <line x1={cx} y1={cy} x2={nx} y2={ny} stroke={color} strokeWidth="2" strokeLinecap="round" filter="url(#glow)"/>
-          <circle cx={cx} cy={cy} r={4} fill={color} filter="url(#glow)"/>
-          <circle cx={cx} cy={cy} r={2} fill="#050d1a"/>
-          <text x={cx} y={cy+18} textAnchor="middle" fill={color} fontSize="13" fontWeight="700" fontFamily="monospace">{displayVal}</text>
-          <text x={cx-50} y={cy+4} textAnchor="middle" fill="rgba(103,184,204,0.5)" fontSize="7" fontFamily="monospace">0%</text>
-          <text x={cx+50} y={cy+4} textAnchor="middle" fill="rgba(103,184,204,0.5)" fontSize="7" fontFamily="monospace">10%</text>
-        </svg>
-      </div>
-      <div style={{minWidth:0}}>
-        <p style={{color:t.subtext,fontSize:9,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",margin:"0 0 3px",whiteSpace:"nowrap"}}>🦈 Whale Tx Rate</p>
-        <p style={{color,fontSize:13,fontWeight:700,fontFamily:"monospace",margin:"0 0 2px"}}>{label}</p>
-        <p style={{color:t.muted,fontSize:8,fontFamily:"monospace",margin:0,whiteSpace:"nowrap"}}>of all network txns</p>
-      </div>
-    </div>
-  );
-}
-
-function SpeedometerLarge({value,t}:{value:number|null;t:typeof T.dark}){
-  // CRITICAL  Validate the rate
-  // A valid rate must be:
-  // 1. Not null/undefined
-  // 2. Between 0 and 100
-  // 3. Not NaN
-  const isValidRate = value !== null && value !== undefined && !isNaN(value) && value >= 0 && value <= 100;
   
-  // If invalid, display 0% but show warning
-  const displayValue = isValidRate ? value : 0;
-  const showWarning = value !== null && !isValidRate;
-  
-  const pct = Math.min(100, Math.max(0, displayValue ?? 0));
-  const color = pct>=80?"#ef4444":pct>=50?"#f97316":pct>=20?"#f59e0b":"#4ade80";
-  const label = pct>=80?"HIGH":pct>=50?"ELEVATED":pct>=20?"MODERATE":"LOW";
-  const displayVal = isValidRate ? `${(value ?? 0).toFixed(2)}%` : "—";
-  
-  const cx=130,cy=100,r=88;
-  const startDeg=210,sweep=240;
-  const toRad=(d:number)=>(d*Math.PI)/180;
-  const pt=(radius:number,deg:number)=>[cx+radius*Math.cos(toRad(deg)),cy-radius*Math.sin(toRad(deg))];
-  const arcPath=(inner:number,outer:number,fill:number)=>{
-    const endDeg=startDeg-(sweep*(fill/100));
-    const [x1s,y1s]=pt(outer,startDeg);
-    const [x1e,y1e]=pt(outer,endDeg);
-    const [x2s,y2s]=pt(inner,endDeg);
-    const [x2e,y2e]=pt(inner,startDeg);
-    const large=fill>50?1:0;
-    return `M${x1s},${y1s} A${outer},${outer} 0 ${large},0 ${x1e},${y1e} L${x2s},${y2s} A${inner},${inner} 0 ${large},1 ${x2e},${y2e} Z`;
-  };
-  const bands=[
-    {from:0, to:30,  color:"#4ade80"},
-    {from:30,to:55,  color:"#facc15"},
-    {from:55,to:75,  color:"#f97316"},
-    {from:75,to:100, color:"#ef4444"},
+  // Colored bands for pressure range
+  const bands = [
+    { from: 0, to: 20, label: "DISTRIBUTION", color: "#ef4444" },      // -1 to -0.6
+    { from: 20, to: 40, label: "DISTRIBUTION", color: "#f87171" },     // -0.6 to -0.2
+    { from: 40, to: 60, label: "NEUTRAL", color: "#6b7280" },          // -0.2 to 0.2
+    { from: 60, to: 80, label: "ACCUMULATION", color: "#86efac" },     // 0.2 to 0.6
+    { from: 80, to: 100, label: "ACCUMULATION", color: "#4ade80" },    // 0.6 to 1
   ];
-  const bandPath=(from:number,to:number)=>{
-    const endDeg=startDeg-(sweep*(from/100));
-    const startD=startDeg-(sweep*(to/100));
-    const [x1s,y1s]=pt(72,startD);
-    const [x1e,y1e]=pt(72,endDeg);
-    const [x2s,y2s]=pt(88,endDeg);
-    const [x2e,y2e]=pt(88,startD);
-    const large=(to-from)>50?1:0;
+  
+  const bandPath = (from: number, to: number) => {
+    const endDeg = startDeg - (sweep * (from / 100));
+    const startD = startDeg - (sweep * (to / 100));
+    const [x1s, y1s] = pt(72, startD);
+    const [x1e, y1e] = pt(72, endDeg);
+    const [x2s, y2s] = pt(88, endDeg);
+    const [x2e, y2e] = pt(88, startD);
+    const large = (to - from) > 50 ? 1 : 0;
     return `M${x1s},${y1s} A72,72 0 ${large},1 ${x1e},${y1e} L${x2s},${y2s} A88,88 0 ${large},0 ${x2e},${y2e} Z`;
   };
-  const needleAngle=startDeg-(sweep*(pct/100));
-  const [nx,ny]=pt(62,needleAngle);
-  const ticks=[0,25,50,75,100];
   
-  return(
-    <div style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
-      {/* Warning message when rate is invalid */}
-      {showWarning && (
-        <div style={{
-          background:"rgba(249,115,22,0.15)",
-          border:"1px solid rgba(249,115,22,0.3)",
-          borderRadius:6,
-          padding:"4px 8px",
-          marginBottom:8,
-          fontSize:9,
-          fontFamily:"monospace",
-          color:"#f97316",
-          textAlign:"center"
-        }}>
-          ⚠ Rate unavailable (data syncing)
-          <br />
-          <span style={{fontSize:7, opacity:0.8}}>STT TXN &lt; Whale Events</span>
-        </div>
-      )}
-      
+  const needleAngle = startDeg - (sweep * (mappedPct / 100));
+  const [nx, ny] = pt(62, needleAngle);
+  const ticks = [0, 25, 50, 75, 100];
+  const tickLabels = ["-1.0", "-0.5", "0", "+0.5", "+1.0"];
+  
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
       <svg width={260} height={165} viewBox="0 0 260 165">
         <defs>
-          <filter id="lgGlow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-          <filter id="needleGlow"><feGaussianBlur stdDeviation="2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          <filter id="pressureGlow"><feGaussianBlur stdDeviation="2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
           <radialGradient id="dialBg" cx="50%" cy="70%" r="60%">
             <stop offset="0%" stopColor="rgba(6,182,212,0.08)"/>
             <stop offset="100%" stopColor="rgba(6,182,212,0)"/>
           </radialGradient>
-          {/* Add warning pattern for invalid state */}
-          {showWarning && (
-            <pattern id="warningPattern" patternUnits="userSpaceOnUse" width="4" height="4">
-              <rect width="4" height="4" fill="rgba(249,115,22,0.2)"/>
-              <path d="M0 0 L4 4 M4 0 L0 4" stroke="rgba(249,115,22,0.5)" strokeWidth="0.5"/>
-            </pattern>
-          )}
         </defs>
         
         {/* Dial background */}
-        <path d={arcPath(58,96,100)} fill="url(#dialBg)"/>
+        <path d={arcPath(58, 96, 100)} fill="url(#dialBg)"/>
         
         {/* Track */}
-        <path d={arcPath(68,92,100)} fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.05)" strokeWidth="0.5"/>
+        <path d={arcPath(68, 92, 100)} fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.05)" strokeWidth="0.5"/>
         
         {/* Colored bands */}
-        {bands.map((b,i)=>(
-          <path key={i} d={bandPath(b.from,b.to)} fill={b.color} opacity="0.75"/>
+        {bands.map((b, i) => (
+          <path key={i} d={bandPath(b.from, b.to)} fill={b.color} opacity="0.85"/>
         ))}
         
         {/* Active fill overlay */}
-        {pct>0 && !showWarning && (
-          <>
-            <path d={arcPath(70,88,pct)} fill={color} opacity="0.35" filter="url(#lgGlow)"/>
-            <path d={arcPath(86,90,pct)} fill={color} opacity="0.9" filter="url(#lgGlow)"/>
-          </>
-        )}
-        
-        {/* Show warning pattern instead of fill when invalid */}
-        {showWarning && (
-          <>
-            <path d={arcPath(70,88,100)} fill="url(#warningPattern)" opacity="0.6"/>
-            <path d={arcPath(86,90,100)} fill="url(#warningPattern)" opacity="0.8"/>
-          </>
-        )}
+        <path d={arcPath(70, 88, mappedPct)} fill={color} opacity="0.35" filter="url(#pressureGlow)"/>
+        <path d={arcPath(86, 90, mappedPct)} fill={color} opacity="0.9" filter="url(#pressureGlow)"/>
         
         {/* Tick marks */}
-        {ticks.map((p,i)=>{
-          const a=startDeg-(sweep*(p/100));
-          const [ox,oy]=pt(96,a); const [ix,iy]=pt(88,a);
-          const [lx,ly]=pt(104,a);
-          const tickLabels=["0","1.25","2.5","3.75","5%"];
-          return(<g key={i}>
-            <line x1={ox} y1={oy} x2={ix} y2={iy} stroke="rgba(255,255,255,0.5)" strokeWidth="1.5"/>
-            <text x={lx} y={ly} textAnchor="middle" dominantBaseline="middle" fill="rgba(103,184,204,0.6)" fontSize="7" fontFamily="monospace">{tickLabels[i]}</text>
-          </g>);
+        {ticks.map((p, i) => {
+          const a = startDeg - (sweep * (p / 100));
+          const [ox, oy] = pt(96, a);
+          const [ix, iy] = pt(88, a);
+          const [lx, ly] = pt(104, a);
+          return (
+            <g key={i}>
+              <line x1={ox} y1={oy} x2={ix} y2={iy} stroke="rgba(255,255,255,0.5)" strokeWidth="1.5"/>
+              <text x={lx} y={ly} textAnchor="middle" dominantBaseline="middle" fill="rgba(103,184,204,0.6)" fontSize="7" fontFamily="monospace">
+                {tickLabels[i]}
+              </text>
+            </g>
+          );
         })}
         
         {/* Minor ticks */}
-        {Array.from({length:21},(_,i)=>{
-          if([0,5,10,15,20].includes(i)) return null;
-          const a=startDeg-(sweep*(i/20));
-          const [ox,oy]=pt(93,a); const [ix,iy]=pt(88,a);
+        {Array.from({ length: 21 }, (_, i) => {
+          if ([0, 5, 10, 15, 20].includes(i)) return null;
+          const a = startDeg - (sweep * (i / 20));
+          const [ox, oy] = pt(93, a);
+          const [ix, iy] = pt(88, a);
           return <line key={i} x1={ox} y1={oy} x2={ix} y2={iy} stroke="rgba(255,255,255,0.2)" strokeWidth="0.8"/>;
         })}
         
-        {/* Needle - show at 0% when invalid */}
-        <line x1={cx} y1={cy} x2={nx} y2={ny} stroke={showWarning ? "#f97316" : color} strokeWidth="2.5" strokeLinecap="round" filter="url(#needleGlow)"/>
+        {/* Needle */}
+        <line x1={cx} y1={cy} x2={nx} y2={ny} stroke={color} strokeWidth="2.5" strokeLinecap="round" filter="url(#pressureGlow)"/>
         <line x1={cx} y1={cy} x2={nx} y2={ny} stroke="rgba(255,255,255,0.6)" strokeWidth="1" strokeLinecap="round"/>
         
         {/* Center hub */}
-        <circle cx={cx} cy={cy} r={7} fill="#0a1628" stroke={showWarning ? "#f97316" : color} strokeWidth="2"/>
-        <circle cx={cx} cy={cy} r={3} fill={showWarning ? "#f97316" : color} filter="url(#needleGlow)"/>
+        <circle cx={cx} cy={cy} r={7} fill="#0a1628" stroke={color} strokeWidth="2"/>
+        <circle cx={cx} cy={cy} r={3} fill={color} filter="url(#pressureGlow)"/>
         
         {/* Value display */}
-        <text x={cx} y={cy+32} textAnchor="middle" fill={showWarning ? "#f97316" : color} fontSize="20" fontWeight="800" fontFamily="monospace" filter="url(#needleGlow)">
+        <text x={cx} y={cy + 32} textAnchor="middle" fill={color} fontSize="20" fontWeight="800" fontFamily="monospace" filter="url(#pressureGlow)">
           {displayVal}
         </text>
         
         {/* Label badge */}
-        <rect x={cx-22} y={cy+46} width={44} height={14} rx={4} fill={`${showWarning ? "#f97316" : color}22`} stroke={`${showWarning ? "#f97316" : color}44`} strokeWidth="1"/>
-        <text x={cx} y={cy+57} textAnchor="middle" fill={showWarning ? "#f97316" : color} fontSize="8" fontWeight="700" fontFamily="monospace" letterSpacing="0.1em">
-          {showWarning ? "SYNC" : label}
+        <rect x={cx - 48} y={cy + 46} width={96} height={14} rx={4} fill={`${color}22`} stroke={`${color}44`} strokeWidth="1"/>
+        <text x={cx} y={cy + 57} textAnchor="middle" fill={color} fontSize="8" fontWeight="700" fontFamily="monospace" letterSpacing="0.1em">
+          {label}
         </text>
       </svg>
       
-      {/* Additional helper text */}
-      {showWarning && (
-        <div style={{
-          marginTop: 8,
-          fontSize: 8,
-          fontFamily: "monospace",
-          color: t.muted,
-          textAlign: "center",
-          maxWidth: 200
-        }}>
-          Rate calculation pending data sync
-        </div>
-      )}
+      <p style={{ color: t.muted, fontSize: 9, fontFamily: "monospace", marginTop: 8, textAlign: "center" }}>
+        
+      </p>
     </div>
   );
 }
@@ -729,199 +645,263 @@ function MyWalletTab({alerts,connectedAddr,t}:{alerts:WhaleAlert[];connectedAddr
   </div>);}
 
 // ── Analytics Tab ─────────────────────────────────────────────────────────────
-function AnalyticsTab({alerts,t,oraclePrices,shockData}:{alerts:WhaleAlert[];t:typeof T.dark;oraclePrices:Record<string,OraclePrice>;shockData:import("../lib/useWhaleAlerts").ShockDataPoint[];}){
-  const whales      = useMemo(()=>alerts.filter(a=>a.type==="whale"),[alerts]);
-  const alertEvents = useMemo(()=>alerts.filter(a=>a.type==="alert"),[alerts]);
-  const totalVol    = useMemo(()=>whales.reduce((s,a)=>s+num(a.amount),0),[whales]);
-  const uniqueWallets = useMemo(()=>new Set([...whales.map(a=>a.from),...whales.map(a=>a.to)]).size,[whales]);
-  const avgSize       = whales.length>0 ? totalVol/whales.length : 0;
-  const activityRate  = useMemo(()=>{const cutoff=Date.now()-60*60_000;return whales.filter(a=>a.timestamp>cutoff).length;},[whales]);
-  const momentum = useMemo(()=>{
-    const now=Date.now(), half=30*60_000;
-    const recentVol = whales.filter(a=>now-a.timestamp<half).reduce((s,a)=>s+num(a.amount),0);
-    const prevVol   = whales.filter(a=>{const age=now-a.timestamp;return age>=half&&age<half*2;}).reduce((s,a)=>s+num(a.amount),0);
-    if(prevVol===0&&recentVol===0) return {label:"➡️ Neutral",color:t.muted,pct:0};
-    if(prevVol===0) return {label:"🚀 Bullish",color:"#4ade80",pct:100};
-    const pct=((recentVol-prevVol)/prevVol)*100;
-    if(pct>10)  return {label:"🚀 Bullish",color:"#4ade80",pct};
-    if(pct<-10) return {label:"📉 Bearish",color:"#f87171",pct};
-    return {label:"➡️ Neutral",color:t.muted,pct};
-  },[whales,t.muted]);
-  const concentration = useMemo(()=>{
-    const vol:Record<string,number>={};
-    whales.forEach(a=>{vol[a.from]=(vol[a.from]||0)+num(a.amount);});
-    const sorted=Object.values(vol).sort((a,b)=>b-a);
-    const top5  = sorted.slice(0,5).reduce((s,v)=>s+v,0);
-    const top10 = sorted.slice(0,10).reduce((s,v)=>s+v,0);
+function AnalyticsTab({alerts, t, oraclePrices, shockData, metrics, whalePressure}: { 
+  alerts: WhaleAlert[]; 
+  t: typeof T.dark; 
+  oraclePrices: Record<string, OraclePrice>; 
+  shockData: import("../lib/useWhaleAlerts").ShockDataPoint[];
+  metrics: LiveMetrics;
+  whalePressure: number | null;
+}) {
+  const whales = useMemo(() => alerts.filter(a => a.type === "whale"), [alerts]);
+  const alertEvents = useMemo(() => alerts.filter(a => a.type === "alert"), [alerts]);
+  const totalVol = useMemo(() => whales.reduce((s, a) => s + num(a.amount), 0), [whales]);
+  const uniqueWallets = useMemo(() => new Set([...whales.map(a => a.from), ...whales.map(a => a.to)]).size, [whales]);
+  const avgWhaleSize = whales.length > 0 ? totalVol / whales.length : 0;
+  const activityRate = useMemo(() => {
+    const cutoff = Date.now() - 60 * 60_000;
+    return whales.filter(a => a.timestamp > cutoff && a.blockNumber !== "simulated").length;
+  }, [whales]);
+  const whaleVelocity = useMemo(() => {
+    const cutoff = Date.now() - 5 * 60_000;
+    const count = whales.filter(a => a.timestamp > cutoff && a.blockNumber !== "simulated").length;
+    return parseFloat((count / 5).toFixed(2));
+  }, [whales]);
+
+  const momentum = useMemo(() => {
+    const now = Date.now(), half = 30 * 60_000;
+    const recentVol = whales.filter(a => now - a.timestamp < half).reduce((s, a) => s + num(a.amount), 0);
+    const prevVol = whales.filter(a => { const age = now - a.timestamp; return age >= half && age < half * 2; }).reduce((s, a) => s + num(a.amount), 0);
+    if (prevVol === 0 && recentVol === 0) return { label: "➡️ Neutral", color: t.muted, pct: 0 };
+    if (prevVol === 0) return { label: "🚀 Bullish", color: "#4ade80", pct: 100 };
+    const pct = ((recentVol - prevVol) / prevVol) * 100;
+    if (pct > 10) return { label: "🚀 Bullish", color: "#4ade80", pct };
+    if (pct < -10) return { label: "📉 Bearish", color: "#f87171", pct };
+    return { label: "➡️ Neutral", color: t.muted, pct };
+  }, [whales, t.muted]);
+
+  const concentration = useMemo(() => {
+    const sentVol: Record<string, number> = {};
+    const recvVol: Record<string, number> = {};
+    whales.forEach(a => {
+      sentVol[a.from] = (sentVol[a.from] || 0) + num(a.amount);
+      recvVol[a.to] = (recvVol[a.to] || 0) + num(a.amount);
+    });
+    const sorted = Object.values(sentVol).sort((a, b) => b - a);
+    const top5 = sorted.slice(0, 5).reduce((s, v) => s + v, 0);
+    const top10 = sorted.slice(0, 10).reduce((s, v) => s + v, 0);
+    const totalIn = Object.values(recvVol).reduce((s, v) => s + v, 0);
+    const totalOut = Object.values(sentVol).reduce((s, v) => s + v, 0);
+    const pressure = totalVol > 0 ? ((totalIn - totalOut) / totalVol) * 100 : 0;
     return {
-      top5pct:  totalVol>0?Math.round((top5/totalVol)*100):0,
-      top10pct: totalVol>0?Math.round((top10/totalVol)*100):0,
+      top5pct: totalVol > 0 ? Math.round((top5 / totalVol) * 100) : 0,
+      top10pct: totalVol > 0 ? Math.round((top10 / totalVol) * 100) : 0,
+      pressure: parseFloat(pressure.toFixed(1)),
     };
-  },[whales,totalVol]);
-  const alertIntel = useMemo(()=>{
-    if(alertEvents.length<2) return null;
-    const sorted=[...alertEvents].sort((a,b)=>a.timestamp-b.timestamp);
-    const gaps=sorted.slice(1).map((a,i)=>a.timestamp-sorted[i].timestamp);
-    const avgGap=gaps.reduce((s,g)=>s+g,0)/gaps.length;
-    const WINDOW=30_000;
-    const vols=sorted.map(alert=>whales.filter(w=>Math.abs(w.timestamp-alert.timestamp)<WINDOW).reduce((s,a)=>s+num(a.amount),0));
-    return {count:alertEvents.length,avgGap,avgAlertVol:vols.reduce((s,v)=>s+v,0)/vols.length,maxAlertVol:Math.max(...vols)};
-  },[alertEvents,whales]);
-  const netFlows = useMemo(()=>{
-    const inflow:Record<string,number>={};
-    const outflow:Record<string,number>={};
-    whales.forEach(a=>{inflow[a.to]=(inflow[a.to]||0)+num(a.amount);outflow[a.from]=(outflow[a.from]||0)+num(a.amount);});
-    const wallets=new Set([...Object.keys(inflow),...Object.keys(outflow)]);
-    return Array.from(wallets).map(w=>({wallet:w,net:(inflow[w]||0)-(outflow[w]||0),inflow:inflow[w]||0,outflow:outflow[w]||0})).sort((a,b)=>Math.abs(b.net)-Math.abs(a.net)).slice(0,10);
-  },[whales]);
-  const minuteData = useMemo(()=>{
-    const b:Record<string,number>={};
-    whales.forEach(a=>{const k=new Date(a.timestamp).toISOString().slice(0,16);b[k]=(b[k]||0)+num(a.amount);});
-    return Object.entries(b).slice(-30).map(([time,volume])=>({time:time.slice(11),volume:Math.round(volume)}));
-  },[whales]);
-  const avgShock = shockData.length>0 ? Math.round(shockData.reduce((s,d)=>s+d.score,0)/shockData.length) : 0;
-  const peakShock = shockData.length>0 ? Math.max(...shockData.map(d=>d.score)) : 0;
-  const highImpactCount = shockData.filter(d=>d.score>=51).length;
-  const tt={contentStyle:{background:t.tooltipBg,border:`1px solid ${t.tooltipBorder}`,borderRadius:8,fontFamily:"monospace",fontSize:11},labelStyle:{color:t.accent},itemStyle:{color:t.text}};
-  const secLabel=(text:string,color?:string):React.CSSProperties=>({color:color??t.muted,fontSize:9,fontFamily:"monospace",textTransform:"uppercase" as const,letterSpacing:"0.15em",marginBottom:14});
-  return(<div style={{padding:24}}>
-    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(150px, 1fr))",gap:10,marginBottom:28}}>
-      <KpiCard t={t} label="Unique Wallets"      value={uniqueWallets}/>
-      <KpiCard t={t} label="Avg Transfer Size"   value={Math.round(avgSize).toLocaleString()} sub="tokens"/>
-      <KpiCard t={t} label="Activity Rate"       value={activityRate} sub="txns / last hour"/>
-      <KpiCard t={t} label="Market Momentum"     value={momentum.label} color={momentum.color} sub={`${momentum.pct>=0?"+":""}${momentum.pct.toFixed(1)}% vs prev 30m`}/>
-      <KpiCard t={t} label="Top 5 Concentration" value={`${concentration.top5pct}%`} color={concentration.top5pct>70?"#f97316":t.statVal} sub="of total volume"/>
-    </div>
-    <p style={secLabel("⚡ Network Impact Analysis","#06b6d4")}>⚡ Network Impact Analysis</p>
-    {shockData.length===0
-      ? <div style={{padding:"20px 0 28px",color:t.muted,fontFamily:"monospace",fontSize:12}}>Accumulating data — network impact measured in 30s windows after each whale event.</div>
-      : <>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(130px, 1fr))",gap:10,marginBottom:20}}>
+  }, [whales, totalVol]);
+
+  // Calculate pressure display values
+  const pressureValue = whalePressure !== null ? whalePressure : concentration.pressure / 100;
+  const pressureDisplay = pressureValue !== 0 ? `${pressureValue >= 0 ? "+" : ""}${pressureValue.toFixed(4)}` : "0.0000";
+  const pressureColor = pressureValue > 0.05 ? "#4ade80" : pressureValue < -0.05 ? "#f87171" : t.muted;
+  const pressureLabel = pressureValue > 0.05 ? "Accumulation" : pressureValue < -0.05 ? "Distribution" : "Balanced";
+
+  const alertIntel = useMemo(() => {
+    if (alertEvents.length < 2) return null;
+    const sorted = [...alertEvents].sort((a, b) => a.timestamp - b.timestamp);
+    const gaps = sorted.slice(1).map((a, i) => a.timestamp - sorted[i].timestamp);
+    const avgGap = gaps.reduce((s, g) => s + g, 0) / gaps.length;
+    const WINDOW = 30_000;
+    const vols = sorted.map(alert => whales.filter(w => Math.abs(w.timestamp - alert.timestamp) < WINDOW).reduce((s, a) => s + num(a.amount), 0));
+    return { count: alertEvents.length, avgGap, avgAlertVol: vols.reduce((s, v) => s + v, 0) / vols.length, maxAlertVol: Math.max(...vols) };
+  }, [alertEvents, whales]);
+  
+  const netFlows = useMemo(() => {
+    const inflow: Record<string, number> = {};
+    const outflow: Record<string, number> = {};
+    whales.forEach(a => {
+      inflow[a.to] = (inflow[a.to] || 0) + num(a.amount);
+      outflow[a.from] = (outflow[a.from] || 0) + num(a.amount);
+    });
+    const wallets = new Set([...Object.keys(inflow), ...Object.keys(outflow)]);
+    return Array.from(wallets).map(w => ({ wallet: w, net: (inflow[w] || 0) - (outflow[w] || 0), inflow: inflow[w] || 0, outflow: outflow[w] || 0 })).sort((a, b) => Math.abs(b.net) - Math.abs(a.net)).slice(0, 10);
+  }, [whales]);
+  
+  const minuteData = useMemo(() => {
+    const b: Record<string, number> = {};
+    whales.forEach(a => { const k = new Date(a.timestamp).toISOString().slice(0, 16); b[k] = (b[k] || 0) + num(a.amount); });
+    return Object.entries(b).slice(-30).map(([time, volume]) => ({ time: time.slice(11), volume: Math.round(volume) }));
+  }, [whales]);
+  
+  const avgShock = shockData.length > 0 ? Math.round(shockData.reduce((s, d) => s + d.score, 0) / shockData.length) : 0;
+  const peakShock = shockData.length > 0 ? Math.max(...shockData.map(d => d.score)) : 0;
+  const highImpactCount = shockData.filter(d => d.score >= 51).length;
+  
+  const tt = { contentStyle: { background: t.tooltipBg, border: `1px solid ${t.tooltipBorder}`, borderRadius: 8, fontFamily: "monospace", fontSize: 11 }, labelStyle: { color: t.accent }, itemStyle: { color: t.text } };
+  const secLabel = (text: string, color?: string): React.CSSProperties => ({ color: color ?? t.muted, fontSize: 9, fontFamily: "monospace", textTransform: "uppercase" as const, letterSpacing: "0.15em", marginBottom: 14 });
+  
+  return (
+    <div style={{ padding: 24 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 28 }}>
+        <KpiCard t={t} label="Unique Wallets" value={uniqueWallets} />
+        <KpiCard t={t} label="Avg Whale Size" value={Math.round(avgWhaleSize).toLocaleString()} sub="STT (whale txns only)" />
+        <KpiCard 
+          t={t} 
+          label="Median Whale Size" 
+          value={Math.round(metrics.medianWhaleSizeStt).toLocaleString()} 
+          sub="STT (more accurate than avg)" 
+          color={t.statVal}
+        />
+        <KpiCard t={t} label="Activity (1h)" value={activityRate} sub={`${whaleVelocity}/min velocity`} />
+        <KpiCard t={t} label="Market Momentum" value={momentum.label} color={momentum.color} sub={`${momentum.pct >= 0 ? "+" : ""}${momentum.pct.toFixed(1)}% vs prev 30m`} />
+        <KpiCard t={t} label="Top 5 Concentration" value={`${concentration.top5pct}%`} color={concentration.top5pct > 70 ? "#f97316" : t.statVal} sub="of whale volume" />
+        <KpiCard 
+          t={t} 
+          label="Whale Pressure" 
+          value={pressureDisplay} 
+          color={pressureColor}
+          sub={pressureLabel}
+        />
+      </div>
+      <p style={secLabel("⚡ Network Impact Analysis", "#06b6d4")}>⚡ Network Impact Analysis</p>
+      {shockData.length === 0
+        ? <div style={{ padding: "20px 0 28px", color: t.muted, fontFamily: "monospace", fontSize: 12 }}>Accumulating data — network impact measured in 30s windows after each whale event.</div>
+        : <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, marginBottom: 20 }}>
             {[
-              {label:"Avg Shock Score", value:avgShock, color:avgShock>=51?"#f97316":avgShock>=21?"#f59e0b":t.statVal, sub:"0–100 composite"},
-              {label:"Peak Shock",      value:peakShock, color:peakShock>=81?"#ef4444":peakShock>=51?"#f97316":t.statVal, sub:"highest recorded"},
-              {label:"High Impact",    value:highImpactCount, color:highImpactCount>0?"#f97316":t.muted, sub:"score ≥ 51"},
-              {label:"Events Measured",value:shockData.length, sub:"with network data"},
-            ].map(({label,value,color,sub})=>(
-              <div key={label} style={{background:t.pageBg,border:`1px solid ${t.border}`,borderRadius:10,padding:"12px 16px"}}>
-                <p style={{color:t.muted,fontSize:9,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.1em",margin:"0 0 4px"}}>{label}</p>
-                <p style={{color:color??t.statVal,fontSize:18,fontWeight:700,fontFamily:"monospace",margin:0}}>{value}</p>
-                {sub&&<p style={{color:t.muted,fontSize:9,fontFamily:"monospace",margin:"2px 0 0"}}>{sub}</p>}
+              { label: "Avg Shock Score", value: avgShock, color: avgShock >= 51 ? "#f97316" : avgShock >= 21 ? "#f59e0b" : t.statVal, sub: "0–100 composite" },
+              { label: "Peak Shock", value: peakShock, color: peakShock >= 81 ? "#ef4444" : peakShock >= 51 ? "#f97316" : t.statVal, sub: "highest recorded" },
+              { label: "High Impact", value: highImpactCount, color: highImpactCount > 0 ? "#f97316" : t.muted, sub: "score ≥ 51" },
+              { label: "Events Measured", value: shockData.length, sub: "with network data" },
+            ].map(({ label, value, color, sub }) => (
+              <div key={label} style={{ background: t.pageBg, border: `1px solid ${t.border}`, borderRadius: 10, padding: "12px 16px" }}>
+                <p style={{ color: t.muted, fontSize: 9, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: "0.1em", margin: "0 0 4px" }}>{label}</p>
+                <p style={{ color: color ?? t.statVal, fontSize: 18, fontWeight: 700, fontFamily: "monospace", margin: 0 }}>{value}</p>
+                {sub && <p style={{ color: t.muted, fontSize: 9, fontFamily: "monospace", margin: "2px 0 0" }}>{sub}</p>}
               </div>
             ))}
           </div>
-          <div style={{marginBottom:16}}>
+          <div style={{ marginBottom: 16 }}>
             <ResponsiveContainer width="100%" height={120}>
               <BarChart data={shockData} barSize={14}>
-                <CartesianGrid strokeDasharray="3 3" stroke={t.chartGrid} vertical={false}/>
-                <XAxis dataKey="time" tick={{fill:t.chartAxis,fontSize:8,fontFamily:"monospace"}} interval={Math.max(0,Math.floor(shockData.length/6)-1)}/>
-                <YAxis domain={[0,100]} tick={{fill:t.chartAxis,fontSize:9,fontFamily:"monospace"}}/>
-                <Tooltip {...tt} formatter={(v:any,_:any,p:any)=>[`${v} (${p.payload.label}) — ${p.payload.txCount} txns, ${p.payload.uniqueWallets} wallets`,"Shock Score"]}/>
-                <Bar dataKey="score" radius={[3,3,0,0]}>{shockData.map((d,i)=><Cell key={i} fill={d.scoreColor}/>)}</Bar>
+                <CartesianGrid strokeDasharray="3 3" stroke={t.chartGrid} vertical={false} />
+                <XAxis dataKey="time" tick={{ fill: t.chartAxis, fontSize: 8, fontFamily: "monospace" }} interval={Math.max(0, Math.floor(shockData.length / 6) - 1)} />
+                <YAxis domain={[0, 100]} tick={{ fill: t.chartAxis, fontSize: 9, fontFamily: "monospace" }} />
+                <Tooltip {...tt} formatter={(v: any, _: any, p: any) => [`${v} (${p.payload.label}) — ${p.payload.txCount} txns, ${p.payload.uniqueWallets} wallets`, "Shock Score"]} />
+                <Bar dataKey="score" radius={[3, 3, 0, 0]}>{shockData.map((d, i) => <Cell key={i} fill={d.scoreColor} />)}</Bar>
               </BarChart>
             </ResponsiveContainer>
           </div>
-          <div style={{overflowX:"auto",marginBottom:28}}>
-            <table style={{width:"100%",borderCollapse:"collapse"}}>
-              <thead><tr>{["Time","Transfer","Score","Impact","Txns (30s)","Wallets (30s)","Follow-ups"].map(h=><Th key={h} t={t}>{h}</Th>)}</tr></thead>
-              <tbody>{[...shockData].reverse().slice(0,10).map((d,i)=>(
-                <tr key={i} style={{background:i%2===0?t.tableRow:t.tableAlt}}>
-                  <Td t={t}><span style={{color:t.muted,fontSize:10}}>{d.time}</span></Td>
+          <div style={{ overflowX: "auto", marginBottom: 28 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  {["Time", "Transfer", "Score", "Impact", "Txns (30s)", "Wallets (30s)", "Follow-ups"].map(h => <Th key={h} t={t}>{h}</Th>)}
+                </tr>
+              </thead>
+              <tbody>{[...shockData].reverse().slice(0, 10).map((d, i) => (
+                <tr key={i} style={{ background: i % 2 === 0 ? t.tableRow : t.tableAlt }}>
+                  <Td t={t}><span style={{ color: t.muted, fontSize: 10 }}>{d.time}</span></Td>
                   <Td t={t} accent bold>{d.amount.toLocaleString()} {d.token}</Td>
-                  <Td t={t}><div style={{display:"flex",alignItems:"center",gap:8}}><div style={{width:48,height:4,background:t.border,borderRadius:2,overflow:"hidden"}}><div style={{height:"100%",width:`${d.score}%`,background:d.scoreColor,borderRadius:2}}/></div><span style={{color:d.scoreColor,fontWeight:700,fontFamily:"monospace",fontSize:11}}>{d.score}</span></div></Td>
-                  <Td t={t}><span style={{fontSize:9,fontFamily:"monospace",fontWeight:700,padding:"2px 8px",borderRadius:4,background:`${d.scoreColor}22`,color:d.scoreColor,border:`1px solid ${d.scoreColor}44`}}>{d.label}</span></Td>
+                  <Td t={t}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><div style={{ width: 48, height: 4, background: t.border, borderRadius: 2, overflow: "hidden" }}><div style={{ height: "100%", width: `${d.score}%`, background: d.scoreColor, borderRadius: 2 }} /></div><span style={{ color: d.scoreColor, fontWeight: 700, fontFamily: "monospace", fontSize: 11 }}>{d.score}</span></div></Td>
+                  <Td t={t}><span style={{ fontSize: 9, fontFamily: "monospace", fontWeight: 700, padding: "2px 8px", borderRadius: 4, background: `${d.scoreColor}22`, color: d.scoreColor, border: `1px solid ${d.scoreColor}44` }}>{d.label}</span></Td>
                   <Td t={t}>{d.txCount}</Td>
                   <Td t={t}>{d.uniqueWallets}</Td>
-                  <Td t={t}><span style={{color:d.followups>0?"#f97316":t.muted}}>{d.followups}</span></Td>
+                  <Td t={t}><span style={{ color: d.followups > 0 ? "#f97316" : t.muted }}>{d.followups}</span></Td>
                 </tr>
               ))}</tbody>
             </table>
           </div>
-          <div style={{display:"flex",gap:16,marginBottom:28,flexWrap:"wrap"}}>
-            {[{label:"NORMAL",range:"0–20",color:t.muted},{label:"ELEVATED",range:"21–50",color:"#f59e0b"},{label:"HIGH",range:"51–80",color:"#f97316"},{label:"EXTREME",range:"81–100",color:"#ef4444"}].map(({label,range,color})=>(
-              <div key={label} style={{display:"flex",alignItems:"center",gap:6}}><div style={{width:8,height:8,borderRadius:"50%",background:color}}/><span style={{color:t.muted,fontSize:9,fontFamily:"monospace"}}>{label} ({range})</span></div>
+          <div style={{ display: "flex", gap: 16, marginBottom: 28, flexWrap: "wrap" }}>
+            {[{ label: "NORMAL", range: "0–20", color: t.muted }, { label: "ELEVATED", range: "21–50", color: "#f59e0b" }, { label: "HIGH", range: "51–80", color: "#f97316" }, { label: "EXTREME", range: "81–100", color: "#ef4444" }].map(({ label, range, color }) => (
+              <div key={label} style={{ display: "flex", alignItems: "center", gap: 6 }}><div style={{ width: 8, height: 8, borderRadius: "50%", background: color }} /><span style={{ color: t.muted, fontSize: 9, fontFamily: "monospace" }}>{label} ({range})</span></div>
             ))}
-            <span style={{color:t.muted,fontSize:9,fontFamily:"monospace",marginLeft:"auto"}}>Score = txCount×2 + uniqueWallets×1.5 + followupWhales×10</span>
+            <span style={{ color: t.muted, fontSize: 9, fontFamily: "monospace", marginLeft: "auto" }}>Score = txCount×2 + uniqueWallets×1.5 + followupWhales×10</span>
           </div>
         </>
-    }
-    <p style={secLabel("Whale Concentration")}>Whale Concentration</p>
-    <div style={{background:t.pageBg,border:`1px solid ${t.border}`,borderRadius:10,padding:16,marginBottom:28}}>
-      {[
-        {label:"Top 5 wallets",  pct:concentration.top5pct,  color:concentration.top5pct>70?"#f97316":t.accent},
-        {label:"Top 10 wallets", pct:concentration.top10pct, color:concentration.top10pct>85?"#f97316":t.accent},
-      ].map(({label,pct,color})=>(
-        <div key={label} style={{marginBottom:12}}>
-          <div style={{display:"flex",justifyContent:"space-between",fontFamily:"monospace",fontSize:10,color:t.subtext,marginBottom:4}}>
-            <span>{label}</span><span style={{color,fontWeight:700}}>{pct}% of volume</span>
-          </div>
-          <div style={{height:8,background:t.border,borderRadius:4,overflow:"hidden"}}>
-            <div style={{height:"100%",width:`${pct}%`,background:`linear-gradient(90deg,${color},${color}88)`,borderRadius:4,transition:"width 0.6s ease"}}/>
-          </div>
-        </div>
-      ))}
-      <p style={{color:t.muted,fontSize:9,fontFamily:"monospace",margin:"8px 0 0"}}>{concentration.top5pct>70?"⚠️ High concentration — market may be whale-dominated":"✓ Moderate distribution across wallets"}</p>
-    </div>
-    <p style={secLabel("")}>Volume Momentum (per minute)</p>
-    {!minuteData.length
-      ? <div style={{height:130,display:"flex",alignItems:"center",justifyContent:"center",color:t.muted,fontFamily:"monospace",fontSize:12,marginBottom:28}}>No data yet</div>
-      : <div style={{marginBottom:28}}><ResponsiveContainer width="100%" height={130}><AreaChart data={minuteData}><defs><linearGradient id="mg" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={t.accent} stopOpacity={0.3}/><stop offset="95%" stopColor={t.accent} stopOpacity={0}/></linearGradient></defs><CartesianGrid strokeDasharray="3 3" stroke={t.chartGrid}/><XAxis dataKey="time" tick={{fill:t.chartAxis,fontSize:9,fontFamily:"monospace"}} interval={4}/><YAxis tick={{fill:t.chartAxis,fontSize:9,fontFamily:"monospace"}}/><Tooltip {...tt}/><Area type="monotone" dataKey="volume" stroke={t.accent} strokeWidth={2} fill="url(#mg)"/></AreaChart></ResponsiveContainer></div>
-    }
-    {alertIntel&&(<>
-      <p style={{...secLabel("","#f97316")}}>🚨 Alert Intelligence</p>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(180px, 1fr))",gap:10,marginBottom:28}}>
+      }
+      <p style={secLabel("Whale Concentration")}>Whale Concentration</p>
+      <div style={{ background: t.pageBg, border: `1px solid ${t.border}`, borderRadius: 10, padding: 16, marginBottom: 28 }}>
         {[
-          {label:"Total Alerts",           value:alertIntel.count},
-          {label:"Avg Gap Between Alerts", value:fmtMs(alertIntel.avgGap),                          sub:"time between alerts"},
-          {label:"Avg Vol During Alert",   value:Math.round(alertIntel.avgAlertVol).toLocaleString(),sub:"tokens (±30s window)"},
-          {label:"Peak Alert Volume",      value:Math.round(alertIntel.maxAlertVol).toLocaleString()},
-        ].map(({label,value,sub}:any)=>(
-          <div key={label} style={{background:t.pageBg,border:"1px solid rgba(249,115,22,0.3)",borderRadius:10,padding:"12px 16px"}}>
-            <p style={{color:"rgba(249,115,22,0.6)",fontSize:9,fontFamily:"monospace",textTransform:"uppercase",margin:"0 0 4px"}}>{label}</p>
-            <p style={{color:"#f97316",fontSize:18,fontWeight:700,fontFamily:"monospace",margin:0}}>{value}</p>
-            {sub&&<p style={{color:"rgba(249,115,22,0.5)",fontSize:9,fontFamily:"monospace",margin:"2px 0 0"}}>{sub}</p>}
+          { label: "Top 5 wallets (of whale vol)", pct: concentration.top5pct, color: concentration.top5pct > 70 ? "#f97316" : t.accent },
+          { label: "Top 10 wallets (of whale vol)", pct: concentration.top10pct, color: concentration.top10pct > 85 ? "#f97316" : t.accent },
+        ].map(({ label, pct, color }) => (
+          <div key={label} style={{ marginBottom: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontFamily: "monospace", fontSize: 10, color: t.subtext, marginBottom: 4 }}>
+              <span>{label}</span><span style={{ color, fontWeight: 700 }}>{pct}% of volume</span>
+            </div>
+            <div style={{ height: 8, background: t.border, borderRadius: 4, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${pct}%`, background: `linear-gradient(90deg,${color},${color}88)`, borderRadius: 4, transition: "width 0.6s ease" }} />
+            </div>
           </div>
         ))}
+        <p style={{ color: t.muted, fontSize: 9, fontFamily: "monospace", margin: "8px 0 0" }}>{concentration.top5pct > 70 ? "⚠️ High concentration — market may be whale-dominated" : "✓ Moderate distribution across wallets"}</p>
       </div>
-    </>)}
-    <p style={secLabel("")}>Net Flow per Wallet (inflow − outflow)</p>
-    {!netFlows.length
-      ? <p style={{color:t.muted,fontFamily:"monospace",fontSize:12}}>No data</p>
-      : <table style={{width:"100%",borderCollapse:"collapse"}}>
-          <thead><tr>{["#","Wallet","Inflow","Outflow","Net Flow","Direction"].map(h=><Th key={h} t={t}>{h}</Th>)}</tr></thead>
-          <tbody>{netFlows.map((row,i)=>{
-            const isAccum=row.net>=0;
-            return(<tr key={row.wallet} style={{background:i%2===0?t.tableRow:t.tableAlt}} onMouseEnter={e=>(e.currentTarget.style.background=t.rowHover)} onMouseLeave={e=>(e.currentTarget.style.background=i%2===0?t.tableRow:t.tableAlt)}>
-              <Td t={t}>{i+1}</Td>
-              <Td t={t}><ExLink href={addrUrl(row.wallet)} label={short(row.wallet)} t={t}/></Td>
+      <p style={secLabel("")}>Volume Momentum (per minute)</p>
+      {!minuteData.length
+        ? <div style={{ height: 130, display: "flex", alignItems: "center", justifyContent: "center", color: t.muted, fontFamily: "monospace", fontSize: 12, marginBottom: 28 }}>No data yet</div>
+        : <div style={{ marginBottom: 28 }}><ResponsiveContainer width="100%" height={130}><AreaChart data={minuteData}><defs><linearGradient id="mg" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={t.accent} stopOpacity={0.3} /><stop offset="95%" stopColor={t.accent} stopOpacity={0} /></linearGradient></defs><CartesianGrid strokeDasharray="3 3" stroke={t.chartGrid} /><XAxis dataKey="time" tick={{ fill: t.chartAxis, fontSize: 9, fontFamily: "monospace" }} interval={4} /><YAxis tick={{ fill: t.chartAxis, fontSize: 9, fontFamily: "monospace" }} /><Tooltip {...tt} /><Area type="monotone" dataKey="volume" stroke={t.accent} strokeWidth={2} fill="url(#mg)" /></AreaChart></ResponsiveContainer></div>
+      }
+      {alertIntel && (<>
+        <p style={{ ...secLabel("", "#f97316") }}>🚨 Alert Intelligence</p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginBottom: 28 }}>
+          {[
+            { label: "Total Alerts", value: alertIntel.count },
+            { label: "Avg Gap Between Alerts", value: fmtMs(alertIntel.avgGap), sub: "time between alerts" },
+            { label: "Avg Vol During Alert", value: Math.round(alertIntel.avgAlertVol).toLocaleString(), sub: "tokens (±30s window)" },
+            { label: "Peak Alert Volume", value: Math.round(alertIntel.maxAlertVol).toLocaleString() },
+          ].map(({ label, value, sub }: any) => (
+            <div key={label} style={{ background: t.pageBg, border: "1px solid rgba(249,115,22,0.3)", borderRadius: 10, padding: "12px 16px" }}>
+              <p style={{ color: "rgba(249,115,22,0.6)", fontSize: 9, fontFamily: "monospace", textTransform: "uppercase", margin: "0 0 4px" }}>{label}</p>
+              <p style={{ color: "#f97316", fontSize: 18, fontWeight: 700, fontFamily: "monospace", margin: 0 }}>{value}</p>
+              {sub && <p style={{ color: "rgba(249,115,22,0.5)", fontSize: 9, fontFamily: "monospace", margin: "2px 0 0" }}>{sub}</p>}
+            </div>
+          ))}
+        </div>
+      </>)}
+      <p style={secLabel("")}>Net Flow per Wallet (inflow − outflow)</p>
+      {!netFlows.length
+        ? <p style={{ color: t.muted, fontFamily: "monospace", fontSize: 12 }}>No data</p>
+        : <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              {["#", "Wallet", "Inflow", "Outflow", "Net Flow", "Direction"].map(h => <Th key={h} t={t}>{h}</Th>)}
+            </tr>
+          </thead>
+          <tbody>{netFlows.map((row, i) => {
+            const isAccum = row.net >= 0;
+            return (<tr key={row.wallet} style={{ background: i % 2 === 0 ? t.tableRow : t.tableAlt }} onMouseEnter={e => (e.currentTarget.style.background = t.rowHover)} onMouseLeave={e => (e.currentTarget.style.background = i % 2 === 0 ? t.tableRow : t.tableAlt)}>
+              <Td t={t}>{i + 1}</Td>
+              <Td t={t}><ExLink href={addrUrl(row.wallet)} label={short(row.wallet)} t={t} /></Td>
               <Td t={t}>{Math.round(row.inflow).toLocaleString()}</Td>
               <Td t={t}>{Math.round(row.outflow).toLocaleString()}</Td>
-              <Td t={t} bold color={isAccum?"#4ade80":"#f87171"}>{(isAccum?"+":"")+Math.round(row.net).toLocaleString()}</Td>
-              <Td t={t}><span style={{fontSize:9,fontFamily:"monospace",padding:"2px 8px",borderRadius:4,background:isAccum?"rgba(74,222,128,0.15)":"rgba(248,113,113,0.15)",color:isAccum?"#4ade80":"#f87171",border:`1px solid ${isAccum?"rgba(74,222,128,0.3)":"rgba(248,113,113,0.3)"}`}}>{isAccum?"ACCUMULATING":"DISTRIBUTING"}</span></Td>
+              <Td t={t} bold color={isAccum ? "#4ade80" : "#f87171"}>{(isAccum ? "+" : "") + Math.round(row.net).toLocaleString()}</Td>
+              <Td t={t}><span style={{ fontSize: 9, fontFamily: "monospace", padding: "2px 8px", borderRadius: 4, background: isAccum ? "rgba(74,222,128,0.15)" : "rgba(248,113,113,0.15)", color: isAccum ? "#4ade80" : "#f87171", border: `1px solid ${isAccum ? "rgba(74,222,128,0.3)" : "rgba(248,113,113,0.3)"}` }}>{isAccum ? "ACCUMULATING" : "DISTRIBUTING"}</span></Td>
             </tr>);
           })}</tbody>
         </table>
-    }
-    {Object.keys(oraclePrices).length>0&&(<>
-      <p style={{color:t.muted,fontSize:9,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.15em",margin:"28px 0 14px"}}>🔮 Live Oracle Prices (Somnia Testnet)</p>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(140px, 1fr))",gap:10,marginBottom:12}}>
-        {Object.values(oraclePrices).map(p=>{
-          const color=SYMBOL_COLORS[p.symbol]??t.accent;
-          return(
-            <div key={p.symbol} style={{background:t.pageBg,border:`1px solid ${p.stale?"rgba(249,115,22,0.3)":color+"33"}`,borderRadius:10,padding:"12px 14px"}}>
-              <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
-                <span style={{fontSize:9,fontFamily:"monospace",fontWeight:700,color,padding:"1px 6px",borderRadius:3,background:`${color}18`}}>{p.symbol}/USD</span>
-                {p.stale&&<span style={{fontSize:8,color:"#f97316",fontFamily:"monospace"}}>STALE</span>}
+      }
+      {Object.keys(oraclePrices).length > 0 && (<>
+        <p style={{ color: t.muted, fontSize: 9, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: "0.15em", margin: "28px 0 14px" }}>🔮 Live Oracle Prices (Somnia Testnet)</p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 12 }}>
+          {Object.values(oraclePrices).map(p => {
+            const color = SYMBOL_COLORS[p.symbol] ?? t.accent;
+            return (
+              <div key={p.symbol} style={{ background: t.pageBg, border: `1px solid ${p.stale ? "rgba(249,115,22,0.3)" : color + "33"}`, borderRadius: 10, padding: "12px 14px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                  <span style={{ fontSize: 9, fontFamily: "monospace", fontWeight: 700, color, padding: "1px 6px", borderRadius: 3, background: `${color}18` }}>{p.symbol}/USD</span>
+                  {p.stale && <span style={{ fontSize: 8, color: "#f97316", fontFamily: "monospace" }}>STALE</span>}
+                </div>
+                <p style={{ color: p.stale ? t.muted : t.text, fontSize: 16, fontWeight: 700, fontFamily: "monospace", margin: 0 }}>{formatUsd(p.price)}</p>
+                <p style={{ color: t.muted, fontSize: 8, fontFamily: "monospace", margin: "4px 0 0" }}>{p.source} · {new Date(p.updatedAt).toLocaleTimeString()}</p>
               </div>
-              <p style={{color:p.stale?t.muted:t.text,fontSize:16,fontWeight:700,fontFamily:"monospace",margin:0}}>{formatUsd(p.price)}</p>
-              <p style={{color:t.muted,fontSize:8,fontFamily:"monospace",margin:"4px 0 0"}}>{p.source} · {new Date(p.updatedAt).toLocaleTimeString()}</p>
-            </div>
-          );
-        })}
-      </div>
-      <p style={{color:t.muted,fontSize:9,fontFamily:"monospace",margin:"4px 0 0"}}>Powered by Protofire (ETH/BTC/USDC) and DIA (WETH/USDT/SOL/SOMI) oracles deployed on Somnia. STT/USD feed not yet available — native STT transfers show token amounts only.</p>
-    </>)}
-  </div>);
+            );
+          })}
+        </div>
+        <p style={{ color: t.muted, fontSize: 9, fontFamily: "monospace", margin: "4px 0 0" }}>Powered by Protofire (ETH/BTC/USDC) and DIA (WETH/USDT/SOL/SOMI) oracles deployed on Somnia. STT/USD feed not yet available — native STT transfers show token amounts only.</p>
+      </>)}
+    </div>
+  );
 }
 
 // ── Charts Tab ────────────────────────────────────────────────────────────────
@@ -1094,6 +1074,8 @@ export default function WhaleDashboard(){
   } = useWhaleAlerts();
   const{address:walletAddr,isConnected}=useAccount();
   const{prices:oraclePrices,loading:pricesLoading,lastFetchedAt}=useOraclePrices(10_000);
+  const [serverMetrics, setServerMetrics] = useState<LiveMetrics | null>(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
   const[simulating,setSimulating]=useState(false);
   const[soundEnabled,setSoundEnabled]=useState(true);
   const[pulse,setPulse]=useState(false);
@@ -1148,23 +1130,76 @@ useEffect(() => {
   const prevLen=useRef(0);
   useEffect(()=>{if(alerts.length>prevLen.current&&soundEnabled&&prevLen.current>0)playPing();prevLen.current=alerts.length;},[alerts.length,soundEnabled]);
 
-  // ── FILTER-AWARE KPI STATE ─────────────────────────────────────────────────
-  // When any filter is active, KPIs are re-fetched from the backend analyticsEngine
-  // (which scans the raw event ring buffer with the filter applied).
-  // When no filter is set, liveMetrics from the SSE stream is used directly (O(1)).
-  // ── FILTER-AWARE KPI METRICS — computed client-side from the SSE cache ──────
-  //
-  // WHY CLIENT-SIDE: The /api/metrics route is a separate Next.js route chunk from
-  // /api/whale-events. Each chunk gets its own module registry, so analyticsEngine's
-  // rawEvents ring buffer (populated by whale-events) is EMPTY in the metrics module.
-  // This caused all filtered KPIs to return zeros regardless of what data existed.
-  // compute filtered metrics directly from `alerts` and `blockTxs` which
-  // are already in the browser from the SSE stream — exactly what the tables do.
-  // Result: instant KPI updates with zero API latency, same as the table filtering.
+    const whalePressure = useMemo(() => {
+    // Calculate from alerts
+    const whalesOnly = alerts.filter(a => a.type === "whale" && a.blockNumber !== "simulated");
+    if (whalesOnly.length === 0) return null;
+    
+    const inflowMap: Record<string, number> = {};
+    const outflowMap: Record<string, number> = {};
+    let totalVolume = 0;
+    
+    whalesOnly.forEach(whale => {
+      const amount = num(whale.amount);
+      totalVolume += amount;
+      outflowMap[whale.from] = (outflowMap[whale.from] || 0) + amount;
+      inflowMap[whale.to] = (inflowMap[whale.to] || 0) + amount;
+    });
+    
+    const addresses = new Set([...Object.keys(inflowMap), ...Object.keys(outflowMap)]);
+    let netFlow = 0;
+    
+    for (const addr of addresses) {
+      const inflow = inflowMap[addr] || 0;
+      const outflow = outflowMap[addr] || 0;
+      netFlow += (inflow - outflow);
+    }
+    
+    // Pressure = Net Flow / Total Volume (range -1 to 1)
+    const pressure = totalVolume > 0 ? netFlow / totalVolume : 0;
+    return Math.min(1, Math.max(-1, pressure));
+  }, [alerts]);
+
+  const whaleVelocityData = useMemo(() => {
+    // Get whale events from the last 24 hours
+    const cutoff = Date.now() - 24 * 60 * 60_000;
+    const whales24h = alerts.filter(a => a.type === "whale" && a.timestamp > cutoff && a.blockNumber !== "simulated");
+    
+    if (whales24h.length === 0) return [];
+    
+    // Group by hour for the last 24 hours
+    const hourlyData: Record<string, { count: number; volume: number }> = {};
+    
+    for (let i = 23; i >= 0; i--) {
+      const hourStart = Date.now() - (i + 1) * 60 * 60_000;
+      const hourEnd = Date.now() - i * 60 * 60_000;
+      const hourKey = new Date(hourStart).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      
+      const hourWhales = whales24h.filter(w => w.timestamp >= hourStart && w.timestamp < hourEnd);
+      const count = hourWhales.length;
+      const volume = hourWhales.reduce((sum, w) => sum + num(w.amount), 0);
+      
+      hourlyData[hourKey] = { count, volume };
+    }
+    
+    // Convert to array for chart and calculate velocity (whales per hour)
+    return Object.entries(hourlyData).map(([time, data]) => ({
+      time,
+      velocity: data.count, // whales per hour
+      volume: data.volume
+    }));
+  }, [alerts]);
 
   const filteredMetrics: LiveMetrics = useMemo(() => {
   const isDefault = timePreset === 24*60*60_000 && !minAmt && !maxAmt && tokenFilter === "All" && !search;
-
+  
+  // For windows that might exceed our client-side cache, use server metrics
+  const mayNeedServerData = timePreset < 24*60*60_000;
+  
+  if (mayNeedServerData && serverMetrics) {
+    return serverMetrics;
+  }
+  
   const cutoff = isDefault ? 0 : Date.now() - timePreset;
   const walletLow = search.toLowerCase();
   const minStt = minAmt ? parseFloat(minAmt) : undefined;
@@ -1177,34 +1212,25 @@ useEffect(() => {
   let alertCount = 0, momCount = 0, reactCount = 0;
   const whaleSizes: number[] = [];
 
-  
-  // Count block_txs — for TXN COUNT and STT TXN KPIs
   for (const tx of blockTxs) {
     if (cutoff > 0 && tx.timestamp < cutoff) continue;
     if (walletLow && tx.from.toLowerCase() !== walletLow && tx.to.toLowerCase() !== walletLow) continue;
-    
-    // Apply min/max amount filters to block_tx counts as well
     if (minStt != null && tx.amountRaw < minStt) continue;
     if (maxStt != null && tx.amountRaw > maxStt) continue;
-    
     totalTx++;
     if (tx.amountRaw > 0) sttTx++;
   }
-  // Count whale/signal events — SHOW simulated whales in table but EXCLUDE from metrics
+  
   for (const a of alerts) {
     if (cutoff > 0 && a.timestamp < cutoff) continue;
     if (walletLow && a.from.toLowerCase() !== walletLow && a.to.toLowerCase() !== walletLow) continue;
     if (tokFilter && a.token !== tokFilter) continue;
 
     if (a.type === "whale") {
-      // CRITICAL: Exclude simulated whales from ALL METRICS (counts, volume, fees)
-      // But they will still show in the table with TEST badge
       if (a.blockNumber === "simulated") continue;
-      
       const stt = Number(a.amountRaw) / 1e18;
       if (minStt != null && stt < minStt) continue;
       if (maxStt != null && stt > maxStt) continue;
-      
       whaleTx++;
       whaleVol += stt;
       if (stt > largestStt) largestStt = stt;
@@ -1220,18 +1246,10 @@ useEffect(() => {
   }
 
   const avg = whaleSizes.length > 0 ? whaleSizes.reduce((s,v)=>s+v,0)/whaleSizes.length : 0;
-
-  // Whale Rate = whaleTx / sttTx 
-  // If sttTx is 0, rate is 0 (cannot have whales without STT transfers)
-  // For short windows (30m/1h), sttTx might be small, but that's correct
   const whaleTxRateRaw = sttTx > 0 ? (whaleTx / sttTx) * 100 : 0;
   const whaleTxRate = Math.min(100, Math.max(0, whaleTxRateRaw));
 
-  // For 24h default: use server-side totals for TXN COUNT / STT TXN
-  // (they exceed our 5k blockTxs cap), but use client-side whale counts
   if (isDefault) {
-    // Only use server-side rate when client sample is too small (< 50)
-    // Otherwise use the actual calculated rate from the window
     const MIN_STT_SAMPLE = 50;
     const finalRate = sttTx >= MIN_STT_SAMPLE ? whaleTxRate : liveMetrics.whaleTxRate;
     
@@ -1242,7 +1260,9 @@ useEffect(() => {
       whaleTx24h: whaleTx,
       whaleVolumeStt: whaleVol,
       avgWhaleSizeStt: avg,
+      medianWhaleSizeStt: liveMetrics.medianWhaleSizeStt,
       largestWhaleStt: largestStt,
+      whaleVelocity: liveMetrics.whaleVelocity,
       whaleFees,
       whaleFeeEstimated: feeEst,
       alerts24h: alertCount,
@@ -1257,7 +1277,9 @@ useEffect(() => {
     whaleTx24h: whaleTx,
     whaleVolumeStt: whaleVol,
     avgWhaleSizeStt: avg,
+    medianWhaleSizeStt: liveMetrics.medianWhaleSizeStt,
     largestWhaleStt: largestStt,
+    whaleVelocity: liveMetrics.whaleVelocity,
     whaleFees,
     whaleFeeEstimated: feeEst,
     alerts24h: alertCount,
@@ -1269,9 +1291,47 @@ useEffect(() => {
     whalePercentile: liveMetrics.whalePercentile,
     updatedAt: Date.now(),
   };
-}, [alerts, blockTxs, timePreset, minAmt, maxAmt, tokenFilter, search, liveMetrics]);
+}, [alerts, blockTxs, timePreset, minAmt, maxAmt, tokenFilter, search, liveMetrics, serverMetrics]);
+  // Fetch server metrics for filtered views
+  useEffect(() => {
+    // Skip if we're in default 24h view with no filters
+    const isDefault = timePreset === 24*60*60_000 && !minAmt && !maxAmt && tokenFilter === "All" && !search;
+    if (isDefault) {
+      // Clear server metrics when using default view
+      setServerMetrics(null);
+      return;
+    }
+    
+    const fetchMetrics = async () => {
+      setMetricsLoading(true);
+      const params = new URLSearchParams({
+        window: String(timePreset),
+        ...(minAmt && { min: minAmt }),
+        ...(maxAmt && { max: maxAmt }),
+        ...(tokenFilter !== "All" && { token: tokenFilter }),
+        ...(search && { wallet: search }),
+      });
+      
+      try {
+        const res = await fetch(`/api/metrics?${params}`);
+        const data = await res.json();
+        if (data.metrics) {
+          setServerMetrics(data.metrics);
+        }
+      } catch (error) {
+        console.error("Failed to fetch metrics:", error);
+      } finally {
+        setMetricsLoading(false);
+      }
+    };
+    
+    // Debounce the fetch to avoid too many requests
+    const timeoutId = setTimeout(fetchMetrics, 300);
+    return () => clearTimeout(timeoutId);
+  }, [timePreset, minAmt, maxAmt, tokenFilter, search]);
+
   const isDefaultFilter = timePreset === 24*60*60_000 && !minAmt && !maxAmt && tokenFilter === "All" && !search;
-  const metrics = filteredMetrics;
+  const displayMetrics = filteredMetrics;
 
   const whales    = useMemo(()=>alerts.filter(a=>a.type==="whale"),[alerts]);
   const reactions = useMemo(()=>alerts.filter(a=>a.type==="reaction"),[alerts]);
@@ -1284,14 +1344,14 @@ useEffect(() => {
   // TXN COUNT — use metrics.totalTx24h (filter-aware) rather than blockTxTotal
   // blockTxTotal is the raw SSE cumulative count and never changes with filters.
   // metrics.totalTx24h is computed from the ring buffer respecting the active window/filter.
-  const displayTxnCount       = metrics.totalTx24h;
-  const whaleTxRate           = metrics.whaleTxRate;
-  const windowedVol           = metrics.whaleVolumeStt;
-  const windowedLargest       = metrics.largestWhaleStt;
-  const whaleTotalFees        = metrics.whaleFees;
-  const whaleFeeEstimated     = metrics.whaleFeeEstimated;
-  const windowedAlertCount    = metrics.alerts24h;
-  const windowedMomentumCount = metrics.momentum24h;
+  const displayTxnCount       = displayMetrics.totalTx24h;
+  const whaleTxRate           = displayMetrics.whaleTxRate;
+  const windowedVol           = displayMetrics.whaleVolumeStt;
+  const windowedLargest       = displayMetrics.largestWhaleStt;
+  const whaleTotalFees        = displayMetrics.whaleFees;
+  const whaleFeeEstimated     = displayMetrics.whaleFeeEstimated;
+  const windowedAlertCount    = displayMetrics.alerts24h;
+  const windowedMomentumCount = displayMetrics.momentum24h;
   const totalVolUSD = { sum: 0, partial: false };
   const largestUSD: number | null = null;
 
@@ -1322,10 +1382,10 @@ useEffect(() => {
   const to = dateTo ? new Date(dateTo).getTime() : null;
   
   console.log("📊 Filtered metrics:", {
-    totalTx: metrics.totalTx24h,
-    sttTx: metrics.sttTx24h,
-    whaleTx: metrics.whaleTx24h,
-    whaleTxRate: metrics.whaleTxRate,
+    totalTx: displayMetrics.totalTx24h,
+    sttTx: displayMetrics.sttTx24h,
+    whaleTx: displayMetrics.whaleTx24h,
+    whaleTxRate: displayMetrics.whaleTxRate,
     filters: { minAmt, maxAmt, tokenFilter, search, timePreset }
   });
 
@@ -1365,8 +1425,7 @@ useEffect(() => {
 
   async function simulateWhale(){setSimulating(true);try{const res=await fetch("/api/simulate-whale",{method:"POST"});const d=await res.json();if(!d.success)throw new Error(d.error);}catch(e){alert("Simulation failed: "+e);}finally{setSimulating(false);}}
   
-  // Add this refreshData function right after simulateWhale
-  const refreshData = () => {
+   const refreshData = () => {
     clearFrontendCache();
     window.location.reload();
   };
@@ -1426,14 +1485,20 @@ useEffect(() => {
           </div>
         </div>
 
-        {/* Speedometer */}
+        {/* Whale Pressure Gauge */}
         <div style={{padding:"12px 10px 6px",borderBottom:`1px solid ${t.border}`,flexShrink:0}}>
-          <div style={{fontSize:8,fontFamily:"monospace",color:t.muted,textTransform:"uppercase",letterSpacing:"0.15em",marginBottom:4,textAlign:"center"}}>
-            🦈 Whale Tx Rate{!isDefaultFilter&&<span style={{color:t.accent,marginLeft:6,fontSize:7}}>● filtered</span>}
+          <div style={{fontSize:8,fontFamily:"monospace",color:t.accent,textTransform:"uppercase",letterSpacing:"0.15em",marginBottom:4,textAlign:"center"}}>
+            🐋 WHALE PRESSURE{!isDefaultFilter&&<span style={{color:t.accent,marginLeft:6,fontSize:7}}>● filtered</span>}
           </div>
-          <SpeedometerLarge value={whaleTxRate} t={t}/>
+          <WhalePressureGauge pressure={whalePressure} t={t}/>
+          <div style={{textAlign:"center",marginTop:8,fontSize:8,fontFamily:"monospace",color:t.muted}}>
+            {whalePressure !== null && whalePressure > 0.05 
+              ? "🟢 Accumulation → Bullish" 
+              : whalePressure !== null && whalePressure < -0.05 
+                ? "🔴 Distribution → Bearish" 
+                : "⚪ Balanced Market"}
+          </div>
         </div>
-
         {/* Txn Count + STT Transfers */}
         <div style={{padding:"12px 12px",borderBottom:`1px solid ${t.border}`,flexShrink:0}}>
           <div style={{fontSize:8,fontFamily:"monospace",color:t.accent,textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:12,display:"flex",alignItems:"center",gap:5}}>
@@ -1447,7 +1512,7 @@ useEffect(() => {
                 <span style={{color:t.muted,fontSize:8,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.08em"}}>TXN COUNT</span>
               </div>
               <div style={{color:t.statVal,fontSize:28,fontWeight:800,fontFamily:"'Courier New', monospace",lineHeight:1,letterSpacing:"-0.02em",textShadow:"0 0 20px rgba(103,232,249,0.3)"}}>
-                {metrics.totalTx24h.toLocaleString()}
+                {displayMetrics.totalTx24h.toLocaleString()}
               </div>
               <div style={{color:t.muted,fontSize:8,fontFamily:"monospace",marginTop:4}}>
                 {isDefaultFilter ? "24h total" : `${timePreset<3600_000?`${Math.round(timePreset/60_000)}m`:timePreset<86400_000?`${Math.round(timePreset/3600_000)}h`:`${Math.ceil(timePreset/86400_000)}d`} window`}
@@ -1461,7 +1526,7 @@ useEffect(() => {
                 <span style={{color:t.muted,fontSize:8,fontFamily:"monospace",textTransform:"uppercase",letterSpacing:"0.08em"}}>STT TXN</span>
               </div>
               <div style={{color:t.statVal,fontSize:28,fontWeight:800,fontFamily:"'Courier New', monospace",lineHeight:1,letterSpacing:"-0.02em",textShadow:"0 0 20px rgba(103,232,249,0.3)"}}>
-                {metrics.sttTx24h.toLocaleString()}
+                {displayMetrics.sttTx24h.toLocaleString()}
               </div>
               <div style={{color:t.muted,fontSize:8,fontFamily:"monospace",marginTop:4}}>
                 {isDefaultFilter ? "24h total" : `${timePreset<3600_000?`${Math.round(timePreset/60_000)}m`:timePreset<86400_000?`${Math.round(timePreset/3600_000)}h`:`${Math.ceil(timePreset/86400_000)}d`} window`}
@@ -1528,97 +1593,124 @@ useEffect(() => {
         <div style={{height:2,background:"linear-gradient(90deg,transparent,#06b6d4,transparent)",flexShrink:0}}/>
       </div>
 
-      {/* ── RIGHT: Main content area ────────────────────────────────────── */}
-      <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
-        <div style={{background:t.headerBg,borderBottom:`1px solid ${t.border}`,backdropFilter:"blur(12px)",flexShrink:0,zIndex:10}}>
-          <div style={{padding:"8px 14px"}}>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:10}}>
-              <div style={{display:"flex",alignItems:"center",gap:8}}>
-                <div style={{display:"flex",alignItems:"center",gap:5,padding:"3px 8px",borderRadius:6,background:"rgba(6,182,212,0.08)",border:"1px solid rgba(6,182,212,0.15)"}}>
-                  <div style={{width:6,height:6,borderRadius:"50%",background:connected?"#4ade80":"#f87171",animation:pulse?"eventPulse 0.4s ease-out":connected?"pulse 2s infinite":"none",boxShadow:pulse?"0 0 8px #4ade80":"none"}}/>
-                  <span style={{fontSize:9,fontFamily:"monospace",color:connected?t.accent:t.muted,fontWeight:pulse?700:400}}>{connected?"LIVE":"CONNECTING"}</span>
-                  {latestBlock&&<span style={{fontSize:8,fontFamily:"monospace",color:t.muted,borderLeft:`1px solid ${t.border}`,paddingLeft:5,marginLeft:2}}>#{latestBlock} ~100ms</span>}
-                </div>
-              </div>
-              <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-                <ConnectButton showBalance={false} chainStatus="none" accountStatus="address"/>
-                <button onClick={()=>{ resumeAudio(); setSoundEnabled(v=>!v); }} style={{...btn,background:soundEnabled?t.accentBg:"transparent",color:soundEnabled?t.accent:t.muted,border:`1px solid ${soundEnabled?t.accent:t.border}`}}>{soundEnabled?"🔊":"🔇"}</button>
-                <button onClick={()=>downloadCSV(filtered)} disabled={filtered.length===0} style={{...btn,background:"transparent",color:t.muted,border:`1px solid ${t.border}`,opacity:filtered.length===0?0.4:1}}>↓ CSV</button>
-                <button onClick={simulateWhale} disabled={simulating} style={{...btn,background:t.accentBg,color:t.accent,border:`1px solid ${t.accent}`,opacity:simulating?0.6:1}}>{simulating?"⏳":"⚡ SIM"}</button>
-                <button onClick={refreshData} style={{...btn,background:"transparent",color:t.muted,border:`1px solid ${t.border}`}}>🔄 Refresh</button>
-              </div>
-            </div>
-
-            {/* Whale Activity KPIs */}
-            <div style={{marginBottom:8}}>
-              <div style={{fontSize:7,fontFamily:"monospace",color:t.muted,textTransform:"uppercase",letterSpacing:"0.15em",marginBottom:4,paddingLeft:1}}>🐋 Whale Activity</div>
-              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(120px, 1fr))",gap:5}}>
-                <KpiCard t={t} label="Whale Events"   value={windowedWhales.length}/>
-                <KpiCard t={t} label="Reactions"       value={windowedReactions.length}/>
-                <KpiCard t={t} label="Alerts"          value={windowedAlertCount}/>
-                <KpiCard t={t} label="🔥 Momentum"
-                  value={windowedMomentumCount>0 ? windowedMomentumCount : burst?.count ?? 0}
-                  color="#ef4444"
-                  sub={windowedMomentumCount>0 ? "on-chain bursts" : burst ? burst.count+" in "+burst.windowSec+"s · live" : "on-chain bursts"}/>
-                <KpiCard t={t} label="🐋 Whale Volume"
-                  value={totalVolUSD.sum>0 ? (totalVolUSD.sum>=1e9?`$${(totalVolUSD.sum/1e9).toFixed(2)}B`:totalVolUSD.sum>=1e6?`$${(totalVolUSD.sum/1e6).toFixed(2)}M`:`$${Math.round(totalVolUSD.sum).toLocaleString()}`) : Math.round(windowedVol).toLocaleString()}
-                  sub={totalVolUSD.sum>0 ? (totalVolUSD.partial?"~USD partial":"~USD est.") : "tokens"}/>
-                <KpiCard t={t} label="🐋 Whale Largest"
-                  value={largestUSD != null ? (largestUSD>=1e9?`$${(largestUSD/1e9).toFixed(2)}B`:largestUSD>=1e6?`$${(largestUSD/1e6).toFixed(2)}M`:`$${Math.round(largestUSD).toLocaleString()}`) : windowedLargest>0?Math.round(windowedLargest).toLocaleString():"—"}
-                  sub={largestUSD != null?"~USD est.":"tokens"}/>
-                <KpiCard t={t} label="💸 Whale Fees"
-                  value={whaleTotalFees>0 ? (whaleTotalFees>=1000?`${Math.round(whaleTotalFees).toLocaleString()} STT`:`${whaleTotalFees.toFixed(8)} STT`) : "—"}
-                  color="#f59e0b"
-                  sub={whaleTotalFees>0 ? (whaleFeeEstimated ? "~estimated" : "actual fees") : "no data"}/>
-              </div>
-            </div>
-
-            {/* Tabs */}
-            <div style={{display:"flex",gap:3,overflowX:"auto",paddingBottom:1}}>
-              {allTabs.map(tb=>(<button key={tb.key} onClick={()=>setTab(tb.key as any)} style={{...btn,padding:"4px 12px",fontSize:10,background:tab===tb.key?t.accentBg:"transparent",color:tab===tb.key?t.accent:t.muted,border:`1px solid ${tab===tb.key?t.accent:"transparent"}`}}>{tb.label}</button>))}
-            </div>
-
-            <PriceTicker prices={oraclePrices} loading={pricesLoading} t={t} lastFetchedAt={lastFetchedAt}/>
-          </div>
+  {/* ── RIGHT: Main content area ────────────────────────────────────── */}
+  <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
+    <div style={{background:t.headerBg,borderBottom:`1px solid ${t.border}`,backdropFilter:"blur(12px)",flexShrink:0,zIndex:10}}>
+  <div style={{padding:"8px 14px"}}>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:10}}>
+      <div style={{display:"flex",alignItems:"center",gap:8}}>
+        <div style={{display:"flex",alignItems:"center",gap:5,padding:"3px 8px",borderRadius:6,background:"rgba(6,182,212,0.08)",border:"1px solid rgba(6,182,212,0.15)"}}>
+          <div style={{width:6,height:6,borderRadius:"50%",background:connected?"#4ade80":"#f87171",animation:pulse?"eventPulse 0.4s ease-out":connected?"pulse 2s infinite":"none",boxShadow:pulse?"0 0 8px #4ade80":"none"}}/>
+          <span style={{fontSize:9,fontFamily:"monospace",color:connected?t.accent:t.muted,fontWeight:pulse?700:400}}>{connected?"LIVE":"CONNECTING"}</span>
+          {latestBlock&&<span style={{fontSize:8,fontFamily:"monospace",color:t.muted,borderLeft:`1px solid ${t.border}`,paddingLeft:5,marginLeft:2}}>#{latestBlock} ~100ms</span>}
         </div>
+      </div>
+      <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+        <ConnectButton showBalance={false} chainStatus="none" accountStatus="address"/>
+        <button onClick={()=>{ resumeAudio(); setSoundEnabled(v=>!v); }} style={{...btn,background:soundEnabled?t.accentBg:"transparent",color:soundEnabled?t.accent:t.muted,border:`1px solid ${soundEnabled?t.accent:t.border}`}}>{soundEnabled?"🔊":"🔇"}</button>
+        <button onClick={()=>downloadCSV(filtered)} disabled={filtered.length===0} style={{...btn,background:"transparent",color:t.muted,border:`1px solid ${t.border}`,opacity:filtered.length===0?0.4:1}}>↓ CSV</button>
+        <button onClick={simulateWhale} disabled={simulating} style={{...btn,background:t.accentBg,color:t.accent,border:`1px solid ${t.accent}`,opacity:simulating?0.6:1}}>{simulating?"⏳":"⚡ SIM"}</button>
+        <button onClick={refreshData} style={{...btn,background:"transparent",color:t.muted,border:`1px solid ${t.border}`}}>🔄 Refresh</button>
+      </div>
+    </div>
 
-        {/* Scrollable tab content */}
-        <div style={{flex:1,overflowY:"auto"}}>
-          {error&&<div style={{background:t.errBg,border:`1px solid ${t.errBorder}`,margin:"8px 12px 0",borderRadius:8,padding:10,color:t.errText,fontSize:11,fontFamily:"monospace"}}>⚠ {error}</div>}
-          <div style={{padding:"8px 12px"}}>
-            <div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:14,overflow:"hidden"}}>
-              {tab==="feed"        && <LiveFeedTab    alerts={filtered} t={t} connectedAddr={walletAddr || ""} burst={burst} oraclePrices={oraclePrices} blockTxs={windowedBlockTxs} totalBlockTxsSeen={totalBlockTxsSeen} timePreset={timePreset} feedSubTab={feedSubTab} setFeedSubTab={setFeedSubTab} netMinAmt={netMinAmt} setNetMinAmt={setNetMinAmt} netMaxAmt={netMaxAmt} setNetMaxAmt={setNetMaxAmt}/>}
-              {tab==="analytics"   && <AnalyticsTab   alerts={filtered} t={t} oraclePrices={oraclePrices} shockData={shockData}/>}
-              {tab==="charts"      && <ChartsTab       alerts={filtered} t={t}/>}
-              {tab==="leaderboard" && <LeaderboardTab  alerts={filtered} t={t} persistedEntries={persistedEntries} timePreset={timePreset}/>}
-              {tab==="flow"        && <TokenFlowTab    alerts={filtered} t={t}/>}
-              {tab==="howto"       && (
-                <div style={{padding:20}}>
-                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(200px, 1fr))",gap:14,marginBottom:16}}>
-                    {[
-                      {icon:"⛓",  color:"#06b6d4",title:"On-Chain Event",    desc:"WhaleTracker.sol emits WhaleTransfer on each reportTransfer() call above threshold."},
-                      {icon:"⚡",  color:"#06b6d4",title:"Somnia Reactivity", desc:"Reactivity Engine pushes events natively — zero polling, zero indexers, zero latency."},
-                      {icon:"🔍",  color:"#a855f7",title:"Handler Contract",  desc:"WhaleHandler._onEvent() called by precompile 0x0100. Emits ReactedToWhaleTransfer on-chain."},
-                      {icon:"💾",  color:"#4ade80",title:"Data Streams",      desc:"Leaderboard persists to Somnia Data Streams on every whale event — survives server restarts."},
-                      {icon:"🚨",  color:"#f97316",title:"Burst Detection",   desc:"WhaleHandler emits WhaleMomentumDetected on-chain when ≥3 transfers occur within 60 seconds. Frontend burst banner also triggers live."},
-                      {icon:"💛",  color:"#4ade80",title:"Wallet Connect",    desc:"Connect wallet to see your personal transfers, net flow, and YOU badge in Live Feed."},
-                    ].map((s,i)=>(<div key={i} style={{background:t.pageBg,border:`1px solid ${t.border}`,borderRadius:10,padding:14}}><div style={{fontSize:22,marginBottom:8}}>{s.icon}</div><p style={{color:s.color,fontFamily:"monospace",fontSize:10,fontWeight:700,margin:"0 0 4px"}}>{s.title}</p><p style={{color:t.subtext,fontSize:10,lineHeight:1.6,margin:0}}>{s.desc}</p></div>))}
-                  </div>
-                  <div style={{background:t.pageBg,border:`1px solid ${t.border}`,borderRadius:10,padding:14}}>
-                    <pre style={{color:t.subtext,fontSize:10,fontFamily:"monospace",lineHeight:1.8,margin:0,whiteSpace:"pre-wrap"}}>{`WhaleTracker.sol       → emits WhaleTransfer\nSomnia Reactivity       → pushes to handler (precompile 0x0100)\nWhaleHandler._onEvent() → emits ReactedToWhaleTransfer\n                        → emits AlertThresholdCrossed (every N)\n                        → emits WhaleMomentumDetected (≥3 in 60s window)\nFrontend burst detector → ≥3 transfers/60s → 🚨 banner\nData Streams            → persists leaderboard across restarts\nSSE stream              → 🐋 whale  ⚡ reaction  🚨 alert  🔥 momentum`}</pre>
-                  </div>
-                </div>
-              )}
-              {tab==="mywallet"&&isConnected&&walletAddr&&<MyWalletTab alerts={alerts} connectedAddr={walletAddr} t={t}/>}
-              {tab==="mywallet"&&!isConnected&&<div style={{padding:40,textAlign:"center",color:t.muted,fontFamily:"monospace",fontSize:12}}>Connect your wallet to view your transactions.</div>}
+    {/* Whale Activity KPIs + Velocity Sparkline */}
+  <div style={{marginBottom:8}}>
+    <div style={{fontSize:7,fontFamily:"monospace",color:t.muted,textTransform:"uppercase",letterSpacing:"0.15em",marginBottom:4,paddingLeft:1}}>🐋 Whale Activity</div>
+    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(120px, 1fr))",gap:5}}>
+      <KpiCard t={t} label="Whale Events" value={windowedWhales.length}/>
+      <KpiCard t={t} label="Reactions" value={windowedReactions.length}/>
+      <KpiCard t={t} label="Alerts" value={windowedAlertCount}/>
+      <KpiCard t={t} label="🔥 Momentum"
+        value={windowedMomentumCount > 0 ? windowedMomentumCount : burst?.count ?? 0}
+        color="#ef4444"
+        sub={windowedMomentumCount > 0 ? "on-chain bursts" : burst ? burst.count+" in "+burst.windowSec+"s · live" : "on-chain bursts"}/>
+      <KpiCard t={t} label="🐋 Whale Volume"
+        value={Math.round(windowedVol).toLocaleString()}
+        sub="tokens"/>
+      <KpiCard t={t} label="💸 Whale Fees"
+        value={whaleTotalFees > 0 ? (whaleTotalFees >= 1000 ? `${Math.round(whaleTotalFees).toLocaleString()} STT` : `${whaleTotalFees.toFixed(8)} STT`) : "—"}
+        color="#f59e0b"
+        sub={whaleTotalFees > 0 ? (whaleFeeEstimated ? "~estimated" : "actual fees") : "no data"}/>
+      {/* Velocity sparkline card */}
+      <div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:10,padding:"12px 16px"}}>
+        <p style={{color:t.subtext,fontSize:10,textTransform:"uppercase",letterSpacing:"0.12em",fontFamily:"monospace",margin:"0 0 4px"}}>🐋 Velocity</p>
+        <p style={{color:t.statVal,fontSize:18,fontWeight:700,fontFamily:"monospace",margin:"0 0 4px"}}>
+          {whaleVelocityData[whaleVelocityData.length-1]?.velocity ?? 0}/h
+        </p>
+        {whaleVelocityData.length > 0 ? (
+          <ResponsiveContainer width="100%" height={36}>
+            <AreaChart data={whaleVelocityData} margin={{top:0,right:0,bottom:0,left:0}}>
+              <defs>
+                <linearGradient id="vSparkGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={t.accent} stopOpacity={0.3}/>
+                  <stop offset="95%" stopColor={t.accent} stopOpacity={0}/>
+                </linearGradient>
+              </defs>
+              <Tooltip
+                contentStyle={{background:t.tooltipBg,border:`1px solid ${t.tooltipBorder}`,borderRadius:4,fontSize:9,fontFamily:"monospace",padding:"2px 6px"}}
+                labelStyle={{display:"none"}}
+                formatter={(v:any)=>[`${v}/h`,"velocity"]}
+              />
+              <Area type="monotone" dataKey="velocity" stroke={t.accent} strokeWidth={1.5} fill="url(#vSparkGrad)" dot={false} isAnimationActive={false}/>
+            </AreaChart>
+          </ResponsiveContainer>
+        ) : (
+          <p style={{color:t.muted,fontSize:9,fontFamily:"monospace",margin:0}}>no data</p>
+        )}
+      </div>
+    </div>
+  </div>
+
+    {/* Tabs */}
+    <div style={{display:"flex",gap:3,overflowX:"auto",paddingBottom:1}}>
+      {allTabs.map(tb=>(
+        <button key={tb.key} onClick={()=>setTab(tb.key as any)} style={{...btn,padding:"4px 12px",fontSize:10,background:tab===tb.key?t.accentBg:"transparent",color:tab===tb.key?t.accent:t.muted,border:`1px solid ${tab===tb.key?t.accent:"transparent"}`}}>
+          {tb.label}
+        </button>
+      ))}
+    </div>
+
+    <PriceTicker prices={oraclePrices} loading={pricesLoading} t={t} lastFetchedAt={lastFetchedAt}/>
+  </div>
+</div>
+    {/* Scrollable tab content */}
+    <div style={{flex:1,overflowY:"auto"}}>
+      {error&&<div style={{background:t.errBg,border:`1px solid ${t.errBorder}`,margin:"8px 12px 0",borderRadius:8,padding:10,color:t.errText,fontSize:11,fontFamily:"monospace"}}>⚠ {error}</div>}
+      <div style={{padding:"8px 12px"}}>
+        <div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:14,overflow:"hidden"}}>
+          {tab==="feed"        && <LiveFeedTab    alerts={filtered} t={t} connectedAddr={walletAddr || ""} burst={burst} oraclePrices={oraclePrices} blockTxs={windowedBlockTxs} totalBlockTxsSeen={totalBlockTxsSeen} timePreset={timePreset} feedSubTab={feedSubTab} setFeedSubTab={setFeedSubTab} netMinAmt={netMinAmt} setNetMinAmt={setNetMinAmt} netMaxAmt={netMaxAmt} setNetMaxAmt={setNetMaxAmt}/>}
+          {tab==="analytics" && <AnalyticsTab alerts={filtered} t={t} oraclePrices={oraclePrices} shockData={shockData} metrics={displayMetrics} whalePressure={whalePressure}/>}
+          {tab==="charts"      && <ChartsTab       alerts={filtered} t={t}/>}
+          {tab==="leaderboard" && <LeaderboardTab  alerts={filtered} t={t} persistedEntries={persistedEntries} timePreset={timePreset}/>}
+          {tab==="flow"        && <TokenFlowTab    alerts={filtered} t={t}/>}
+          {tab==="howto"       && (
+            <div style={{padding:20}}>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(200px, 1fr))",gap:14,marginBottom:16}}>
+                {[
+                  {icon:"⛓",  color:"#06b6d4",title:"On-Chain Event",    desc:"WhaleTracker.sol emits WhaleTransfer on each reportTransfer() call above threshold."},
+                  {icon:"⚡",  color:"#06b6d4",title:"Somnia Reactivity", desc:"Reactivity Engine pushes events natively — zero polling, zero indexers, zero latency."},
+                  {icon:"🔍",  color:"#a855f7",title:"Handler Contract",  desc:"WhaleHandler._onEvent() called by precompile 0x0100. Emits ReactedToWhaleTransfer on-chain."},
+                  {icon:"💾",  color:"#4ade80",title:"Data Streams",      desc:"Leaderboard persists to Somnia Data Streams on every whale event — survives server restarts."},
+                  {icon:"🚨",  color:"#f97316",title:"Burst Detection",   desc:"WhaleHandler emits WhaleMomentumDetected on-chain when ≥3 transfers occur within 60 seconds. Frontend burst banner also triggers live."},
+                  {icon:"💛",  color:"#4ade80",title:"Wallet Connect",    desc:"Connect wallet to see your personal transfers, net flow, and YOU badge in Live Feed."},
+                ].map((s,i)=>(<div key={i} style={{background:t.pageBg,border:`1px solid ${t.border}`,borderRadius:10,padding:14}}><div style={{fontSize:22,marginBottom:8}}>{s.icon}</div><p style={{color:s.color,fontFamily:"monospace",fontSize:10,fontWeight:700,margin:"0 0 4px"}}>{s.title}</p><p style={{color:t.subtext,fontSize:10,lineHeight:1.6,margin:0}}>{s.desc}</p></div>))}
+              </div>
+              <div style={{background:t.pageBg,border:`1px solid ${t.border}`,borderRadius:10,padding:14}}>
+                <pre style={{color:t.subtext,fontSize:10,fontFamily:"monospace",lineHeight:1.8,margin:0,whiteSpace:"pre-wrap"}}>{`WhaleTracker.sol       → emits WhaleTransfer\nSomnia Reactivity       → pushes to handler (precompile 0x0100)\nWhaleHandler._onEvent() → emits ReactedToWhaleTransfer\n                        → emits AlertThresholdCrossed (every N)\n                        → emits WhaleMomentumDetected (≥3 in 60s window)\nFrontend burst detector → ≥3 transfers/60s → 🚨 banner\nData Streams            → persists leaderboard across restarts\nSSE stream              → 🐋 whale  ⚡ reaction  🚨 alert  🔥 momentum`}</pre>
+              </div>
             </div>
-            <div style={{marginTop:10,display:"flex",justifyContent:"space-between",color:t.muted,fontSize:9,fontFamily:"monospace"}}>
-              <span>Contract: <a href={addrUrl(process.env.NEXT_PUBLIC_CONTRACT_ADDRESS||"")} target="_blank" rel="noreferrer" style={{color:t.accent,textDecoration:"none"}}>{short(process.env.NEXT_PUBLIC_CONTRACT_ADDRESS||"0x0000000000000000000000000000000000000000")}</a></span>
-              <span>Somnia Testnet · Chain ID 50312</span>
-            </div>
-          </div>
+          )}
+          {tab==="mywallet"&&isConnected&&walletAddr&&<MyWalletTab alerts={alerts} connectedAddr={walletAddr} t={t}/>}
+          {tab==="mywallet"&&!isConnected&&<div style={{padding:40,textAlign:"center",color:t.muted,fontFamily:"monospace",fontSize:12}}>Connect your wallet to view your transactions.</div>}
+        </div>
+        <div style={{marginTop:10,display:"flex",justifyContent:"space-between",color:t.muted,fontSize:9,fontFamily:"monospace"}}>
+          <span>Contract: <a href={addrUrl(process.env.NEXT_PUBLIC_CONTRACT_ADDRESS||"")} target="_blank" rel="noreferrer" style={{color:t.accent,textDecoration:"none"}}>{short(process.env.NEXT_PUBLIC_CONTRACT_ADDRESS||"0x0000000000000000000000000000000000000000")}</a></span>
+          <span>Somnia Testnet · Chain ID 50312</span>
         </div>
       </div>
     </div>
+  </div>
+</div>
   );
 }
