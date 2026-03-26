@@ -1,7 +1,5 @@
 "use client";
 import { useState, useMemo, useRef, useEffect } from "react";
-import { useAccount } from "wagmi";
-import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { useWhaleAlerts, WhaleAlert, BlockTx, LiveMetrics, clearFrontendCache, fetchFilteredMetrics } from "../lib/useWhaleAlerts";
 import { useOraclePrices, formatUsd, OraclePrice } from "../lib/useOraclePrices";
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell, RadialBarChart, RadialBar, PolarAngleAxis } from "recharts";
@@ -185,7 +183,7 @@ function BurstBanner({burst,t}:{burst:Burst;t:typeof T.dark}){
 }
 
 // ── Live Feed Tab ─────────────────────────────────────────────────────────────
-function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBlockTxsSeen,timePreset,feedSubTab,setFeedSubTab,netMinAmt,setNetMinAmt,netMaxAmt,setNetMaxAmt}:{alerts:WhaleAlert[];t:typeof T.dark;connectedAddr?:string;burst:Burst;oraclePrices:Record<string,any>;blockTxs:BlockTx[];totalBlockTxsSeen:number;timePreset:number;feedSubTab:"alerts"|"network-activity";setFeedSubTab:(v:"alerts"|"network-activity")=>void;netMinAmt:string;setNetMinAmt:(v:string)=>void;netMaxAmt:string;setNetMaxAmt:(v:string)=>void;}){
+function LiveFeedTab({alerts,t,burst,oraclePrices,blockTxs,totalBlockTxsSeen,timePreset,feedSubTab,setFeedSubTab,netMinAmt,setNetMinAmt,netMaxAmt,setNetMaxAmt}:{alerts:WhaleAlert[];t:typeof T.dark;burst:Burst;oraclePrices:Record<string,any>;blockTxs:BlockTx[];totalBlockTxsSeen:number;timePreset:number;feedSubTab:"alerts"|"network-activity";setFeedSubTab:(v:"alerts"|"network-activity")=>void;netMinAmt:string;setNetMinAmt:(v:string)=>void;netMaxAmt:string;setNetMaxAmt:(v:string)=>void;}){
   const[expanded,setExpanded]=useState<string|null>(null);
   const[page,setPage]=useState(0);
   const PAGE=10;
@@ -197,7 +195,14 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
   const pageAlerts=sortedAlerts.slice(page*PAGE,(page+1)*PAGE);
   const prevCount=useRef(alerts.length);
   useEffect(()=>{if(alerts.length!==prevCount.current){setPage(0);prevCount.current=alerts.length;}},[alerts.length]);
-  function rowBg(a:WhaleAlert,i:number){const isMyTx=connectedAddr&&(a.from.toLowerCase()===connectedAddr.toLowerCase()||a.to.toLowerCase()===connectedAddr.toLowerCase());if(isMyTx)return t.myTxRow;if(a.type==="reaction")return i%2===0?t.reactionRow:`${t.reactionRow}cc`;if(a.type==="alert")return i%2===0?t.alertRow:`${t.alertRow}cc`;if(a.type==="momentum")return"rgba(239,68,68,0.08)";return i%2===0?t.tableRow:t.tableAlt;}
+
+function rowBg(a:WhaleAlert,i:number){
+  if(a.type==="reaction")return i%2===0?t.reactionRow:`${t.reactionRow}cc`;
+  if(a.type==="alert")return i%2===0?t.alertRow:`${t.alertRow}cc`;
+  if(a.type==="momentum")return"rgba(239,68,68,0.08)";
+  return i%2===0?t.tableRow:t.tableAlt;
+}
+  
   type NetSortCol="from"|"to"|"amount"|"fee"|"block"|"time";
   const[netSort,setNetSort]=useState<{col:NetSortCol;dir:"asc"|"desc"}>({col:"time",dir:"desc"});
   const[netPage,setNetPage]=useState(0);
@@ -207,6 +212,7 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
   useEffect(()=>{if(feedSubTab!=="network-activity")return;setNetLoading(true);const p=new URLSearchParams({page:String(netPage),sort:netSort.col,dir:netSort.dir,window:String(timePreset),...(netMinAmt?{min:netMinAmt}:{}),...(netMaxAmt?{max:netMaxAmt}:{})});fetch(`/api/network-activity?${p}`).then(r=>r.json()).then(d=>{setNetData(d);setNetLoading(false);}).catch(()=>setNetLoading(false));},[netPage,netSort,netMinAmt,netMaxAmt,feedSubTab,timePreset]);
   const prevBlockTxLen=useRef(0);
   useEffect(()=>{if(Math.abs(blockTxs.length-prevBlockTxLen.current)>=10){prevBlockTxLen.current=blockTxs.length;if(feedSubTab==="network-activity"&&netPage===0){const p=new URLSearchParams({page:"0",sort:netSort.col,dir:netSort.dir,window:String(timePreset),...(netMinAmt?{min:netMinAmt}:{}),...(netMaxAmt?{max:netMaxAmt}:{})});fetch(`/api/network-activity?${p}`).then(r=>r.json()).then(setNetData).catch(()=>{});}}},[blockTxs.length,timePreset]);
+  
   return(<div style={{padding:"14px 14px 0"}}>
     <BurstBanner burst={burst} t={t}/>
     <div style={{display:"flex",gap:4,marginBottom:12,borderBottom:`1px solid ${t.border}`,paddingBottom:8}}>
@@ -230,13 +236,12 @@ function LiveFeedTab({alerts,t,connectedAddr,burst,oraclePrices,blockTxs,totalBl
           <Th t={t}></Th>
         </tr></thead>
         <tbody>{pageAlerts.map((a,i)=>{
-          const isMyTx=connectedAddr&&(a.from.toLowerCase()===connectedAddr.toLowerCase()||a.to.toLowerCase()===connectedAddr.toLowerCase());
           const usd=a.type==="whale"?usdVal(num(a.amount),a.token,oraclePrices):null;
           const isSignal=a.type==="momentum"||a.type==="alert"||a.type==="reaction";
           const sigColor=a.type==="momentum"?"#ef4444":a.type==="alert"?"#f97316":"#a855f7";
           return(<>
             <tr key={a.id} style={{background:rowBg(a,i),cursor:"pointer",transition:"background 0.15s"}} onMouseEnter={e=>(e.currentTarget.style.background=t.rowHover)} onMouseLeave={e=>(e.currentTarget.style.background=rowBg(a,i))}>
-              <Td t={t}><div style={{display:"flex",gap:4,alignItems:"center"}}><TypeBadge type={a.type} t={t}/>{isMyTx&&<span style={{fontSize:8,background:"rgba(74,222,128,0.2)",color:"#4ade80",border:"1px solid rgba(74,222,128,0.4)",borderRadius:3,padding:"1px 5px",fontFamily:"monospace"}}>YOU</span>}{a.blockNumber==="simulated"&&<span style={{fontSize:8,background:"#f97316",color:"white",borderRadius:3,padding:"1px 5px",fontFamily:"monospace"}}>🧪 TEST</span>}</div></Td>
+              <Td t={t}><div style={{display:"flex",gap:4,alignItems:"center"}}><TypeBadge type={a.type} t={t}/>{a.blockNumber==="simulated"&&<span style={{fontSize:8,background:"#f97316",color:"white",borderRadius:3,padding:"1px 5px",fontFamily:"monospace"}}>🧪 TEST</span>}</div></Td>
               <Td t={t}>{a.token?<Badge text={a.token} color={TOKEN_COLORS[a.token]} t={t}/>:<span style={{color:t.muted,fontSize:11}}>—</span>}</Td>
               <Td t={t} accent bold>{a.type==="whale"?parseFloat(a.amount).toFixed(8):<span style={{color:t.muted}}>—</span>}</Td>
               <Td t={t}>{usd?<span style={{color:"#4ade80",fontFamily:"monospace",fontSize:11,fontWeight:700}}>{usd}</span>:isSignal&&a.signalReason?<span style={{color:sigColor,fontSize:9,fontFamily:"monospace",maxWidth:180,display:"inline-block",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={a.signalReason}>{a.signalReason}</span>:<span style={{color:t.muted,fontSize:10}}>—</span>}</Td>
@@ -507,7 +512,6 @@ export default function WhaleDashboard(){
     metrics: liveMetrics,
     shockData,
   } = useWhaleAlerts();
-  const{address:walletAddr,isConnected}=useAccount();
   const{prices:oraclePrices,loading:pricesLoading,lastFetchedAt}=useOraclePrices(10_000);
   const[serverMetrics,setServerMetrics]=useState<LiveMetrics|null>(null);
   const[simulating,setSimulating]=useState(false);
@@ -690,7 +694,7 @@ export default function WhaleDashboard(){
 
   async function simulateWhale(){setSimulating(true);try{const res=await fetch("/api/simulate-whale",{method:"POST"});const d=await res.json();if(!d.success)throw new Error(d.error);}catch(e){alert("Simulation failed: "+e);}finally{setSimulating(false);}}
   const refreshData=()=>{clearFrontendCache();window.location.reload();};
-  const allTabs=[{key:"feed",label:"⚡ Live Feed"},{key:"analytics",label:"📈 Analytics"},{key:"charts",label:"📊 Charts"},{key:"leaderboard",label:"🏆 Leaderboard"},{key:"flow",label:"🔀 Token Flow"},{key:"howto",label:"ℹ How It Works"},...(isConnected?[{key:"mywallet",label:"💛 My Wallet"}]:[])] as const;
+  const allTabs=[{key:"feed",label:"⚡ Live Feed"},{key:"analytics",label:"📈 Analytics"},{key:"charts",label:"📊 Charts"},{key:"leaderboard",label:"🏆 Leaderboard"},{key:"flow",label:"🔀 Token Flow"},{key:"howto",label:"ℹ How It Works"}] as const;
   const btn:React.CSSProperties={fontSize:11,fontFamily:"monospace",padding:"7px 13px",borderRadius:8,cursor:"pointer",transition:"all 0.15s",fontWeight:600,whiteSpace:"nowrap"};
 
   return(
@@ -784,7 +788,6 @@ export default function WhaleDashboard(){
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
-                <ConnectButton showBalance={false} chainStatus="none" accountStatus="address"/>
                 <button onClick={()=>{resumeAudio();setSoundEnabled(v=>!v);}} style={{...btn,background:soundEnabled?t.accentBg:"transparent",color:soundEnabled?t.accent:t.muted,border:`1px solid ${soundEnabled?t.accent:t.border}`}}>{soundEnabled?"🔊":"🔇"}</button>
                 <button onClick={()=>downloadCSV(filtered)} disabled={filtered.length===0} style={{...btn,background:"transparent",color:t.muted,border:`1px solid ${t.border}`,opacity:filtered.length===0?0.4:1}}>↓ CSV</button>
                 <button onClick={simulateWhale} disabled={simulating} style={{...btn,background:t.accentBg,color:t.accent,border:`1px solid ${t.accent}`,opacity:simulating?0.6:1}}>{simulating?"⏳":"⚡ SIM"}</button>
@@ -804,13 +807,13 @@ export default function WhaleDashboard(){
                 <KpiCard t={t} label="💸 Whale Fees" value={whaleTotalFees>0?(whaleTotalFees>=1000?`${Math.round(whaleTotalFees).toLocaleString()} STT`:`${whaleTotalFees.toFixed(8)} STT`):"—"} color="#f59e0b" sub={whaleTotalFees>0?(whaleFeeEstimated?"~estimated":"actual fees"):"no data"}/>
                 {/* Velocity sparkline */}
                 <div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:10,padding:"12px 16px"}}>
-                  <p style={{color:t.subtext,fontSize:10,textTransform:"uppercase",letterSpacing:"0.12em",fontFamily:"monospace",margin:"0 0 4px"}}>🐋 Velocity</p>
+                  <p style={{color:t.subtext,fontSize:10,textTransform:"uppercase",letterSpacing:"0.12em",fontFamily:"monospace",margin:"0 0 4px"}}>🐋 Whale Frequency</p>
                   <p style={{color:t.statVal,fontSize:18,fontWeight:700,fontFamily:"monospace",margin:"0 0 4px"}}>{whaleVelocityData[whaleVelocityData.length-1]?.velocity??0}/h</p>
                   {whaleVelocityData.length>0?(
                     <ResponsiveContainer width="100%" height={36}>
                       <AreaChart data={whaleVelocityData} margin={{top:0,right:0,bottom:0,left:0}}>
                         <defs><linearGradient id="vSparkGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor={t.accent} stopOpacity={0.3}/><stop offset="95%" stopColor={t.accent} stopOpacity={0}/></linearGradient></defs>
-                        <Tooltip contentStyle={{background:t.tooltipBg,border:`1px solid ${t.tooltipBorder}`,borderRadius:4,fontSize:9,fontFamily:"monospace",padding:"2px 6px"}} labelStyle={{display:"none"}} formatter={(v:any)=>[`${v}/h`,"Whale Frequency"]}/>
+                        <Tooltip contentStyle={{background:t.tooltipBg,border:`1px solid ${t.tooltipBorder}`,borderRadius:4,fontSize:9,fontFamily:"monospace",padding:"2px 6px"}} labelStyle={{display:"none"}} formatter={(v:any)=>[`${v}/h`,"velocity"]}/>
                         <Area type="monotone" dataKey="velocity" stroke={t.accent} strokeWidth={1.5} fill="url(#vSparkGrad)" dot={false} isAnimationActive={false}/>
                       </AreaChart>
                     </ResponsiveContainer>
@@ -832,7 +835,7 @@ export default function WhaleDashboard(){
           {error&&<div style={{background:t.errBg,border:`1px solid ${t.errBorder}`,margin:"8px 12px 0",borderRadius:8,padding:10,color:t.errText,fontSize:11,fontFamily:"monospace"}}>⚠ {error}</div>}
           <div style={{padding:"8px 12px"}}>
             <div style={{background:t.card,border:`1px solid ${t.border}`,borderRadius:14,overflow:"hidden"}}>
-              {tab==="feed"        &&<LiveFeedTab alerts={filtered} t={t} connectedAddr={walletAddr||""} burst={burst} oraclePrices={oraclePrices} blockTxs={windowedBlockTxs} totalBlockTxsSeen={totalBlockTxsSeen} timePreset={timePreset} feedSubTab={feedSubTab} setFeedSubTab={setFeedSubTab} netMinAmt={netMinAmt} setNetMinAmt={setNetMinAmt} netMaxAmt={netMaxAmt} setNetMaxAmt={setNetMaxAmt}/>}
+              {tab==="feed" && <LiveFeedTab alerts={filtered} t={t} burst={burst} oraclePrices={oraclePrices} blockTxs={windowedBlockTxs} totalBlockTxsSeen={totalBlockTxsSeen} timePreset={timePreset} feedSubTab={feedSubTab} setFeedSubTab={setFeedSubTab} netMinAmt={netMinAmt} setNetMinAmt={setNetMinAmt} netMaxAmt={netMaxAmt} setNetMaxAmt={setNetMaxAmt}/>}
               {tab==="analytics"   &&<AnalyticsTab alerts={filtered} t={t} oraclePrices={oraclePrices} shockData={shockData} metrics={displayMetrics}/>}
               {tab==="charts"      &&<ChartsTab alerts={filtered} t={t}/>}
               {tab==="leaderboard" &&<LeaderboardTab alerts={filtered} t={t} persistedEntries={persistedEntries} timePreset={timePreset}/>}
@@ -847,8 +850,7 @@ export default function WhaleDashboard(){
                   </div>
                 </div>
               )}
-              {tab==="mywallet"&&isConnected&&walletAddr&&<MyWalletTab alerts={alerts} connectedAddr={walletAddr} t={t}/>}
-              {tab==="mywallet"&&!isConnected&&<div style={{padding:40,textAlign:"center",color:t.muted,fontFamily:"monospace",fontSize:12}}>Connect your wallet to view your transactions.</div>}
+              
             </div>
             <div style={{marginTop:10,display:"flex",justifyContent:"space-between",color:t.muted,fontSize:9,fontFamily:"monospace"}}>
               <span>Contract: <a href={addrUrl(process.env.NEXT_PUBLIC_CONTRACT_ADDRESS||"")} target="_blank" rel="noreferrer" style={{color:t.accent,textDecoration:"none"}}>{short(process.env.NEXT_PUBLIC_CONTRACT_ADDRESS||"0x0000000000000000000000000000000000000000")}</a></span>
