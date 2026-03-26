@@ -1,4 +1,3 @@
-
 export type LiveMetrics = {
   // Network
   totalTx24h: number;
@@ -7,8 +6,8 @@ export type LiveMetrics = {
   whaleTx24h: number;
   whaleVolumeStt: number;
   avgWhaleSizeStt: number;
-  medianWhaleSizeStt: number; 
-  whaleVelocity:      number;
+  medianWhaleSizeStt: number;
+  whaleVelocity: number;
   largestWhaleStt: number;
   whaleFees: number;
   whaleFeeEstimated: boolean;
@@ -17,8 +16,10 @@ export type LiveMetrics = {
   momentum24h: number;
   reactions24h: number;
   // Rates
-  whaleTxRate: number;    // % of STT transfers that are whales (0-100)
-  whaleTxRateRaw: number; // same but not capped
+  whaleTxRate: number;
+  whaleTxRateRaw: number;
+  // Pressure
+  whalePressure: number;
   // Threshold
   whaleThresholdStt: number;
   whalePercentile: number;
@@ -46,32 +47,26 @@ export type WindowMetrics = {
   sttTx: number;
 };
 
-// ── Filter type for filtered KPI queries ──────────────────────────────────────
-
 export type MetricsFilter = {
-  windowMs?: number;   // default: 24h
-  minStt?: number;     // minimum whale size in STT
-  maxStt?: number;     // maximum whale size in STT
-  token?: string;      // token symbol filter (e.g. "STT")
-  wallet?: string;     // wallet address filter (from or to, lowercase)
+  windowMs?: number;
+  minStt?: number;
+  maxStt?: number;
+  token?: string;
+  wallet?: string;
 };
 
 // ── Internal state ────────────────────────────────────────────────────────────
 
-const BUCKET_MS   = 60_000;          // 1-minute buckets
-const WINDOW_24H  = 24 * 60 * 60_000;
+const BUCKET_MS  = 60_000;
+const WINDOW_24H = 24 * 60 * 60_000;
 const MAX_WHALE_SAMPLES = 1_000;
 const MAX_SHOCK_ENTRIES = 50;
-
-// ── Raw event ring buffer — used for filtered queries ─────────────────────────
-// Keeps the last MAX_RAW_EVENTS entries. Filtered KPI queries scan this buffer
-// (O(n) where n ≤ MAX_RAW_EVENTS) instead of rebuilding counters.
-// Unfiltered paths still use O(1) incremental counters.
 const MAX_RAW_EVENTS = 50_000;
+
 type RawEvent = {
   type: string;
   receivedAt: number;
-  amountStt: number;    // 0 for non-whale events
+  amountStt: number;
   fromAddr: string;
   toAddr: string;
   token: string;
@@ -81,15 +76,12 @@ type RawEvent = {
 };
 const rawEvents: RawEvent[] = [];
 
-// Rolling time buckets { bucket_start_ms → count }
 const allTxBuckets:   Map<number, number> = new Map();
 const sttTxBuckets:   Map<number, number> = new Map();
 const whaleTxBuckets: Map<number, number> = new Map();
 
-// Recent whale sizes for average/percentile
 const whaleSizesStt: number[] = [];
 
-// Per-whale network-reaction window (for shock score)
 type ShockAccumulator = {
   whaleTxHash: string;
   whaleTs: number;
@@ -102,19 +94,42 @@ type ShockAccumulator = {
 const activeShockWindows: Map<string, ShockAccumulator> = new Map();
 const completedShock: ShockDataPoint[] = [];
 
-// Cumulative totals (reset on eviction — approximate, sufficient for display)
-let _totalTx24h  = 0;
-let _sttTx24h    = 0;
-let _whaleTx24h  = 0;
-let _whaleVolStt = 0;
-let _largestStt  = 0;
-let _whaleFees   = 0;
-let _whaleFeeEst = false;
-let _alerts24h   = 0;
-let _momentum24h = 0;
+// ── Pressure tracking ─────────────────────────────────────────────────────────
+// Per-address net flow maps — updated incrementally on each whale event.
+// pressure = (accumVol - distVol) / (accumVol + distVol)
+// where accumVol = sum of positive net flows, distVol = sum of |negative net flows|
+// Range [-1, 1]. +1 = full accumulation, -1 = full distribution.
+const _pressureInflowMap:  Map<string, number> = new Map();
+const _pressureOutflowMap: Map<string, number> = new Map();
+let _whalePressure = 0;
+
+function recomputePressure() {
+  let accumVol = 0, distVol = 0;
+  const allAddrs = new Set([..._pressureInflowMap.keys(), ..._pressureOutflowMap.keys()]);
+  for (const addr of allAddrs) {
+    const net = (_pressureInflowMap.get(addr) ?? 0) - (_pressureOutflowMap.get(addr) ?? 0);
+    if (net > 0) accumVol += net;
+    else distVol += Math.abs(net);
+  }
+  _whalePressure = (accumVol + distVol) > 0
+    ? Math.min(1, Math.max(-1, (accumVol - distVol) / (accumVol + distVol)))
+    : 0;
+}
+
+// ── Cumulative counters ───────────────────────────────────────────────────────
+
+let _totalTx24h   = 0;
+let _sttTx24h     = 0;
+let _whaleTx24h   = 0;
+let _whaleVolStt  = 0;
+let _largestStt   = 0;
+let _whaleFees    = 0;
+let _whaleFeeEst  = false;
+let _alerts24h    = 0;
+let _momentum24h  = 0;
 let _reactions24h = 0;
 let _whaleThresholdStt = 0.5;
-let _whalePercentile   = 90;
+let _whalePercentile   = 75;
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -123,10 +138,6 @@ export function setThresholdMeta(stt: number, percentile: number) {
   _whalePercentile   = percentile;
 }
 
-/**
- * Call this inside push() for every event.
- * This is the only place state is mutated.
- */
 export function processEvent(
   type: string,
   raw: Record<string, any>,
@@ -135,7 +146,6 @@ export function processEvent(
   const now    = receivedAt;
   const bucket = Math.floor(now / BUCKET_MS) * BUCKET_MS;
 
-  // ── Raw ring buffer entry ──────────────────────────────────────────────────
   const amountStt = type === "whale" ? hexAmtToStt(raw.amount) : parseFloat(raw.amount ?? "0");
   const txFeeRaw  = parseFloat((raw.txFee ?? "0").replace("~", ""));
   const rawEntry: RawEvent = {
@@ -160,7 +170,6 @@ export function processEvent(
       _sttTx24h++;
       inc(sttTxBuckets, bucket);
     }
-    // Feed any active shock windows
     const txTs = hexTsToMs(raw.timestamp) || now;
     for (const [, acc] of activeShockWindows) {
       if (txTs > acc.whaleTs && txTs <= acc.whaleTs + 30_000) {
@@ -184,7 +193,17 @@ export function processEvent(
     }
     whaleSizesStt.push(stt);
     if (whaleSizesStt.length > MAX_WHALE_SAMPLES) whaleSizesStt.shift();
-    // Open shock accumulator for this whale
+
+    // ── Update pressure maps incrementally ───────────────────────────────────
+    // Only count non-simulated whale events
+    if (raw.blockNumber !== "simulated") {
+      const from = (raw.from ?? "").toLowerCase();
+      const to   = (raw.to   ?? "").toLowerCase();
+      if (from) _pressureOutflowMap.set(from, (_pressureOutflowMap.get(from) ?? 0) + stt);
+      if (to)   _pressureInflowMap.set(to,    (_pressureInflowMap.get(to)    ?? 0) + stt);
+      recomputePressure();
+    }
+
     if (raw.txHash) {
       const whaleTs = hexTsToMs(raw.timestamp) || now;
       activeShockWindows.set(raw.txHash, {
@@ -193,7 +212,6 @@ export function processEvent(
         txCount: 0, wallets: new Set(), followups: 0,
       });
     }
-    // Count follow-up whale events in existing open windows
     const whaleTs = hexTsToMs(raw.timestamp) || now;
     for (const [key, acc] of activeShockWindows) {
       if (key !== raw.txHash && whaleTs > acc.whaleTs && whaleTs <= acc.whaleTs + 30_000) {
@@ -207,7 +225,6 @@ export function processEvent(
   evictOldBuckets(now);
 }
 
-/** Called when analytics engine is seeded from DB on startup */
 export function seedFromHistory(entries: { type: string; raw: Record<string, any>; receivedAt: number }[]) {
   resetCounters();
   for (const e of entries) {
@@ -220,7 +237,6 @@ export function getMetrics(): LiveMetrics {
     ? whaleSizesStt.reduce((s, v) => s + v, 0) / whaleSizesStt.length
     : 0;
 
-  // Median — more representative than mean for skewed distributions
   const medianStt = (() => {
     if (whaleSizesStt.length === 0) return 0;
     const sorted = [...whaleSizesStt].sort((a, b) => a - b);
@@ -228,15 +244,9 @@ export function getMetrics(): LiveMetrics {
     return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
   })();
 
-  // Whale Rate denominator = _sttTx24h (txns that moved STT value)
-  // Previously used _totalTx24h which included zero-value contract calls,
-  // making rate meaningless. sttTx = txns with amount > 0 is correct denominator.
-  // "Of all STT value transfers, what % were whale-sized?"
   const whaleTxRateRaw = _sttTx24h > 0 ? (_whaleTx24h / _sttTx24h) * 100 : 0;
-  // Scale *20 for speedometer: 5% real rate → full gauge
   const rate = Math.min(100, whaleTxRateRaw);
 
-  // Whale velocity: whales per minute over last 5 minutes
   const now5m = Date.now() - 5 * 60_000;
   let whalesLast5m = 0;
   for (const [ts, count] of whaleTxBuckets) {
@@ -260,6 +270,7 @@ export function getMetrics(): LiveMetrics {
     reactions24h:       _reactions24h,
     whaleTxRate:        rate,
     whaleTxRateRaw:     whaleTxRateRaw,
+    whalePressure:      _whalePressure,
     whaleThresholdStt:  _whaleThresholdStt,
     whalePercentile:    _whalePercentile,
     updatedAt:          Date.now(),
@@ -290,9 +301,9 @@ export function getFilteredMetrics(filter: MetricsFilter = {}): LiveMetrics {
   const hasFilter = minStt != null || maxStt != null || token || wallet || windowMs !== WINDOW_24H;
   if (!hasFilter) return getMetrics();
 
-  const cutoff       = Date.now() - windowMs;
-  const walletLower  = wallet?.toLowerCase();
-  const tokenLower   = token?.toLowerCase();
+  const cutoff      = Date.now() - windowMs;
+  const walletLower = wallet?.toLowerCase();
+  const tokenLower  = token?.toLowerCase();
 
   let totalTx    = 0;
   let sttTx      = 0;
@@ -308,49 +319,55 @@ export function getFilteredMetrics(filter: MetricsFilter = {}): LiveMetrics {
   const whaleSizes: number[] = [];
   const whaleBuckets: Map<number, number> = new Map();
 
+  // Pressure maps for filtered view
+  const filtInflowMap:  Map<string, number> = new Map();
+  const filtOutflowMap: Map<string, number> = new Map();
+
   for (const e of rawEvents) {
     if (e.receivedAt < cutoff) continue;
-
-    if (walletLower) {
-      if (e.fromAddr !== walletLower && e.toAddr !== walletLower) continue;
-    }
-
+    if (walletLower && e.fromAddr !== walletLower && e.toAddr !== walletLower) continue;
     if (tokenLower && e.token.toLowerCase() !== tokenLower) continue;
 
     const bucket = Math.floor(e.receivedAt / BUCKET_MS) * BUCKET_MS;
 
     if (e.type === "block_tx") {
       totalTx++;
-
-     if (e.amountStt >= 0.0001) {
-        sttTx++;
-      }
-
+      if (e.amountStt >= 0.0001) sttTx++;
     } else if (e.type === "whale") {
       const stt = e.amountStt;
-
       if (minStt != null && stt < minStt) continue;
       if (maxStt != null && stt > maxStt) continue;
 
       whaleTx++;
       whaleVol += stt;
-
       if (stt > largestStt) largestStt = stt;
-
       if (e.txFee > 0) {
         whaleFees += e.txFee;
         if (e.feeEstimated) feeEst = true;
       }
-
       whaleSizes.push(stt);
-
-      // track for velocity
       whaleBuckets.set(bucket, (whaleBuckets.get(bucket) ?? 0) + 1);
+
+      // Update filtered pressure maps
+      if (e.fromAddr) filtOutflowMap.set(e.fromAddr, (filtOutflowMap.get(e.fromAddr) ?? 0) + stt);
+      if (e.toAddr)   filtInflowMap.set(e.toAddr,    (filtInflowMap.get(e.toAddr)    ?? 0) + stt);
 
     } else if (e.type === "alert")    { alerts++; }
     else if (e.type === "momentum")   { momentum++; }
     else if (e.type === "reaction")   { reactions++; }
   }
+
+  // Compute pressure for filtered dataset
+  let filtAccumVol = 0, filtDistVol = 0;
+  const filtAllAddrs = new Set([...filtInflowMap.keys(), ...filtOutflowMap.keys()]);
+  for (const addr of filtAllAddrs) {
+    const net = (filtInflowMap.get(addr) ?? 0) - (filtOutflowMap.get(addr) ?? 0);
+    if (net > 0) filtAccumVol += net;
+    else filtDistVol += Math.abs(net);
+  }
+  const filtPressure = (filtAccumVol + filtDistVol) > 0
+    ? Math.min(1, Math.max(-1, (filtAccumVol - filtDistVol) / (filtAccumVol + filtDistVol)))
+    : 0;
 
   const avg = whaleSizes.length > 0
     ? whaleSizes.reduce((s, v) => s + v, 0) / whaleSizes.length
@@ -360,45 +377,42 @@ export function getFilteredMetrics(filter: MetricsFilter = {}): LiveMetrics {
     if (whaleSizes.length === 0) return 0;
     const sorted = [...whaleSizes].sort((a, b) => a - b);
     const mid = Math.floor(sorted.length / 2);
-    return sorted.length % 2 === 0
-      ? (sorted[mid - 1] + sorted[mid]) / 2
-      : sorted[mid];
+    return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
   })();
 
   const whaleTxRateRaw = sttTx > 0 ? (whaleTx / sttTx) * 100 : 0;
-
   const whaleTxRate = Math.min(100, whaleTxRateRaw);
 
   const now5m = Date.now() - 5 * 60_000;
   let whalesLast5m = 0;
-
   for (const [ts, count] of whaleBuckets) {
     if (ts >= now5m) whalesLast5m += count;
   }
-
   const whaleVelocity = parseFloat((whalesLast5m / 5).toFixed(2));
 
   return {
-    totalTx24h:        totalTx,
-    sttTx24h:          sttTx,
-    whaleTx24h:        whaleTx,
-    whaleVolumeStt:    whaleVol,
-    avgWhaleSizeStt:   avg,
-    medianWhaleSizeStt: medianStt,   
-    whaleVelocity,                   
-    largestWhaleStt:   largestStt,
+    totalTx24h:         totalTx,
+    sttTx24h:           sttTx,
+    whaleTx24h:         whaleTx,
+    whaleVolumeStt:     whaleVol,
+    avgWhaleSizeStt:    avg,
+    medianWhaleSizeStt: medianStt,
+    whaleVelocity,
+    largestWhaleStt:    largestStt,
     whaleFees,
-    whaleFeeEstimated: feeEst,
-    alerts24h:         alerts,
-    momentum24h:       momentum,
-    reactions24h:      reactions,
+    whaleFeeEstimated:  feeEst,
+    alerts24h:          alerts,
+    momentum24h:        momentum,
+    reactions24h:       reactions,
     whaleTxRate,
     whaleTxRateRaw,
-    whaleThresholdStt: _whaleThresholdStt,
-    whalePercentile:   _whalePercentile,
+    whalePressure:      filtPressure,
+    whaleThresholdStt:  _whaleThresholdStt,
+    whalePercentile:    _whalePercentile,
     updatedAt: Date.now(),
   };
 }
+
 export function getShockData(): ShockDataPoint[] {
   return completedShock.slice(-20);
 }
@@ -461,6 +475,9 @@ function resetCounters() {
   _whaleVolStt = 0; _largestStt = 0;
   _whaleFees = 0; _whaleFeeEst = false;
   _alerts24h = 0; _momentum24h = 0; _reactions24h = 0;
+  _whalePressure = 0;
+  _pressureInflowMap.clear();
+  _pressureOutflowMap.clear();
   allTxBuckets.clear(); sttTxBuckets.clear(); whaleTxBuckets.clear();
   whaleSizesStt.length = 0;
   completedShock.length = 0;

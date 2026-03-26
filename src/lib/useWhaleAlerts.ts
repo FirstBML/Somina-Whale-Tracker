@@ -50,14 +50,16 @@ export type LiveMetrics = {
   whaleVolumeStt: number;
   avgWhaleSizeStt: number;
   medianWhaleSizeStt: number;
+  whaleVelocity: number;
   largestWhaleStt: number;
-  whaleVelocity:      number;
   whaleFees: number;
   whaleFeeEstimated: boolean;
   alerts24h: number;
   momentum24h: number;
   reactions24h: number;
   whaleTxRate: number;
+  whaleTxRateRaw: number;
+  whalePressure: number;
   whaleThresholdStt: number;
   whalePercentile: number;
   updatedAt: number;
@@ -79,11 +81,13 @@ export type ShockDataPoint = {
 const DEFAULT_METRICS: LiveMetrics = {
   totalTx24h: 0, sttTx24h: 0, whaleTx24h: 0,
   whaleVolumeStt: 0, avgWhaleSizeStt: 0, medianWhaleSizeStt: 0,
-  largestWhaleStt: 0, whaleVelocity: 0, whaleFees: 0, whaleFeeEstimated: false,
+  whaleVelocity: 0,   largestWhaleStt: 0, whaleFees: 0, 
+  whaleFeeEstimated: false,
   alerts24h: 0, momentum24h: 0, reactions24h: 0,
-  whaleTxRate: 0, whaleThresholdStt: 0.5, whalePercentile: 90,
-  updatedAt: 0,
+  whaleTxRate: 0, whaleTxRateRaw: 0,  whalePressure: 0,   
+  whaleThresholdStt: 0.5, whalePercentile: 75, updatedAt: 0,
 };
+
 
 function parseEntry(raw: any): WhaleAlert | null {
   try {
